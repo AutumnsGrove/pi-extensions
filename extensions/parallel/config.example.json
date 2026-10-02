@@ -1,0 +1,10 @@
+{
+  "softLimitQueries": 3000,
+  "hardLimitQueries": 4000,
+  "hardLimitUsd": 4,
+  "searchMode": "fast",
+  "defaultMaxResults": 10,
+  "maxSummaryChars": 120000,
+  "platformOrigin": "https://platform.parallel.ai",
+  "apiBaseUrl": "https://api.parallel.ai"
+}

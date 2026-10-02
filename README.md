@@ -8,6 +8,7 @@ packaged as a single installable [pi package](https://github.com/earendil-works/
 | Extension | What it does | Status |
 | --- | --- | --- |
 | [`provider-pinning`](extensions/provider-pinning/) | Pin OpenRouter requests to a chosen upstream provider so prompt caching stays warm, with a full provider comparison table (`/provider`). | working |
+| [`parallel`](extensions/parallel/) | Parallel-backed `web_search` + `web_fetch` tools with a local monthly quota hard cap and model-summarized page reading (`/parallel-login`). | working |
 | _more to come_ | | |
 
 ## Install
@@ -39,9 +40,13 @@ dependencies and never bundled.
 ```
 pi-extensions/
 ├── extensions/
-│   └── provider-pinning/     # one directory per extension, each with index.ts
+│   ├── provider-pinning/     # one directory per extension, each with index.ts
+│   │   ├── index.ts
+│   │   └── PLAN.md
+│   └── parallel/
 │       ├── index.ts
-│       └── PLAN.md
+│       ├── PLAN.md
+│       └── README.md
 ├── package.json              # pi manifest: extensions/*/index.ts
 └── tsconfig.json
 ```
@@ -66,6 +71,7 @@ step.
 | Extension | Cost |
 | --- | --- |
 | provider-pinning | $0.357 |
+| parallel | $0.303 |
 
 ## License
 
