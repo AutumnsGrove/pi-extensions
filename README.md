@@ -1,0 +1,66 @@
+# pi-extensions
+
+A growing collection of [pi](https://github.com/earendil-works/pi) extensions,
+packaged as a single installable [pi package](https://github.com/earendil-works/pi/blob/main/docs/packages.md).
+
+## Extensions
+
+| Extension | What it does | Status |
+| --- | --- | --- |
+| [`provider-pinning`](extensions/provider-pinning/) | Pin OpenRouter requests to a chosen upstream provider so prompt caching stays warm, with a full provider comparison table (`/pin`). | planned |
+| _more to come_ | | |
+
+## Install
+
+Git package (pinned to a ref is recommended once tagged):
+
+```bash
+pi install git:github.com/AutumnsGrove/pi-extensions
+```
+
+Try it for one invocation without saving:
+
+```bash
+pi -e git:github.com/AutumnsGrove/pi-extensions
+```
+
+Local development checkout:
+
+```bash
+pi -e /path/to/pi-extensions
+```
+
+Pi supplies `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`,
+`@earendil-works/pi-tui`, and `typebox` at runtime; they are declared as peer
+dependencies and never bundled.
+
+## Layout
+
+```
+pi-extensions/
+├── extensions/
+│   └── provider-pinning/     # one directory per extension, each with index.ts
+│       ├── index.ts
+│       └── PLAN.md
+├── package.json              # pi manifest: extensions/*/index.ts
+└── tsconfig.json
+```
+
+Add a new extension by creating `extensions/<name>/index.ts` that default-exports
+a factory taking `ExtensionAPI`. See pi's
+[extensions docs](https://github.com/earendil-works/pi/blob/main/docs/extensions.md).
+
+## Development
+
+```bash
+pnpm install        # dev-only (typescript, vitest)
+pnpm check          # tsc --noEmit
+pnpm test           # vitest run
+```
+
+Extensions are loaded directly as TypeScript by pi (via jiti); there is no build
+step.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
