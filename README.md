@@ -67,6 +67,7 @@ Extensions are loaded directly as TypeScript by pi (via jiti); there is no build
 step.
 
 ## Development cost
+*Note: The model used to develop is always deepseek/deepseek4.1 provided by Deepseek themselves (pinned via the provider-pinning extension)*
 
 | Extension | Cost |
 | --- | --- |
