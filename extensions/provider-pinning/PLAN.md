@@ -225,14 +225,32 @@ Recommended sort key: `supports_implicit_caching` first, then
   OpenRouter generation records across ≥5 turns; expect one provider only.
 - Regression: `/fast` and `/zdr` still behave when no pin is set.
 
-## Open questions for the operator
+## Resolved decisions
 
-1. Install under `~/.pi/agent/extensions/` (my recommendation, survives Ori
-   regenerating `~/.ori/pi/`) or inside `~/.ori/pi/` alongside the OpenRouter
-   extension?
-2. Pins global (per model, persist across sessions) or per session? Plan assumes
-   global with per-session override command.
-3. Default strict (`only`, no fallbacks) or preferred (`order`, fallbacks on)?
-4. Serve the table through `/pin`, or also add a `/providers` alias / keybinding?
-5. Should the recommended sort hard-prefer `supports_implicit_caching`, or lead
-   with cache-read price? (DeepSeek first-party wins both for the current model.)
+1. License: **MIT**.
+2. Default mode: **strict** (`only`, no fallbacks).
+3. Pin scope: **global per model**, persisted across sessions in
+   `provider-pins.json`.
+4. Sort: **hard-prefer `supports_implicit_caching`**, then cache-read price.
+5. Surface: `/provider` (plus `/pin` alias, `/pins`, and `Ctrl+Shift+K`).
+
+## Status: shipped
+
+- `before_provider_request` rewrites `provider.only` / `allow_fallbacks` and
+  drops `sort`; verified end-to-end that the pin reaches the wire.
+- Endpoints fetched with the API key (latency/throughput percentiles), parsed,
+  cached in memory and on disk, with alias/variant fallback and offline reuse.
+- Full table UI with arrows, `Enter`, `f`, `s`, `/`, `d`, `Esc`, wide/narrow
+  layouts, and a detail pane (`supported_parameters`, quant, percentiles).
+- Served provider read from the OpenRouter stream body (`provider`), shown as
+  `✓` and in the status line.
+- `/models` bridge: a notification nudge when a chosen model has no pin. The
+  built-in `ModelSelectorComponent` exposes no hook for adding a button, so an
+  in-dialog button is not possible without replacing the component.
+- Tests: 36 unit + wiring tests; `pnpm check` clean.
+
+### Possible follow-ups
+
+- A `/providers` alias and per-model pin templates.
+- Show real per-request cache-hit counts from OpenRouter usage chunks.
+- Optional "prefer" mode surfaced per pin rather than only via `f`.

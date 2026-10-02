@@ -7,7 +7,7 @@ packaged as a single installable [pi package](https://github.com/earendil-works/
 
 | Extension | What it does | Status |
 | --- | --- | --- |
-| [`provider-pinning`](extensions/provider-pinning/) | Pin OpenRouter requests to a chosen upstream provider so prompt caching stays warm, with a full provider comparison table (`/pin`). | planned |
+| [`provider-pinning`](extensions/provider-pinning/) | Pin OpenRouter requests to a chosen upstream provider so prompt caching stays warm, with a full provider comparison table (`/provider`). | working |
 | _more to come_ | | |
 
 ## Install
