@@ -63,7 +63,9 @@ step.
 
 ## Development cost
 
-Built with about **$0.35** of OpenRouter credits.
+| Extension | Cost |
+| --- | --- |
+| provider-pinning | $0.357 |
 
 ## License
 
