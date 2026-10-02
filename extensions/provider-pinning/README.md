@@ -85,3 +85,5 @@ pnpm install
 pnpm check   # tsc --noEmit
 pnpm test    # vitest
 ```
+
+Built with about **$0.35** of OpenRouter credits.

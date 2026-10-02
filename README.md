@@ -61,6 +61,10 @@ pnpm test           # vitest run
 Extensions are loaded directly as TypeScript by pi (via jiti); there is no build
 step.
 
+## Development cost
+
+Built with about **$0.35** of OpenRouter credits.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
