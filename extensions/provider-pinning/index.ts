@@ -12,6 +12,11 @@ import {
 	loadPins,
 	savePins,
 } from "./config.ts";
+import {
+	deepseekBadge,
+	isDeepseekProvider,
+	nextDeepseekTransition,
+} from "./deepseek.ts";
 import { type EndpointCatalog, fetchEndpointCatalog } from "./endpoints.ts";
 import {
 	applyPin,
@@ -56,9 +61,25 @@ export default function providerPinning(pi: ExtensionAPI): void {
 	const cache = new EndpointCache(cachePath);
 	const lastServed = new Map<string, string>();
 	let pins: PinsFile = loadPins(pinsPath);
+	let statusTimer: ReturnType<typeof setTimeout> | undefined;
+	let activeContext: ExtensionContext | undefined;
 
 	const isOpenRouter = (ctx: ExtensionContext): boolean =>
 		ctx.model?.provider === "openrouter";
+
+	/** True when the effective route is DeepSeek's own API, pinned or served. */
+	const isDeepseekActive = (ctx: ExtensionContext): boolean => {
+		if (!isOpenRouter(ctx) || !ctx.model) {
+			return false;
+		}
+		const pin = pins.pins[ctx.model.id];
+		const served = lastServed.get(ctx.model.id);
+		return (
+			isDeepseekProvider(pin?.providerName) ||
+			isDeepseekProvider(pin?.tag) ||
+			isDeepseekProvider(served)
+		);
+	};
 
 	const statusFor = (ctx: ExtensionContext): void => {
 		if (!isOpenRouter(ctx) || !ctx.model) {
@@ -74,7 +95,42 @@ export default function providerPinning(pi: ExtensionAPI): void {
 		if (served && (!pin || served !== pin.providerName)) {
 			parts.push(`via ${served}`);
 		}
+		if (isDeepseekActive(ctx)) {
+			parts.push(deepseekBadge());
+		}
 		ctx.ui.setStatus(STATUS_KEY, parts.length > 0 ? parts.join(" · ") : undefined);
+	};
+
+	const clearStatusTimer = (): void => {
+		if (statusTimer !== undefined) {
+			clearTimeout(statusTimer);
+			statusTimer = undefined;
+		}
+	};
+
+	/**
+	 * Update the status text and arm the next refresh. The DeepSeek badge changes
+	 * at window edges; while DeepSeek is active we also tick once a minute so the
+	 * "time left" stays honest. No timer runs when DeepSeek is not the route.
+	 */
+	const refreshStatus = (ctx: ExtensionContext): void => {
+		activeContext = ctx;
+		statusFor(ctx);
+		clearStatusTimer();
+		if (!isDeepseekActive(ctx)) {
+			return;
+		}
+		const now = new Date();
+		const next = nextDeepseekTransition(now);
+		const untilFlip = next ? next.getTime() - now.getTime() : 60_000;
+		const delay = Math.max(1_000, Math.min(untilFlip + 500, 60_000));
+		statusTimer = setTimeout(() => {
+			statusTimer = undefined;
+			if (activeContext) {
+				refreshStatus(activeContext);
+			}
+		}, delay);
+		statusTimer.unref?.();
 	};
 
 	const setPin = (
@@ -88,7 +144,7 @@ export default function providerPinning(pi: ExtensionAPI): void {
 			delete pins.pins[modelId];
 		}
 		savePins(pinsPath, pins);
-		statusFor(ctx);
+		refreshStatus(ctx);
 		ctx.ui.notify(
 			pin
 				? `Pinned ${modelId} to ${pin.providerName} (${pin.tag})${pin.allowFallbacks ? ", fallbacks allowed" : ", no fallbacks"}`
@@ -177,11 +233,16 @@ export default function providerPinning(pi: ExtensionAPI): void {
 
 	pi.on("session_start", (_event, ctx) => {
 		pins = loadPins(pinsPath);
-		statusFor(ctx);
+		refreshStatus(ctx);
+	});
+
+	pi.on("session_shutdown", () => {
+		clearStatusTimer();
+		activeContext = undefined;
 	});
 
 	pi.on("turn_start", (_event, ctx) => {
-		statusFor(ctx);
+		refreshStatus(ctx);
 	});
 
 	pi.on("before_provider_request", (event, ctx) => {
@@ -202,13 +263,13 @@ export default function providerPinning(pi: ExtensionAPI): void {
 			return;
 		}
 		lastServed.set(ctx.model.id, providerName);
-		statusFor(ctx);
+		refreshStatus(ctx);
 	});
 
 	// Bridge from the built-in `/models` picker: the API cannot add a button to
 	// that component, so when a model is chosen without a pin we nudge.
 	pi.on("model_select", (event, ctx) => {
-		statusFor(ctx);
+		refreshStatus(ctx);
 		if (event.source !== "set" || event.model.provider !== "openrouter") {
 			return;
 		}

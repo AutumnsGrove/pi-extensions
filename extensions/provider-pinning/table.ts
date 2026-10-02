@@ -1,6 +1,7 @@
 import type { Component } from "@earendil-works/pi-tui";
 import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { ProviderPin } from "./config.ts";
+import { deepseekBadge, isDeepseekProvider } from "./deepseek.ts";
 import type { EndpointCatalog, ProviderEndpoint } from "./endpoints.ts";
 import {
 	formatCount,
@@ -476,6 +477,18 @@ export class ProviderTableView implements Component {
 				"…"
 			)
 		);
+		if (isDeepseekProvider(endpoint.providerName) || isDeepseekProvider(endpoint.tag)) {
+			lines.push(
+				truncateToWidth(
+					theme.fg(
+						"muted",
+						`Official DeepSeek rate now: ${deepseekBadge()} · peak doubles`
+					),
+					width,
+					"…"
+				)
+			);
+		}
 		lines.push(
 			truncateToWidth(
 				theme.fg(

@@ -70,6 +70,29 @@ throughput percentiles populate. Results are cached in memory and in
 The base URL honours `ORI_OPENROUTER_BASE_URL` / `ORI_OPENROUTER_REGION`, so it
 works under [Ori](https://github.com/AutumnsGrove) too.
 
+## DeepSeek peak/off-peak indicator
+
+DeepSeek's own API charges **double** during peak hours, and those windows are
+fixed to UTC (01:00–04:00 and 06:00–10:00, Monday–Friday) with Chinese public
+holidays off-peak in full. Outside China they land at awkward local times, so
+when the effective route is DeepSeek the extension appends a live badge to the
+same footer status segment:
+
+```
+openrouter-pin  pin: DeepSeek · DS off-peak 2d3h
+```
+
+The badge names the current period and how long it still runs, refreshing at the
+exact window edge (and once a minute while DeepSeek is active, so the countdown
+stays honest). The provider table's detail pane shows the same line for the
+highlighted DeepSeek endpoint. Pinning to DeepSeek is generally the cheapest
+option off-peak; the badge is there so you can see when peak arrives and decide
+whether to switch.
+
+The schedule lives in `deepseek.ts`. The Chinese holiday list currently covers
+2026 (State Council notice 国办发明电〔2025〕7号); add 2027 once its notice is
+published, or holidays will be billed as peak.
+
 ## Permissions and data
 
 - Reads `OPENROUTER_API_KEY` from the environment (or Ori's variables).

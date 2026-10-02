@@ -71,6 +71,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.useRealTimers();
 	if (previousAgentDir === undefined) {
 		delete process.env.PI_CODING_AGENT_DIR;
 	} else {
@@ -108,6 +109,8 @@ describe("providerPinning extension", () => {
 	});
 
 	it("records the served provider from the stream and updates status", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-10-08T02:00:00Z"));
 		writePin(agentDir);
 		const { pi, handlers } = createMockPi();
 		providerPinning(pi);
@@ -122,7 +125,24 @@ describe("providerPinning extension", () => {
 			},
 			ctx
 		);
-		expect(ctx.ui.setStatus).toHaveBeenCalledWith("openrouter-pin", "pin: DeepSeek");
+		expect(ctx.ui.setStatus).toHaveBeenCalledWith(
+			"openrouter-pin",
+			"pin: DeepSeek · DS peak 2h0m"
+		);
+	});
+
+	it("shows the off-peak badge outside DeepSeek's peak windows", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-10-08T11:00:00Z"));
+		writePin(agentDir);
+		const { pi, handlers } = createMockPi();
+		providerPinning(pi);
+		const ctx = context();
+		await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+		expect(ctx.ui.setStatus).toHaveBeenCalledWith(
+			"openrouter-pin",
+			"pin: DeepSeek · DS off-peak 14h0m"
+		);
 	});
 
 	it("nudges toward /provider when a model is chosen without a pin", async () => {

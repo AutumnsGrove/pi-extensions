@@ -254,3 +254,9 @@ Recommended sort key: `supports_implicit_caching` first, then
 - A `/providers` alias and per-model pin templates.
 - Show real per-request cache-hit counts from OpenRouter usage chunks.
 - Optional "prefer" mode surfaced per pin rather than only via `f`.
+- A DeepSeek peak/off-peak badge in the status line and table (shipped):
+  `deepseek.ts` holds the UTC windows, the 2026 Chinese holiday list,
+  `deepseekPeriod()`, `nextDeepseekTransition()`, and `deepseekBadge()`;
+  `index.ts` refreshes it at window edges; `table.ts` shows it for the
+  highlighted first-party endpoint. Add 2027 to `CHINESE_PUBLIC_HOLIDAYS` when
+  the State Council notice lands.
