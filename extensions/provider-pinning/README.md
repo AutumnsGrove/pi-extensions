@@ -109,4 +109,4 @@ pnpm check   # tsc --noEmit
 pnpm test    # vitest
 ```
 
-Built with about **$0.357** of OpenRouter credits.
+Built with about **$0.417** of OpenRouter credits.

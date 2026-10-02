@@ -71,7 +71,7 @@ step.
 
 | Extension | Cost |
 | --- | --- |
-| provider-pinning | $0.357 |
+| provider-pinning | $0.417 |
 | parallel | $0.303 |
 
 ## License
