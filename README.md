@@ -10,6 +10,7 @@ packaged as a single installable [pi package](https://github.com/earendil-works/
 | [`provider-pinning`](extensions/provider-pinning/) | Pin OpenRouter requests to a chosen upstream provider so prompt caching stays warm, with a full provider comparison table (`/provider`). | working |
 | [`parallel`](extensions/parallel/) | Parallel-backed `web_search` + `web_fetch` tools with a local monthly quota hard cap and model-summarized page reading (`/parallel-login`). | working |
 | [`extension-divider`](extensions/extension-divider/) | A light grey `///` between each item on the extension status line (`/divider`). | working |
+| [`thinking-box`](extensions/thinking-box/) | Collapsible, timed thinking traces: stream into a short box showing duration + reasoning tokens, expand the full trace with `Ctrl+O` (`/thinking-box`). | working |
 | _more to come_ | | |
 
 ## Install
@@ -48,9 +49,17 @@ pi-extensions/
 │   │   ├── index.ts
 │   │   ├── PLAN.md
 │   │   └── README.md
-│   └── extension-divider/
+│   ├── extension-divider/
+│   │   ├── index.ts
+│   │   ├── divider.ts
+│   │   ├── PLAN.md
+│   │   └── README.md
+│   └── thinking-box/
 │       ├── index.ts
-│       ├── divider.ts
+│       ├── patch.ts
+│       ├── patch.test.ts
+│       ├── stats.ts
+│       ├── stats.test.ts
 │       ├── PLAN.md
 │       └── README.md
 ├── package.json              # pi manifest: extensions/*/index.ts
@@ -80,6 +89,7 @@ step.
 | provider-pinning | $0.417 |
 | parallel | $0.303 |
 | extension-divider | $0.100 |
+| thinking-box | $0.113 |
 
 ## License
 
