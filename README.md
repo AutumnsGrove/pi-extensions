@@ -11,6 +11,7 @@ packaged as a single installable [pi package](https://github.com/earendil-works/
 | [`parallel`](extensions/parallel/) | Parallel-backed `web_search` + `web_fetch` tools with a local monthly quota hard cap and model-summarized page reading (`/parallel-login`). | working |
 | [`extension-divider`](extensions/extension-divider/) | A light grey `///` between each item on the extension status line (`/divider`). | working |
 | [`thinking-box`](extensions/thinking-box/) | Collapsible, timed thinking traces: stream into a short box showing duration + reasoning tokens, expand the full trace with `Ctrl+O` (`/thinking-box`). | working |
+| [`pi-q-n-a`](extensions/pi-q-n-a/) | Model-facing `pi-q-n-a` tool: a multi-question form with single/multi-select, an always-present "Type something", per-question notes, optional side-by-side previews, and partial submit. | working |
 | _more to come_ | | |
 
 ## Install
@@ -54,12 +55,23 @@ pi-extensions/
 │   │   ├── divider.ts
 │   │   ├── PLAN.md
 │   │   └── README.md
-│   └── thinking-box/
+│   ├── thinking-box/
+│   │   ├── index.ts
+│   │   ├── patch.ts
+│   │   ├── patch.test.ts
+│   │   ├── stats.ts
+│   │   ├── stats.test.ts
+│   │   ├── PLAN.md
+│   │   └── README.md
+│   └── pi-q-n-a/
 │       ├── index.ts
-│       ├── patch.ts
-│       ├── patch.test.ts
-│       ├── stats.ts
-│       ├── stats.test.ts
+│       ├── index.test.ts
+│       ├── schema.ts
+│       ├── questionnaire.ts
+│       ├── questionnaire.test.ts
+│       ├── component.test.ts
+│       ├── layout.ts
+│       ├── layout.test.ts
 │       ├── PLAN.md
 │       └── README.md
 ├── package.json              # pi manifest: extensions/*/index.ts
@@ -90,6 +102,7 @@ step.
 | parallel | $0.303 |
 | extension-divider | $0.100 |
 | thinking-box | $0.113 |
+| pi-q-n-a | $0.228 |
 
 ## License
 
