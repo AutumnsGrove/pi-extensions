@@ -13,6 +13,7 @@ packaged as a single installable [pi package](https://github.com/earendil-works/
 | [`thinking-box`](extensions/thinking-box/) | Collapsible, timed thinking traces: stream into a short box showing duration + reasoning tokens, expand the full trace with `Ctrl+O` (`/thinking-box`). | working |
 | [`pi-q-n-a`](extensions/pi-q-n-a/) | Model-facing `pi-q-n-a` tool: a multi-question form with single/multi-select, an always-present "Type something", per-question notes, optional side-by-side previews, and partial submit. | working |
 | [`cost-tracker`](extensions/cost-tracker/) | Tracks development cost from pi's own session usage. `/cost start` … `/cost stop` in pi, or `pnpm cost` from a shell; finalizes runs and auto-imports the table below. | working |
+| [`semantic-search`](extensions/semantic-search/) | Native local semantic code search: tree-sitter chunking, Merkle-incremental indexing, Ollama embeddings, SQLite + sqlite-vec retrieval. | in progress (chunkers) |
 | _more to come_ | | |
 
 ## Install
@@ -76,12 +77,14 @@ pi-extensions/
 │   │   ├── PLAN.md
 │   │   └── README.md
 │   ├── cost-tracker/
-│       ├── index.ts
-│       ├── ledger.ts
-│       ├── cli.ts
-│       ├── ledger.test.ts
-│       ├── index.test.ts
-│       └── PLAN.md
+│   │   ├── index.ts
+│   │   ├── ledger.ts
+│   │   ├── cli.ts
+│   │   ├── ledger.test.ts
+│   │   ├── index.test.ts
+│   │   └── PLAN.md
+│   └── semantic-search/
+│       └── PLAN.md           # in progress
 ├── package.json              # pi manifest: extensions/*/index.ts
 └── tsconfig.json
 ```
