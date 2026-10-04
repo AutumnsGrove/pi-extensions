@@ -136,24 +136,31 @@ export class Indexer {
 	}
 
 	/** Build the tree and re-index only when the root hash changed. */
-	async ensureFresh(progress?: ProgressFunc): Promise<EnsureFreshResult> {
+	async ensureFresh(
+		progress?: ProgressFunc,
+		signal?: AbortSignal
+	): Promise<EnsureFreshResult> {
 		return withProjectLock(this.projectDir, async () => {
 			const tree = await buildTree(this.projectDir, this.skip);
 			const storedHash = this.store.getMeta(META_ROOT_HASH) ?? "";
 			if (this.claimsFresh(tree, storedHash)) {
 				return { reindexed: false, stats: emptyStats() };
 			}
-			const stats = await this.indexWithTree(tree, storedHash, false, progress);
+			const stats = await this.indexWithTree(tree, storedHash, false, progress, signal);
 			return { reindexed: true, stats };
 		});
 	}
 
 	/** Index unconditionally; `force` reprocesses every file. */
-	async index(force: boolean, progress?: ProgressFunc): Promise<IndexStats> {
+	async index(
+		force: boolean,
+		progress?: ProgressFunc,
+		signal?: AbortSignal
+	): Promise<IndexStats> {
 		return withProjectLock(this.projectDir, async () => {
 			const tree = await buildTree(this.projectDir, this.skip);
 			const storedHash = this.store.getMeta(META_ROOT_HASH) ?? "";
-			return this.indexWithTree(tree, storedHash, force, progress);
+			return this.indexWithTree(tree, storedHash, force, progress, signal);
 		});
 	}
 
@@ -161,7 +168,8 @@ export class Indexer {
 		tree: Tree,
 		oldRootHash: string,
 		force: boolean,
-		progress?: ProgressFunc
+		progress?: ProgressFunc,
+		signal?: AbortSignal
 	): Promise<IndexStats> {
 		const stats = emptyStats();
 		try {
@@ -211,7 +219,7 @@ export class Indexer {
 				const texts = batch.map(
 					(chunk) => `// ${chunk.filePath}\n${chunk.content}`
 				);
-				const vectors = await this.embedder.embed(texts);
+				const vectors = await this.embedder.embed(texts, signal);
 				this.store.insertChunks(batch, vectors);
 				totalChunks += batch.length;
 				batch = [];
@@ -225,6 +233,9 @@ export class Indexer {
 			};
 
 			for (let index = 0; index < filesToIndex.length; index += 1) {
+				if (signal?.aborted) {
+					throw new Error("indexing aborted");
+				}
 				const relPath = filesToIndex[index];
 				if (relPath === undefined) {
 					continue;

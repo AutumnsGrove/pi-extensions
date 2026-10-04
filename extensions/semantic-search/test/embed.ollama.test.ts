@@ -117,4 +117,31 @@ describe("OllamaEmbedder", () => {
 		expect(await embedder.embed([])).toEqual([]);
 		expect(calls).toHaveLength(0);
 	});
+
+	it("times out a hung request instead of waiting forever", async () => {
+		const fetchImpl = ((_input: unknown, init?: RequestInit) =>
+			new Promise<Response>((_resolve, reject) => {
+				const signal = init?.signal as AbortSignal | undefined;
+				signal?.addEventListener("abort", () =>
+					reject(new DOMException("aborted", "AbortError"))
+				);
+			})) as unknown as typeof fetch;
+		const embedder = createOllamaEmbedder({
+			model: "m",
+			dimensions: 1,
+			timeoutMs: 5,
+			maxRetries: 0,
+			fetchImpl,
+		});
+		await expect(embedder.embed(["a"])).rejects.toThrow();
+	});
+
+	it("propagates a caller abort", async () => {
+		const { fetchImpl, calls } = mockFetch(() => jsonResponse({ embeddings: [[1]] }));
+		const embedder = createOllamaEmbedder({ model: "m", dimensions: 1, fetchImpl });
+		await expect(embedder.embed(["a"], AbortSignal.abort())).rejects.toThrow(
+			/aborted/
+		);
+		expect(calls).toHaveLength(0);
+	});
 });

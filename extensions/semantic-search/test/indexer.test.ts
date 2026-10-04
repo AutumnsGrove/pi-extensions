@@ -282,4 +282,15 @@ describe("Indexer", () => {
 		expect(store.getFileHashes().has("notes.md")).toBe(false);
 		store.close();
 	});
+
+	it("stops indexing when the signal is aborted", async () => {
+		const dir = project(START);
+		const { store, indexer } = makeIndexer(dir);
+		await expect(indexer.index(false, undefined, AbortSignal.abort())).rejects.toThrow(
+			/aborted/
+		);
+		// An aborted run must not advance the root hash.
+		expect(store.getMeta(META_ROOT_HASH)).toBe("");
+		store.close();
+	});
 });

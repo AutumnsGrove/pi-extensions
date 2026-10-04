@@ -112,4 +112,19 @@ describe("runSearch", () => {
 		expect(second.output.results[0]?.filePath).toBe("src/b.ts");
 		store.close();
 	});
+
+	it("stops when the caller aborts", async () => {
+		const { projectDir, embedder, store, indexer } = setup(FILES);
+		await expect(
+			runSearch({
+				store,
+				embedder,
+				indexer,
+				projectDir,
+				request: { query: "alpha" },
+				signal: AbortSignal.abort(),
+			})
+		).rejects.toThrow(/aborted/);
+		store.close();
+	});
 });

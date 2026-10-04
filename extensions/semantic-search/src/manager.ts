@@ -28,7 +28,11 @@ export interface SearchManager {
 	/** Present when config loading failed and defaults were used. */
 	readonly configError?: string;
 	ensure(projectDir: string): Promise<{ store: Store; indexer: Indexer }>;
-	search(projectDir: string, request: SearchRequest): Promise<SearchResponse>;
+	search(
+		projectDir: string,
+		request: SearchRequest,
+		signal?: AbortSignal
+	): Promise<SearchResponse>;
 	close(): void;
 }
 
@@ -93,7 +97,11 @@ export class SemanticSearchManager implements SearchManager {
 		return entry;
 	}
 
-	async search(projectDir: string, request: SearchRequest): Promise<SearchResponse> {
+	async search(
+		projectDir: string,
+		request: SearchRequest,
+		signal?: AbortSignal
+	): Promise<SearchResponse> {
 		const { store, indexer } = await this.ensure(projectDir);
 		return runSearch({
 			store,
@@ -101,6 +109,7 @@ export class SemanticSearchManager implements SearchManager {
 			indexer,
 			projectDir: indexer.projectDir,
 			request,
+			signal,
 		});
 	}
 

@@ -20,15 +20,36 @@ export interface OllamaOptions {
 	batchSize?: number;
 	maxRetries?: number;
 	baseDelayMs?: number;
+	/** Per-request timeout; 0 disables the timeout. */
+	timeoutMs?: number;
 	fetchImpl?: typeof fetch;
 }
 
 export const DEFAULT_OLLAMA_HOST = "http://localhost:11434";
 
+/**
+ * Per-request ceiling. Without one, a hung Ollama or a slow model load blocks
+ * the tool call (and background indexing) forever with no way to recover.
+ */
+export const DEFAULT_EMBED_TIMEOUT_MS = 120_000;
+
 export function createOllamaEmbedder(options: OllamaOptions): Embedder {
 	const baseUrl = (options.baseUrl ?? DEFAULT_OLLAMA_HOST).replace(/\/+$/, "");
 	const batchSize = options.batchSize ?? EMBED_BATCH_SIZE;
+	const timeoutMs = options.timeoutMs ?? DEFAULT_EMBED_TIMEOUT_MS;
 	const fetchImpl = options.fetchImpl ?? fetch;
+
+	/**
+	 * Combine the caller's abort signal with a fresh timeout signal. A timeout
+	 * is transient and may be retried; a caller abort propagates so retries stop.
+	 */
+	function requestSignal(signal?: AbortSignal): AbortSignal | undefined {
+		if (timeoutMs <= 0) {
+			return signal;
+		}
+		const timeout = AbortSignal.timeout(timeoutMs);
+		return signal ? AbortSignal.any([signal, timeout]) : timeout;
+	}
 
 	async function embedBatch(
 		texts: readonly string[],
@@ -47,7 +68,7 @@ export function createOllamaEmbedder(options: OllamaOptions): Embedder {
 					method: "POST",
 					headers: { "content-type": "application/json" },
 					body: JSON.stringify(body),
-					signal,
+					signal: requestSignal(signal),
 				});
 				const text = await response.text();
 				if (response.status >= 500 || !response.ok) {

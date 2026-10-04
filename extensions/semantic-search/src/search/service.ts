@@ -52,6 +52,7 @@ export async function runSearch(options: {
 	request: SearchRequest;
 	onProgress?: ProgressFunc;
 	ensureFresh?: boolean;
+	signal?: AbortSignal;
 }): Promise<SearchResponse> {
 	const request = options.request;
 	const limit = request.limit && request.limit > 0 ? request.limit : 8;
@@ -60,12 +61,12 @@ export async function runSearch(options: {
 	let reindexed = false;
 	let indexedFiles = 0;
 	if (options.ensureFresh !== false) {
-		const fresh = await options.indexer.ensureFresh(options.onProgress);
+		const fresh = await options.indexer.ensureFresh(options.onProgress, options.signal);
 		reindexed = fresh.reindexed;
 		indexedFiles = fresh.stats.indexedFiles;
 	}
 
-	const [queryVec] = await options.embedder.embed([request.query]);
+	const [queryVec] = await options.embedder.embed([request.query], options.signal);
 	if (!queryVec) {
 		throw new Error("embedder returned no vector for the query");
 	}

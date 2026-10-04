@@ -162,7 +162,7 @@ Use grep, find, or read only when you already know the exact literal string (a s
 			],
 			parameters: SearchParams,
 			annotations: { readOnlyHint: true },
-			async execute(_id, params: SearchArgs, _signal, _onUpdate, ctx) {
+			async execute(_id, params: SearchArgs, signal, _onUpdate, ctx) {
 				const projectDir = projectRoot(ctx, params);
 				const refusal = rootRefusal(projectDir);
 				if (refusal) {
@@ -177,14 +177,18 @@ Use grep, find, or read only when you already know the exact literal string (a s
 						details: { resultCount: 0, reindexed: false, results: [] },
 					};
 				}
-				const { output, text } = await manager.search(projectDir, {
-					query: params.query,
-					limit: params.limit,
-					minScore: params.min_score,
-					summary: params.summary,
-					maxLines: params.max_lines,
-					pathPrefix: pathPrefixFor(projectDir, params.path),
-				});
+				const { output, text } = await manager.search(
+					projectDir,
+					{
+						query: params.query,
+						limit: params.limit,
+						minScore: params.min_score,
+						summary: params.summary,
+						maxLines: params.max_lines,
+						pathPrefix: pathPrefixFor(projectDir, params.path),
+					},
+					signal
+				);
 				return {
 					content: [{ type: "text", text }],
 					details: {
@@ -318,7 +322,7 @@ Use grep, find, or read only when you already know the exact literal string (a s
 				const { store, indexer } = await manager.ensure(ctx.cwd);
 				if (sub === "reindex") {
 					ctx.ui.notify("Re-indexing…", "info");
-					const stats = await indexer.index(true);
+					const stats = await indexer.index(true, undefined, ctx.signal);
 					setIndexStatus(ctx, `semsearch: ${store.stats().totalChunks} chunks`);
 					ctx.ui.notify(
 						`Re-indexed ${stats.indexedFiles} files (${stats.chunksCreated} chunks).`,
