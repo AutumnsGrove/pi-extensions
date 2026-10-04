@@ -15,7 +15,7 @@ afterEach(() => {
 });
 
 describe("SemanticSearchManager config safety", () => {
-	it("constructs with defaults when the config file is poisoned", () => {
+	it("constructs with defaults when the config file is poisoned", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "semsearch-manager-"));
 		dirs.push(dir);
 		const file = join(dir, "config.json");
@@ -27,6 +27,8 @@ describe("SemanticSearchManager config safety", () => {
 		expect(manager.config.model).toBe(DEFAULT_OLLAMA_MODEL);
 		expect(manager.config.dimensions).toBe(768);
 		expect(manager.configError).toBeTruthy();
-		manager.close();
+		await manager.close();
+		// Closing twice is safe (pi may shut a session down more than once).
+		await manager.close();
 	});
 });

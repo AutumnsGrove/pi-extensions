@@ -161,6 +161,21 @@ describe("runSearch", () => {
 		).rejects.toThrow(/dimension mismatch/);
 		store.close();
 	});
+
+	it("reports indexing progress", async () => {
+		const { projectDir, embedder, store, indexer } = setup(FILES);
+		const messages: string[] = [];
+		await runSearch({
+			store,
+			embedder,
+			indexer,
+			projectDir,
+			request: { query: "alpha" },
+			onProgress: (_current, _total, message) => messages.push(message),
+		});
+		expect(messages.length).toBeGreaterThan(0);
+		store.close();
+	});
 });
 
 describe("computeMaxDistance", () => {

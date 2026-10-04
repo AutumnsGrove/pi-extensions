@@ -18,6 +18,7 @@ import { SemanticSearchManager, type SearchManager } from "./src/manager.ts";
 import { writeModelConfig } from "./src/config.ts";
 import { listKnownModels, modelDimensions } from "./src/embed/registry.ts";
 import { isRootUnindexable } from "./src/index/ignore.ts";
+import type { ProgressFunc } from "./src/index/indexer.ts";
 import { MAX_SEARCH_LIMIT } from "./src/search/service.ts";
 import { describeSearchError, formatIndexStatus } from "./src/search/format.ts";
 
@@ -107,8 +108,8 @@ export function createSemanticSearchExtension(
 	return function semanticSearch(pi: ExtensionAPI): void {
 		let manager = createManager();
 
-		const resetManager = (): void => {
-			manager.close();
+		const resetManager = async (): Promise<void> => {
+			await manager.close();
 			manager = createManager();
 		};
 
@@ -156,9 +157,9 @@ export function createSemanticSearchExtension(
 			})();
 		});
 
-		pi.on("session_shutdown", () => {
+		pi.on("session_shutdown", async () => {
 			activeCtx = undefined;
-			manager.close();
+			await manager.close();
 		});
 
 		pi.registerTool({
@@ -180,7 +181,7 @@ Use grep, find, or read only when you already know the exact literal string (a s
 			],
 			parameters: SearchParams,
 			annotations: { readOnlyHint: true },
-			async execute(_id, params: SearchArgs, signal, _onUpdate, ctx) {
+			async execute(_id, params: SearchArgs, signal, onUpdate, ctx) {
 				const projectDir = projectRoot(ctx, params);
 				const refusal = rootRefusal(projectDir);
 				if (refusal) {
@@ -195,6 +196,27 @@ Use grep, find, or read only when you already know the exact literal string (a s
 						details: { resultCount: 0, reindexed: false, results: [] },
 					};
 				}
+				// Stream indexing progress so a first search on a large repo does not
+				// look hung. Throttled because the indexer reports per file.
+				let lastProgressAt = 0;
+				let lastProgressText = "";
+				const onProgress: ProgressFunc | undefined = onUpdate
+					? (_current, _total, message) => {
+							const now = Date.now();
+							if (
+								message === lastProgressText &&
+								now - lastProgressAt < 500
+							) {
+								return;
+							}
+							lastProgressAt = now;
+							lastProgressText = message;
+							void onUpdate({
+								content: [{ type: "text", text: message }],
+								details: undefined,
+							});
+						}
+					: undefined;
 				let search: Awaited<ReturnType<SearchManager["search"]>>;
 				try {
 					search = await manager.search(
@@ -207,7 +229,8 @@ Use grep, find, or read only when you already know the exact literal string (a s
 							maxLines: params.max_lines,
 							pathPrefix: pathPrefixFor(projectDir, params.path),
 						},
-						signal
+						signal,
+						onProgress
 					);
 				} catch (error) {
 					// Ollama down, model not pulled, aborted, or the store failed. The
@@ -328,7 +351,7 @@ Use grep, find, or read only when you already know the exact literal string (a s
 						);
 						return;
 					}
-					resetManager();
+					await resetManager();
 					const envOverride = process.env.PI_SEMSEARCH_MODEL;
 					const envNote =
 						envOverride && envOverride !== name

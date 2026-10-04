@@ -15,7 +15,7 @@ import {
 } from "./config.ts";
 import { createOllamaEmbedder } from "./embed/ollama.ts";
 import type { Embedder } from "./embed/types.ts";
-import { Indexer } from "./index/indexer.ts";
+import { Indexer, type ProgressFunc } from "./index/indexer.ts";
 import {
 	runSearch,
 	type SearchRequest,
@@ -31,9 +31,10 @@ export interface SearchManager {
 	search(
 		projectDir: string,
 		request: SearchRequest,
-		signal?: AbortSignal
+		signal?: AbortSignal,
+		onProgress?: ProgressFunc
 	): Promise<SearchResponse>;
-	close(): void;
+	close(): Promise<void>;
 }
 
 export class SemanticSearchManager implements SearchManager {
@@ -42,6 +43,7 @@ export class SemanticSearchManager implements SearchManager {
 	private chunkers?: Promise<ChunkerSet>;
 	private embedderInstance?: Embedder;
 	private readonly entries = new Map<string, { store: Store; indexer: Indexer }>();
+	private readonly inflight = new Set<Promise<unknown>>();
 
 	constructor(config?: SearchConfig) {
 		if (config) {
@@ -51,6 +53,16 @@ export class SemanticSearchManager implements SearchManager {
 		const { config: loaded, error } = loadConfigSafe();
 		this.config = loaded;
 		this.configError = error;
+	}
+
+	/** Track a promise so {@link close} can drain in-flight work before closing. */
+	private track<T>(promise: Promise<T>): Promise<T> {
+		this.inflight.add(promise);
+		void promise.then(
+			() => this.inflight.delete(promise),
+			() => this.inflight.delete(promise)
+		);
+		return promise;
 	}
 
 	private embedder(): Embedder {
@@ -71,6 +83,12 @@ export class SemanticSearchManager implements SearchManager {
 	}
 
 	async ensure(projectDir: string): Promise<{ store: Store; indexer: Indexer }> {
+		return this.track(this.ensureEntry(projectDir));
+	}
+
+	private async ensureEntry(
+		projectDir: string
+	): Promise<{ store: Store; indexer: Indexer }> {
 		const chunkers = await this.chunkersPromise();
 		const root = resolveProjectRoot(projectDir);
 		let entry = this.entries.get(root);
@@ -100,9 +118,19 @@ export class SemanticSearchManager implements SearchManager {
 	async search(
 		projectDir: string,
 		request: SearchRequest,
-		signal?: AbortSignal
+		signal?: AbortSignal,
+		onProgress?: ProgressFunc
 	): Promise<SearchResponse> {
-		const { store, indexer } = await this.ensure(projectDir);
+		return this.track(this.runQuery(projectDir, request, signal, onProgress));
+	}
+
+	private async runQuery(
+		projectDir: string,
+		request: SearchRequest,
+		signal?: AbortSignal,
+		onProgress?: ProgressFunc
+	): Promise<SearchResponse> {
+		const { store, indexer } = await this.ensureEntry(projectDir);
 		return runSearch({
 			store,
 			embedder: this.embedder(),
@@ -110,11 +138,20 @@ export class SemanticSearchManager implements SearchManager {
 			projectDir: indexer.projectDir,
 			request,
 			signal,
+			onProgress,
 		});
 	}
 
-	close(): void {
-		for (const entry of this.entries.values()) {
+	/**
+	 * Drain in-flight indexing and searches, then close every store. Closing a
+	 * shared connection while a run was mid-embed used to fail with a raw
+	 * "database is not open"; await the work instead.
+	 */
+	async close(): Promise<void> {
+		await Promise.allSettled([...this.inflight]);
+		const entries = [...this.entries.values()];
+		await Promise.all(entries.map((entry) => entry.indexer.whenIdle()));
+		for (const entry of entries) {
 			entry.store.close();
 		}
 		this.entries.clear();

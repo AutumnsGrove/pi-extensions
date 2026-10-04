@@ -356,6 +356,11 @@ export class Indexer {
 		return this.claimsFresh(tree, storedHash);
 	}
 
+	/** Resolve once no index run for this project is queued or running. */
+	async whenIdle(): Promise<void> {
+		await (projectLocks.get(this.projectDir) ?? Promise.resolve());
+	}
+
 	lastIndexedAt(): Date | undefined {
 		const raw = this.store.getMeta(META_LAST_INDEXED_AT);
 		if (!raw) {

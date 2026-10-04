@@ -115,7 +115,7 @@ function setup(options: SetupOptions = {}) {
 				},
 				text: `Found 1 results for ${request.query}`,
 			})),
-			close: () => {},
+			close: async () => {},
 		};
 	};
 
@@ -264,6 +264,31 @@ describe("semantic-search extension", () => {
 		await call("/project/src");
 		await call("/outside");
 		expect(seen).toEqual(["src", "src", ""]);
+	});
+
+	it("streams indexing progress through onUpdate", async () => {
+		const { tools } = setup({
+			search: async (_dir, _request, _signal, onProgress) => {
+				onProgress?.(0, 1, "indexing 0/1");
+				onProgress?.(1, 1, "indexing 1/1");
+				return {
+					output: { results: [], reindexed: true, indexedFiles: 1 },
+					text: "done",
+				};
+			},
+		});
+		const updates: string[] = [];
+		await tools.get("semantic_search").execute(
+			"id",
+			{ query: "x" },
+			undefined,
+			(update: { content: Array<{ text: string }> }) => {
+				updates.push(update.content[0]?.text ?? "");
+			},
+			fakeCtx()
+		);
+		expect(updates).toContain("indexing 0/1");
+		expect(updates).toContain("indexing 1/1");
 	});
 
 	it("executes index_status", async () => {

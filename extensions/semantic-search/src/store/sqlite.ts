@@ -59,6 +59,7 @@ function rowString(row: Record<string, unknown>, key: string): string {
 export class Store {
 	readonly dimensions: number;
 	private readonly db: DatabaseSync;
+	private closed = false;
 
 	constructor(db: DatabaseSync, dimensions: number) {
 		this.db = db;
@@ -299,6 +300,10 @@ export class Store {
 	}
 
 	close(): void {
+		if (this.closed) {
+			return;
+		}
+		this.closed = true;
 		this.db.close();
 	}
 

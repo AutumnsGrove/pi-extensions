@@ -314,4 +314,45 @@ describe("Indexer", () => {
 		await expect(indexer.index(false)).rejects.toThrow(/dimension mismatch/);
 		store.close();
 	});
+
+	it("whenIdle waits for an in-flight run", async () => {
+		const dir = project(START);
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let started = false;
+		const embedder: Embedder = {
+			modelName: "gated",
+			dimensions: KEYWORDS.length,
+			async embed(texts: readonly string[]): Promise<number[][]> {
+				started = true;
+				await gate;
+				return texts.map(() => KEYWORDS.map(() => 0));
+			},
+		};
+		const store = Store.open(":memory:", KEYWORDS.length);
+		const indexer = new Indexer({
+			store,
+			embedder,
+			chunkers,
+			maxChunkTokens: 512,
+			projectDir: dir,
+		});
+		const run = indexer.index(false).catch(() => undefined);
+		while (!started) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+		let idle = false;
+		const idlePromise = indexer.whenIdle().then(() => {
+			idle = true;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		expect(idle).toBe(false);
+		release();
+		await run;
+		await idlePromise;
+		expect(idle).toBe(true);
+		store.close();
+	});
 });
