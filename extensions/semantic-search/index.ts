@@ -17,6 +17,7 @@ import type {
 import { SemanticSearchManager, type SearchManager } from "./src/manager.ts";
 import { writeModelConfig } from "./src/config.ts";
 import { listKnownModels, modelDimensions } from "./src/embed/registry.ts";
+import { isRootUnindexable } from "./src/index/ignore.ts";
 import { formatIndexStatus } from "./src/search/format.ts";
 
 const STATUS_KEY = "semsearch";
@@ -72,6 +73,16 @@ function pathPrefixFor(projectDir: string, path: string | undefined): string {
 	return path;
 }
 
+/**
+ * Reason the given root must not be indexed, or undefined when it is fine.
+ * Refuses filesystem/system roots, the user's home directory, and roots with a
+ * `.pi-searchignore` catch-all so a stray session cannot walk the whole disk.
+ */
+function rootRefusal(projectDir: string): string | undefined {
+	const { unindexable, reason } = isRootUnindexable(projectDir);
+	return unindexable ? reason : undefined;
+}
+
 export function createSemanticSearchExtension(
 	createManager: () => SearchManager = () => new SemanticSearchManager()
 ): (pi: ExtensionAPI) => void {
@@ -106,6 +117,11 @@ export function createSemanticSearchExtension(
 
 		pi.on("session_start", (_event, ctx) => {
 			activeCtx = ctx;
+			const refusal = rootRefusal(ctx.cwd);
+			if (refusal) {
+				setIndexStatus(ctx, `semsearch: off (${refusal})`);
+				return;
+			}
 			void (async () => {
 				try {
 					setIndexStatus(ctx, "semsearch: indexing…");
@@ -148,6 +164,19 @@ Use grep, find, or read only when you already know the exact literal string (a s
 			annotations: { readOnlyHint: true },
 			async execute(_id, params: SearchArgs, _signal, _onUpdate, ctx) {
 				const projectDir = projectRoot(ctx, params);
+				const refusal = rootRefusal(projectDir);
+				if (refusal) {
+					return {
+						isError: true,
+						content: [
+							{
+								type: "text",
+								text: `Semantic search is disabled for this root (${refusal}). Use grep, find, or read instead.`,
+							},
+						],
+						details: { resultCount: 0, reindexed: false, results: [] },
+					};
+				}
 				const { output, text } = await manager.search(projectDir, {
 					query: params.query,
 					limit: params.limit,
@@ -184,6 +213,15 @@ Use grep, find, or read only when you already know the exact literal string (a s
 			annotations: { readOnlyHint: true },
 			async execute(_id, params: StatusArgs, _signal, _onUpdate, ctx) {
 				const projectDir = projectRoot(ctx, params);
+				const refusal = rootRefusal(projectDir);
+				if (refusal) {
+					return {
+						content: [
+							{ type: "text", text: `Index disabled for this root: ${refusal}.` },
+						],
+						details: { stale: false },
+					};
+				}
 				const { store, indexer } = await manager.ensure(projectDir);
 				const status = indexer.status();
 				const stale = !(await indexer.isFresh());
@@ -264,6 +302,15 @@ Use grep, find, or read only when you already know the exact literal string (a s
 						`Embedding model set to ${name} (${dims} dims); saved to ${path}. ` +
 							`A new index is built on the next search.${envNote}${fallbackNote}`,
 						"info"
+					);
+					return;
+				}
+
+				const refusal = rootRefusal(ctx.cwd);
+				if (refusal) {
+					ctx.ui.notify(
+						`Semantic search is disabled for this root (${refusal}).`,
+						"warning"
 					);
 					return;
 				}

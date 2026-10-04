@@ -1,5 +1,5 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -241,6 +241,31 @@ describe("semantic-search extension", () => {
 	it("does not register grep interception by default", () => {
 		const { handlers } = setup();
 		expect(handlers.has("tool_call")).toBe(false);
+	});
+
+	it("refuses to index an unindexable root", async () => {
+		const { tools, commands, handlers } = setup();
+		const ctx = fakeCtx(homedir());
+
+		const search = await tools
+			.get("semantic_search")
+			.execute("id", { query: "x" }, undefined, undefined, ctx);
+		expect(search.isError).toBe(true);
+		expect(search.content[0].text).toContain("disabled");
+
+		const status = await tools
+			.get("index_status")
+			.execute("id", {}, undefined, undefined, ctx);
+		expect(status.content[0].text).toContain("disabled");
+
+		for (const handler of handlers.get("session_start") ?? []) {
+			handler({ type: "session_start", reason: "startup" }, ctx);
+		}
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		expect(ctx.statuses.some((text) => text?.startsWith("semsearch: off"))).toBe(true);
+
+		await commands.get("semsearch").handler("status", ctx);
+		expect(ctx.notifications.at(-1)).toContain("disabled");
 	});
 });
 
