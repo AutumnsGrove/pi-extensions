@@ -4,7 +4,7 @@
  * context instead of whole files.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import type { SearchConfig } from "../config.ts";
 import { EmbedError } from "../embed/types.ts";
@@ -64,6 +64,12 @@ export function describeSearchError(error: unknown, config: SearchConfig): strin
 			"Until then, use grep, find, or read."
 		);
 	}
+	if (/node:sqlite|DatabaseSync|sqlite-vec|loadExtension|vec0/i.test(message)) {
+		return (
+			`The local vector store could not be opened: ${message}. This ` +
+			"requires a Node build with node:sqlite and a matching sqlite-vec binary."
+		);
+	}
 	return `Semantic search failed: ${message}`;
 }
 
@@ -73,6 +79,9 @@ const XML_ESCAPE: Record<string, string> = {
 	">": "&gt;",
 	'"': "&quot;",
 };
+
+/** Skip reading files larger than this just to render a snippet. */
+const MAX_SNIPPET_FILE_BYTES = 5 * 1024 * 1024;
 
 function xmlEscape(value: string): string {
 	return value.replace(/[&<>"]/g, (ch) => XML_ESCAPE[ch] ?? ch);
@@ -191,6 +200,11 @@ export function formatIndexStatus(info: IndexStatusInfo): string {
 export function readFileLines(projectPath: string, filePath: string): string[] {
 	try {
 		const path = isAbsolute(filePath) ? filePath : join(projectPath, filePath);
+		// Reading a huge file to show a few snippet lines is wasted memory and
+		// blocks the event loop; skip files beyond the indexing size cap.
+		if (statSync(path).size > MAX_SNIPPET_FILE_BYTES) {
+			return [];
+		}
 		return readFileSync(path, "utf8").split("\n");
 	} catch {
 		return [];

@@ -31,12 +31,18 @@ interface FakeCtx {
 	widgets: Array<string[] | undefined>;
 }
 
-function fakeCtx(cwd = "/project"): FakeCtx {
+function fakeCtx(cwd?: string): FakeCtx {
+	// Default to a real directory: the extension refuses to index paths that do
+	// not exist, and synthetic paths like "/project" would be rejected.
+	const resolvedCwd = cwd ?? mkdtempSync(join(tmpdir(), "semsearch-ext-"));
+	if (!cwd) {
+		dirs.push(resolvedCwd);
+	}
 	const notifications: string[] = [];
 	const statuses: Array<string | undefined> = [];
 	const widgets: Array<string[] | undefined> = [];
 	return {
-		cwd,
+		cwd: resolvedCwd,
 		ui: {
 			notify: (message) => notifications.push(message),
 			setStatus: (_key, value) => statuses.push(value),
@@ -261,7 +267,7 @@ describe("semantic-search extension", () => {
 				.get("semantic_search")
 				.execute("id", { query: "x", path }, undefined, undefined, ctx);
 		await call("./src/");
-		await call("/project/src");
+		await call(join(ctx.cwd, "src"));
 		await call("/outside");
 		expect(seen).toEqual(["src", "src", ""]);
 	});
@@ -339,6 +345,13 @@ describe("semantic-search extension", () => {
 
 		await commands.get("semsearch").handler("status", ctx);
 		expect(ctx.notifications.at(-1)).toContain("disabled");
+
+		const missingDir = join(tmpdir(), `semsearch-missing-${Date.now()}`);
+		const missing = await tools
+			.get("semantic_search")
+			.execute("id", { query: "x" }, undefined, undefined, fakeCtx(missingDir));
+		expect(missing.isError).toBe(true);
+		expect(missing.content[0].text).toContain("does not exist");
 	});
 });
 

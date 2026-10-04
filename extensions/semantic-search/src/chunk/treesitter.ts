@@ -77,7 +77,6 @@ export function createChunkerFromLanguage(
 	language: Language,
 	queries: QueryDef[]
 ): TreeSitterChunker {
-	const parser = createParser(language);
 	const rules: CompiledRule[] = queries.map((q) => ({
 		query: createQuery(language, q.pattern),
 		kind: q.kind,
@@ -87,42 +86,50 @@ export function createChunkerFromLanguage(
 	return {
 		kinds,
 		chunk(filePath: string, content: string): Chunk[] {
-			const tree = parser.parse(content);
-			if (!tree) {
-				return [];
-			}
-			const out: Chunk[] = [];
-			for (const rule of rules) {
-				for (const match of rule.query.matches(tree.rootNode)) {
-					let decl: TsNode | undefined;
-					let nameNode: TsNode | undefined;
-					for (const capture of match.captures) {
-						if (capture.name === "decl") {
-							decl = capture.node;
-						} else if (capture.name === "name") {
-							nameNode = capture.node;
-						}
-					}
-					if (!decl || !nameNode) {
-						continue;
-					}
-					const symbol = resolveSymbol(decl, nameNode.text, content);
-					let startLine = decl.startPosition.row + 1;
-					let startIndex = decl.startIndex;
-					const comment = findLeadingComments(decl);
-					if (comment) {
-						startLine = comment.startPosition.row + 1;
-						startIndex = comment.startIndex;
-					}
-					const endLine = decl.endPosition.row + 1;
-					const snippet = content.slice(startIndex, decl.endIndex);
-					out.push(
-						makeChunk(filePath, symbol, rule.kind, startLine, endLine, snippet)
-					);
+			// One parser per call, disposed in `finally`. A long-lived parser was
+			// never deleted, and a parse that threw leaked its tree.
+			const parser = createParser(language);
+			let tree: ReturnType<typeof parser.parse> | undefined;
+			try {
+				tree = parser.parse(content);
+				if (!tree) {
+					return [];
 				}
+				const out: Chunk[] = [];
+				for (const rule of rules) {
+					for (const match of rule.query.matches(tree.rootNode)) {
+						let decl: TsNode | undefined;
+						let nameNode: TsNode | undefined;
+						for (const capture of match.captures) {
+							if (capture.name === "decl") {
+								decl = capture.node;
+							} else if (capture.name === "name") {
+								nameNode = capture.node;
+							}
+						}
+						if (!decl || !nameNode) {
+							continue;
+						}
+						const symbol = resolveSymbol(decl, nameNode.text, content);
+						let startLine = decl.startPosition.row + 1;
+						let startIndex = decl.startIndex;
+						const comment = findLeadingComments(decl);
+						if (comment) {
+							startLine = comment.startPosition.row + 1;
+							startIndex = comment.startIndex;
+						}
+						const endLine = decl.endPosition.row + 1;
+						const snippet = content.slice(startIndex, decl.endIndex);
+						out.push(
+							makeChunk(filePath, symbol, rule.kind, startLine, endLine, snippet)
+						);
+					}
+				}
+				return deduplicateBySymbol(deduplicateByExactRange(out));
+			} finally {
+				tree?.delete();
+				parser.delete();
 			}
-			tree.delete();
-			return deduplicateBySymbol(deduplicateByExactRange(out));
 		},
 	};
 }
@@ -185,35 +192,28 @@ function isCommentNode(type: string): boolean {
 }
 
 /**
- * The runtime exposes `nextNamedSibling` but not `prevNamedSibling`, so walk
- * the parent's named children backwards to find the previous named sibling.
+ * Earliest comment immediately preceding `node`, or undefined. Walks the
+ * parent's named children once from the node's index; the old helper rebuilt
+ * that list on every step, which was quadratic on comment-dense files.
  */
-function previousNamedSibling(node: TsNode): TsNode | null {
+export function findLeadingComments(node: TsNode): TsNode | undefined {
 	const parent = node.parent;
 	if (!parent) {
-		return null;
+		return undefined;
 	}
 	const children = parent.namedChildren.filter(
 		(child): child is TsNode => child !== null
 	);
-	const index = children.findIndex((child) => child.equals(node));
+	let index = children.findIndex((child) => child.equals(node));
 	if (index <= 0) {
-		return null;
+		return undefined;
 	}
-	return children[index - 1] ?? null;
-}
-
-/** Earliest comment immediately preceding `node`, or undefined. */
-export function findLeadingComments(node: TsNode): TsNode | undefined {
 	let earliest: TsNode | undefined;
 	let nextRow = node.startPosition.row;
 	let commentLines = 0;
-	for (
-		let sibling = previousNamedSibling(node);
-		sibling;
-		sibling = previousNamedSibling(sibling)
-	) {
-		if (!isCommentNode(sibling.type)) {
+	for (index -= 1; index >= 0; index -= 1) {
+		const sibling = children[index];
+		if (!sibling || !isCommentNode(sibling.type)) {
 			break;
 		}
 		const endRow = sibling.endPosition.row;

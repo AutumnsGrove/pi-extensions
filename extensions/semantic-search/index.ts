@@ -8,6 +8,7 @@
  *  - `/semsearch` for status and forced re-index
  */
 
+import { existsSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { Type, type Static } from "typebox";
 import type {
@@ -98,6 +99,9 @@ function pathPrefixFor(projectDir: string, path: string | undefined): string {
  * `.pi-searchignore` catch-all so a stray session cannot walk the whole disk.
  */
 function rootRefusal(projectDir: string): string | undefined {
+	if (!existsSync(projectDir)) {
+		return "path does not exist";
+	}
 	const { unindexable, reason } = isRootUnindexable(projectDir);
 	return unindexable ? reason : undefined;
 }
@@ -406,7 +410,8 @@ Use grep, find, or read only when you already know the exact literal string (a s
 					return {
 						block: true,
 						reason:
-							"Use semantic_search for code discovery; grep/find are for exact literal strings you already know.",
+							"Use semantic_search for code discovery; grep/find are for exact literal strings you already know. " +
+							"Unset PI_SEMSEARCH_BLOCK_GREP to allow grep/find again.",
 					};
 				}
 				return undefined;

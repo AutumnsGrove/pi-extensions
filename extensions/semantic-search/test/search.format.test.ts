@@ -135,6 +135,14 @@ describe("describeSearchError", () => {
 		);
 	});
 
+	it("explains a vector-store load failure", () => {
+		const text = describeSearchError(
+			new Error("Extension load failed for sqlite-vec"),
+			config
+		);
+		expect(text).toContain("vector store");
+	});
+
 	it("falls back to a generic message", () => {
 		expect(describeSearchError(new Error("kaboom"), config)).toContain("kaboom");
 	});
@@ -158,6 +166,15 @@ describe("fillSnippets", () => {
 		const root = mkdtempSync(join(tmpdir(), "semsearch-format-"));
 		dirs.push(root);
 		const items = [item({ filePath: "missing.ts" })];
+		fillSnippets(root, items, 0);
+		expect(items[0]?.content).toBeUndefined();
+	});
+
+	it("skips files too large to read for a snippet", () => {
+		const root = mkdtempSync(join(tmpdir(), "semsearch-format-"));
+		dirs.push(root);
+		writeFileSync(join(root, "big.ts"), Buffer.alloc(5 * 1024 * 1024 + 1, 0x61));
+		const items = [item({ filePath: "big.ts" })];
 		fillSnippets(root, items, 0);
 		expect(items[0]?.content).toBeUndefined();
 	});

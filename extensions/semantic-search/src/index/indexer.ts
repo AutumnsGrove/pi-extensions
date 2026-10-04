@@ -261,9 +261,11 @@ export class Indexer {
 					data = await readFile(join(this.projectDir, relPath));
 				} catch {
 					// Permission denied or vanished: skip.
+					stats.filesSkipped += 1;
 					continue;
 				}
 				if (isBinaryContent(data)) {
+					stats.filesSkipped += 1;
 					continue;
 				}
 
