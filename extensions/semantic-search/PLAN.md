@@ -5,8 +5,9 @@ Native, local semantic code search for pi. A TypeScript port of the ~20% of
 chunking, incremental Merkle indexing, and a `semantic_search` tool the model
 actually reaches for.
 
-Status: **phase 1 done** — chunker layer green (Go, TS/TSX, JS/JSX, Python,
-Svelte, JSON, YAML, Shell; 48 viest tests). Phases 2–6 pending.
+Status: **phases 1–2 done** — chunker layer (Go, TS/TSX, JS/JSX, Python,
+Svelte, JSON, YAML, Shell) and the offline embed/store/split layer, 86 tests,
+verified end to end against local Ollama. Phases 3–6 pending.
 
 ## Decisions (locked)
 
@@ -136,6 +137,15 @@ the popular `tree-sitter-wasms` bundle is built for an old tree-sitter ABI and
 fails to load with current `web-tree-sitter` runtimes (verified: `getDylinkMetadata`
 throw). The VS Code package ships a runtime and grammar set built together, so
 versions cannot drift.
+
+**`node:sqlite` and `sqlite-vec` are loaded through `createRequire`:** Vite 5
+(the vitest bundler) does not know the newer `node:sqlite` builtin and fails to
+resolve it, and `sqlite-vec` is CommonJS. Loading both through `createRequire`
+keeps them working under Node, vitest, and pi's jiti loader, with full typing
+kept via `import type`.
+
+**Vector precision:** the store uses float32 vectors; the `vectorStorage`
+profile key exists but int8 quantization is deferred (see #Non-goals).
 
 **Grammar coverage:** go, typescript, tsx, javascript, python, bash. It does
 **not** ship svelte; we extract `<script>` blocks and re-parse with the TS
@@ -305,7 +315,7 @@ not, we stop.
 | --- | --- | --- |
 | 0 | `extensions/cost-tracker` (done first) | ✅ `/cost start` → `/cost stop` writes a row |
 | 1 | scaffold, chunkers (Go/TS/JS/Python/Svelte/JSON/YAML/bash) | ✅ 48 chunker tests green |
-| 2 | `embed` + `store` + `split` | offline store tests green |
+| 2 | `embed` + `store` + `split` | ✅ 38 offline tests green; real-Ollama smoke pass |
 | 3 | `ignore` + `merkle` + `indexer` | incremental index tests green |
 | 4 | `search` + `format` + pi wiring (tools/events/commands) | manual search in a real repo |
 | 5 | eval harness + first measured number | ≥3/5 tasks improve |
