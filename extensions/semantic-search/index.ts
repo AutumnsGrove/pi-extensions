@@ -83,19 +83,27 @@ export function createSemanticSearchExtension(
 			manager = createManager();
 		};
 
+		// Render on its own line below the editor instead of joining the shared
+		// footer status line, which other extensions already fill up.
+		const setIndexWidget = (ctx: ExtensionContext, text: string | undefined): void => {
+			ctx.ui.setWidget(STATUS_KEY, text ? [text] : undefined, {
+				placement: "belowEditor",
+			});
+		};
+
 		pi.on("session_start", (_event, ctx) => {
 			void (async () => {
 				try {
-					ctx.ui.setStatus(STATUS_KEY, "semsearch: indexing…");
+					setIndexWidget(ctx, "semsearch: indexing…");
 					const { store, indexer } = await manager.ensure(ctx.cwd);
 					const fresh = await indexer.ensureFresh();
 					const { totalChunks } = store.stats();
-					ctx.ui.setStatus(
-						STATUS_KEY,
+					setIndexWidget(
+						ctx,
 						`semsearch: ${totalChunks} chunks${fresh.reindexed ? " (updated)" : ""}`
 					);
 				} catch {
-					ctx.ui.setStatus(STATUS_KEY, undefined);
+					setIndexWidget(ctx, undefined);
 				}
 			})();
 		});
@@ -214,10 +222,7 @@ Use grep, find, or read only when you already know the exact literal string (a s
 				if (sub === "reindex") {
 					ctx.ui.notify("Re-indexing…", "info");
 					const stats = await indexer.index(true);
-					ctx.ui.setStatus(
-						STATUS_KEY,
-						`semsearch: ${store.stats().totalChunks} chunks`
-					);
+					setIndexWidget(ctx, `semsearch: ${store.stats().totalChunks} chunks`);
 					ctx.ui.notify(
 						`Re-indexed ${stats.indexedFiles} files (${stats.chunksCreated} chunks).`,
 						"info"

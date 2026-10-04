@@ -15,10 +15,12 @@ import {
 	formatUsd,
 	readActive,
 	readRuns,
+	readUsageForCwd,
 	renderCostTable,
 	startRun,
 	stopRun,
 	upsertCostBlock,
+	usageInWindow,
 	zeroUsage,
 } from "./ledger.ts";
 import type { CostUsage } from "./ledger.ts";
@@ -99,8 +101,18 @@ export default function costTracker(pi: ExtensionAPI): void {
 	const syncFromDisk = (ctx: ExtensionContext): void => {
 		const active = readActive();
 		if (active) {
+			// Restore the running total from session files so a reload does not
+			// reset the live figure to zero. The final total is recomputed the
+			// same way on stop.
 			live = zeroUsage();
 			liveStartedAt = active.startedAt;
+			try {
+				const since = Date.parse(active.startedAt);
+				const records = readUsageForCwd(active.cwd);
+				live = usageInWindow(records, since, Date.now()).usage;
+			} catch {
+				// Keep zero; stop still computes the authoritative total.
+			}
 		} else {
 			live = zeroUsage();
 			liveStartedAt = undefined;

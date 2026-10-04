@@ -144,6 +144,21 @@ describe("/cost command", () => {
 	});
 });
 
+describe("reload recovery", () => {
+	it("restores the running total from session files on reload", async () => {
+		const { commands, handlers, ctx } = setup();
+		await commands.get("cost")?.handler("start restore", ctx);
+		writeInWindowUsage(cwd);
+
+		const statuses: Array<string | undefined> = [];
+		ctx.ui.setStatus = (_key, text) => statuses.push(text);
+		for (const handler of handlers.get("session_start") ?? []) {
+			await handler({ type: "session_start", reason: "reload" }, ctx);
+		}
+		expect(statuses.some((text) => text?.includes("$0.250"))).toBe(true);
+	});
+});
+
 describe("live accumulation", () => {
 	it("adds assistant usage only while a run is active", async () => {
 		const { commands, handlers, ctx } = setup();

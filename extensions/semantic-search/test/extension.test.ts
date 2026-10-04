@@ -20,22 +20,31 @@ interface FakeCtx {
 	ui: {
 		notify: (message: string, level?: string) => void;
 		setStatus: (key: string, value: string | undefined) => void;
+		setWidget: (
+			key: string,
+			content: string[] | undefined,
+			options?: { placement?: string }
+		) => void;
 	};
 	notifications: string[];
 	statuses: Array<string | undefined>;
+	widgets: Array<string[] | undefined>;
 }
 
 function fakeCtx(cwd = "/project"): FakeCtx {
 	const notifications: string[] = [];
 	const statuses: Array<string | undefined> = [];
+	const widgets: Array<string[] | undefined> = [];
 	return {
 		cwd,
 		ui: {
 			notify: (message) => notifications.push(message),
 			setStatus: (_key, value) => statuses.push(value),
+			setWidget: (_key, content) => widgets.push(content),
 		},
 		notifications,
 		statuses,
+		widgets,
 	};
 }
 
@@ -132,6 +141,18 @@ describe("semantic-search extension", () => {
 		const tool = tools.get("semantic_search");
 		expect(tool.promptGuidelines.join(" ")).toMatch(/semantic_search first/);
 		expect(tool.annotations).toEqual({ readOnlyHint: true });
+	});
+
+	it("renders index status as a below-editor widget, not the status line", async () => {
+		const { handlers } = setup();
+		const ctx = fakeCtx();
+		for (const handler of handlers.get("session_start") ?? []) {
+			await handler({ type: "session_start", reason: "startup" }, ctx);
+		}
+		// The handler fires background work; let the promise chain settle.
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(ctx.widgets.some((widget) => widget?.[0]?.startsWith("semsearch:"))).toBe(true);
+		expect(ctx.statuses.length).toBe(0);
 	});
 
 	it("executes semantic_search and returns text plus details", async () => {
