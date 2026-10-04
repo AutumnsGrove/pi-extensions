@@ -6,8 +6,9 @@ chunking, incremental Merkle indexing, and a `semantic_search` tool the model
 actually reaches for.
 
 Status: **phases 1–4 done** — chunker layer, embed/store/split, ignore + Merkle
-+ indexer, and search/format + pi wiring (145 extension tests), verified end to
-end against local Ollama. Phases 5–6 pending (eval harness, LM Studio/polish).
++ indexer, and search/format + pi wiring, with configurable Ollama models
+(`/semsearch model`). 150 extension tests, verified end to end against local
+Ollama. Phases 5–6 pending (eval harness, polish).
 
 ## Decisions (locked)
 
@@ -16,7 +17,7 @@ end against local Ollama. Phases 5–6 pending (eval harness, LM Studio/polish).
 | Form factor | Native pi extension (tools + events + commands), **not** an MCP bridge |
 | Languages, day one | Go, TS/TSX, JS/JSX, Python, Svelte, JSON, YAML, Shell |
 | Incrementality | Merkle diff + changed-file-only embedding from day one |
-| Embeddings | Ollama primary; LM Studio via OpenAI-compatible `/v1/embeddings` as a thin add-on |
+| Embeddings | Ollama only; model selectable via env, config file, or `/semsearch model` |
 | Vector store | `node:sqlite` (built-in) + `sqlite-vec` npm (0.1.9, same version lumen vendors) |
 | Chunking | `@vscode/tree-sitter-wasm` (matched runtime + grammars) |
 | Process model | Test-first (TDD); mirror lumen's Go tests where they apply |
@@ -66,7 +67,6 @@ extensions/semantic-search/
     embed/
       registry.ts              # KnownModels, dims, context, min-score floor
       ollama.ts                # POST /api/embed, batched
-      lmstudio.ts              # POST /v1/embeddings
     store/
       schema.ts                # tables + vec0 virtual table
       sqlite.ts                # open, upsert, delete, meta, stats
@@ -161,8 +161,8 @@ YAML use the structured chunker.
 | `on("session_start")` | start background indexing; set `ctx.ui.setStatus("semsearch", …)` |
 | `on("before_agent_start")` | inject compact index-readiness note when useful |
 | `on("tool_call")` | intercept `grep`/`find`/`bash`; either suggest or auto-answer |
-| `registerCommand("semsearch")` | `status`, `reindex`, `doctor` |
-| `registerCommand("semsearch-model")` | switch Ollama model (creates new index) |
+| `registerCommand("semsearch")` | `status`, `reindex`, `model [name] [dims]` |
+| config file | `~/.pi/agent/semantic-search.json` selects the embedding model |
 
 Exposure: `semantic_search` is `direct`; `index_status` may be `deferred`.
 
@@ -238,11 +238,11 @@ Mirror `merkle_test.go`: `BuildTree_WithGitignore`, `WithNestedGitignore`,
 `CollectFilePaths_SkipsSymlinks`, `_SkipsLargeFiles`, `_SkipsPermissionDeniedFile`,
 `Diff_NoChanges`, `_DetectsModifiedFile`, `_DetectsAddedAndRemovedFiles`.
 
-### 10. `test/embed.ollama.test.ts` / `test/embed.lmstudio.test.ts`
+### 10. `test/embed.ollama.test.ts`
 
-Mirror `ollama_test.go` / `lmstudio_test.go` with a mocked `fetch`:
+Mirror `ollama_test.go` with a mocked `fetch`:
 `Embed`, `Batching`, `Dimensions`, `ModelName`, `ErrorHandling`,
-`ContextCancelledStopsRetry`, `NumCtx`; LM Studio `OrderingByIndex`.
+`ContextCancelledStopsRetry`, `NumCtx`.
 Failover subset mirroring `failover_test.go`: `FirstHealthy`, `OnEmbedError`,
 `4xxNoFailover`, `AllExhausted`, `DimensionsReflectActive`, `CancellationStopsFallbackHealthProbe`.
 
@@ -319,7 +319,7 @@ not, we stop.
 | 3 | `ignore` + `merkle` + `indexer` | ✅ 34 tests green; real-Ollama incremental pass |
 | 4 | `search` + `format` + pi wiring (tools/events/commands) | ✅ 25 tests green; real-Ollama tool-pipeline smoke |
 | 5 | eval harness + first measured number | ≥3/5 tasks improve |
-| 6 | polish: LM Studio, `semsearch-model`, docs | — |
+| 6 | polish: model switching UX, docs | — |
 
 ## Risks
 

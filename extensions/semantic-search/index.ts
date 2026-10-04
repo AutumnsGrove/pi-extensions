@@ -15,6 +15,8 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { SemanticSearchManager, type SearchManager } from "./src/manager.ts";
+import { writeModelConfig } from "./src/config.ts";
+import { listKnownModels, modelDimensions } from "./src/embed/registry.ts";
 import { formatIndexStatus } from "./src/search/format.ts";
 
 const STATUS_KEY = "semsearch";
@@ -74,7 +76,12 @@ export function createSemanticSearchExtension(
 	createManager: () => SearchManager = () => new SemanticSearchManager()
 ): (pi: ExtensionAPI) => void {
 	return function semanticSearch(pi: ExtensionAPI): void {
-		const manager = createManager();
+		let manager = createManager();
+
+		const resetManager = (): void => {
+			manager.close();
+			manager = createManager();
+		};
 
 		pi.on("session_start", (_event, ctx) => {
 			void (async () => {
@@ -168,9 +175,41 @@ Use grep, find, or read only when you already know the exact literal string (a s
 		});
 
 		pi.registerCommand("semsearch", {
-			description: "Semantic search index: status | reindex",
+			description: "Semantic search index: status | reindex | model [name] [dims]",
 			handler: async (args, ctx) => {
-				const sub = args.trim().split(/\s+/)[0] ?? "";
+				const parts = args.trim().split(/\s+/).filter(Boolean);
+				const sub = parts[0] ?? "";
+
+				if (sub === "model") {
+					const name = parts[1];
+					if (!name) {
+						ctx.ui.notify(
+							`Current model: ${manager.config.model} (${manager.config.dimensions} dims)\n` +
+								`Known models: ${listKnownModels().join(", ")}\n` +
+								`Usage: /semsearch model <name> [dimensions]`,
+							"info"
+						);
+						return;
+					}
+					const dimsArg = parts[2] ? Number.parseInt(parts[2], 10) : undefined;
+					const dims = dimsArg ?? modelDimensions(name);
+					if (dims === undefined) {
+						ctx.ui.notify(
+							`Unknown model "${name}"; provide its dimensions: /semsearch model ${name} <dims>`,
+							"warning"
+						);
+						return;
+					}
+					const path = writeModelConfig(name, dimsArg);
+					resetManager();
+					ctx.ui.notify(
+						`Embedding model set to ${name} (${dims} dims); saved to ${path}. ` +
+							"A new index is built on the next search.",
+						"info"
+					);
+					return;
+				}
+
 				const { store, indexer } = await manager.ensure(ctx.cwd);
 				if (sub === "reindex") {
 					ctx.ui.notify("Re-indexing…", "info");

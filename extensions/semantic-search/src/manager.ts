@@ -8,12 +8,10 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { buildChunkers, type ChunkerSet } from "./chunk/index.ts";
 import {
-	BACKEND_LMSTUDIO,
 	dbPathForProject,
 	loadConfig,
 	type SearchConfig,
 } from "./config.ts";
-import { createLMStudioEmbedder } from "./embed/lmstudio.ts";
 import { createOllamaEmbedder } from "./embed/ollama.ts";
 import type { Embedder } from "./embed/types.ts";
 import { Indexer } from "./index/indexer.ts";
@@ -43,19 +41,12 @@ export class SemanticSearchManager implements SearchManager {
 
 	private embedder(): Embedder {
 		if (!this.embedderInstance) {
-			this.embedderInstance =
-				this.config.backend === BACKEND_LMSTUDIO
-					? createLMStudioEmbedder({
-							model: this.config.model,
-							dimensions: this.config.dimensions,
-							baseUrl: this.config.baseUrl,
-						})
-					: createOllamaEmbedder({
-							model: this.config.model,
-							dimensions: this.config.dimensions,
-							contextLength: this.config.contextLength,
-							baseUrl: this.config.baseUrl,
-						});
+			this.embedderInstance = createOllamaEmbedder({
+				model: this.config.model,
+				dimensions: this.config.dimensions,
+				contextLength: this.config.contextLength,
+				baseUrl: this.config.baseUrl,
+			});
 		}
 		return this.embedderInstance;
 	}

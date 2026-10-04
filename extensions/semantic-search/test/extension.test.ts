@@ -1,7 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createSemanticSearchExtension } from "../index.ts";
 import type { SearchManager } from "../src/manager.ts";
+
+const dirs: string[] = [];
+
+afterEach(() => {
+	for (const dir of dirs.splice(0)) {
+		rmSync(dir, { recursive: true, force: true });
+	}
+	delete process.env.PI_SEMSEARCH_CONFIG;
+});
 
 interface FakeCtx {
 	cwd: string;
@@ -43,6 +55,7 @@ function setup() {
 	} as unknown as ExtensionAPI;
 
 	let forcedReindex = false;
+	let managerCount = 0;
 	const store = { stats: () => ({ totalFiles: 3, totalChunks: 10 }) };
 	const indexer = {
 		ensureFresh: async () => ({ reindexed: false, stats: { indexedFiles: 0 } }),
@@ -59,36 +72,38 @@ function setup() {
 			lastIndexError: "",
 		}),
 	};
-	const manager: SearchManager = {
-		config: {
-			backend: "ollama",
-			model: "m",
-			dimensions: 2,
-			baseUrl: "http://localhost:11434",
-			maxChunkTokens: 512,
-			vectorStorage: "float32",
-		},
-		ensure: async () => ({ store: store as never, indexer: indexer as never }),
-		search: async (_dir, request) => ({
-			output: {
-				results: [
-					{
-						filePath: "src/a.ts",
-						symbol: "alpha",
-						kind: "function",
-						startLine: 1,
-						endLine: 2,
-						score: 0.9,
-					},
-				],
-				reindexed: false,
+	const createManager = (): SearchManager => {
+		managerCount += 1;
+		return {
+			config: {
+				model: "ordis/jina-embeddings-v2-base-code",
+				dimensions: 768,
+				baseUrl: "http://localhost:11434",
+				maxChunkTokens: 512,
+				vectorStorage: "float32",
 			},
-			text: `Found 1 results for ${request.query}`,
-		}),
-		close: () => {},
+			ensure: async () => ({ store: store as never, indexer: indexer as never }),
+			search: async (_dir, request) => ({
+				output: {
+					results: [
+						{
+							filePath: "src/a.ts",
+							symbol: "alpha",
+							kind: "function",
+							startLine: 1,
+							endLine: 2,
+							score: 0.9,
+						},
+					],
+					reindexed: false,
+				},
+				text: `Found 1 results for ${request.query}`,
+			}),
+			close: () => {},
+		};
 	};
 
-	const extension = createSemanticSearchExtension(() => manager);
+	const extension = createSemanticSearchExtension(createManager);
 	extension(pi);
 	return {
 		tools,
@@ -96,6 +111,9 @@ function setup() {
 		handlers,
 		get forcedReindex() {
 			return forcedReindex;
+		},
+		get managerCount() {
+			return managerCount;
 		},
 	};
 }
@@ -149,5 +167,52 @@ describe("semantic-search extension", () => {
 	it("does not register grep interception by default", () => {
 		const { handlers } = setup();
 		expect(handlers.has("tool_call")).toBe(false);
+	});
+});
+
+describe("/semsearch model", () => {
+	it("shows the current model when called without an argument", async () => {
+		const harness = setup();
+		const ctx = fakeCtx();
+		await harness.commands.get("semsearch").handler("model", ctx);
+		expect(ctx.notifications.at(-1)).toContain("ordis/jina-embeddings-v2-base-code");
+		expect(harness.managerCount).toBe(1);
+	});
+
+	it("switches the model, persists it, and recreates the manager", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "semsearch-model-"));
+		dirs.push(dir);
+		const configFile = join(dir, "config.json");
+		process.env.PI_SEMSEARCH_CONFIG = configFile;
+
+		const harness = setup();
+		const ctx = fakeCtx();
+		await harness.commands.get("semsearch").handler("model qwen3-embedding:8b", ctx);
+
+		expect(harness.managerCount).toBe(2);
+		expect(ctx.notifications.at(-1)).toContain("qwen3-embedding:8b");
+		const saved = JSON.parse(readFileSync(configFile, "utf8")) as { model: string };
+		expect(saved.model).toBe("qwen3-embedding:8b");
+	});
+
+	it("requires explicit dimensions for an unknown model", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "semsearch-model-"));
+		dirs.push(dir);
+		const configFile = join(dir, "config.json");
+		process.env.PI_SEMSEARCH_CONFIG = configFile;
+
+		const harness = setup();
+		const ctx = fakeCtx();
+		await harness.commands.get("semsearch").handler("model mystery-model", ctx);
+		expect(ctx.notifications.at(-1)).toContain("provide its dimensions");
+		expect(harness.managerCount).toBe(1);
+
+		await harness.commands.get("semsearch").handler("model mystery-model 1024", ctx);
+		expect(harness.managerCount).toBe(2);
+		const saved = JSON.parse(readFileSync(configFile, "utf8")) as {
+			model: string;
+			dimensions: number;
+		};
+		expect(saved).toEqual({ model: "mystery-model", dimensions: 1024 });
 	});
 });

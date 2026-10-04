@@ -1,14 +1,24 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-	BACKEND_LMSTUDIO,
 	INDEX_VERSION,
+	agentDir,
 	dataDir,
 	dbPathForProject,
+	defaultConfigFile,
 	gitIdentity,
 	loadConfig,
+	readConfigFile,
+	writeModelConfig,
 } from "../src/config.ts";
 
 const dirs: string[] = [];
@@ -37,29 +47,26 @@ function profile(overrides: Partial<Parameters<typeof dbPathForProject>[0]> = {}
 }
 
 describe("loadConfig", () => {
-	it("uses the Ollama default with no environment", () => {
-		const config = loadConfig({});
-		expect(config.backend).toBe("ollama");
+	it("uses the Ollama default with no environment or file", () => {
+		const config = loadConfig({}, null);
 		expect(config.model).toBe("ordis/jina-embeddings-v2-base-code");
 		expect(config.dimensions).toBe(768);
 		expect(config.contextLength).toBe(8192);
 		expect(config.maxChunkTokens).toBe(512);
-	});
-
-	it("defaults to the LM Studio model for the lmstudio backend", () => {
-		const config = loadConfig({ PI_SEMSEARCH_BACKEND: BACKEND_LMSTUDIO });
-		expect(config.model).toBe("nomic-ai/nomic-embed-code-GGUF");
-		expect(config.dimensions).toBe(3584);
+		expect(config.baseUrl).toBe("http://localhost:11434");
 	});
 
 	it("honours env overrides", () => {
-		const config = loadConfig({
-			PI_SEMSEARCH_MODEL: "custom-model",
-			PI_SEMSEARCH_EMBED_DIMS: "128",
-			PI_SEMSEARCH_EMBED_CTX: "2048",
-			PI_SEMSEARCH_MAX_CHUNK_TOKENS: "256",
-			OLLAMA_HOST: "http://ollama:11434",
-		});
+		const config = loadConfig(
+			{
+				PI_SEMSEARCH_MODEL: "custom-model",
+				PI_SEMSEARCH_EMBED_DIMS: "128",
+				PI_SEMSEARCH_EMBED_CTX: "2048",
+				PI_SEMSEARCH_MAX_CHUNK_TOKENS: "256",
+				OLLAMA_HOST: "http://ollama:11434",
+			},
+			null
+		);
 		expect(config.model).toBe("custom-model");
 		expect(config.dimensions).toBe(128);
 		expect(config.contextLength).toBe(2048);
@@ -68,16 +75,77 @@ describe("loadConfig", () => {
 	});
 
 	it("throws for an unknown model with no dimensions", () => {
-		expect(() => loadConfig({ PI_SEMSEARCH_MODEL: "mystery" })).toThrow(
+		expect(() => loadConfig({ PI_SEMSEARCH_MODEL: "mystery" }, null)).toThrow(
 			/PI_SEMSEARCH_EMBED_DIMS/
 		);
 	});
 
-	it("resolves model aliases", () => {
-		const config = loadConfig({
-			PI_SEMSEARCH_MODEL: "text-embedding-nomic-embed-code",
+	it("resolves a known non-default model from the registry", () => {
+		const config = loadConfig({ PI_SEMSEARCH_MODEL: "qwen3-embedding:8b" }, null);
+		expect(config.dimensions).toBe(4096);
+		expect(config.contextLength).toBe(40960);
+	});
+
+	it("reads the config file and lets env override it", () => {
+		const dir = tempDir();
+		const file = join(dir, "semantic-search.json");
+		writeFileSync(file, JSON.stringify({ model: "all-minilm", maxChunkTokens: 256 }));
+		const fromFile = loadConfig({}, file);
+		expect(fromFile.model).toBe("all-minilm");
+		expect(fromFile.dimensions).toBe(384);
+		expect(fromFile.maxChunkTokens).toBe(256);
+
+		const fromEnv = loadConfig({ PI_SEMSEARCH_MODEL: "nomic-embed-text" }, file);
+		expect(fromEnv.model).toBe("nomic-embed-text");
+		expect(fromEnv.dimensions).toBe(768);
+	});
+});
+
+describe("config file", () => {
+	it("defaults under the pi agent dir, honouring PI_CODING_AGENT_DIR", () => {
+		expect(agentDir({ PI_CODING_AGENT_DIR: "/custom" })).toBe("/custom");
+		expect(defaultConfigFile({ PI_CODING_AGENT_DIR: "/custom" })).toBe(
+			"/custom/semantic-search.json"
+		);
+	});
+
+	it("writes a model selection and reads it back", () => {
+		const dir = tempDir();
+		const env = { PI_SEMSEARCH_CONFIG: join(dir, "config.json") };
+		const path = writeModelConfig("qwen3-embedding:8b", undefined, env);
+		expect(path).toBe(env.PI_SEMSEARCH_CONFIG);
+		expect(readConfigFile(path).model).toBe("qwen3-embedding:8b");
+		expect(loadConfig(env, path).dimensions).toBe(4096);
+	});
+
+	it("persists explicit dimensions for an unknown model", () => {
+		const dir = tempDir();
+		const env = { PI_SEMSEARCH_CONFIG: join(dir, "config.json") };
+		writeModelConfig("my-local-model", 1024, env);
+		expect(readConfigFile(env.PI_SEMSEARCH_CONFIG)).toEqual({
+			model: "my-local-model",
+			dimensions: 1024,
 		});
-		expect(config.dimensions).toBe(3584);
+		expect(loadConfig(env, env.PI_SEMSEARCH_CONFIG).dimensions).toBe(1024);
+	});
+
+	it("clears stale dimensions when switching to a known model", () => {
+		const dir = tempDir();
+		const env = { PI_SEMSEARCH_CONFIG: join(dir, "config.json") };
+		writeModelConfig("my-local-model", 1024, env);
+		writeModelConfig("all-minilm", undefined, env);
+		const file = readConfigFile(env.PI_SEMSEARCH_CONFIG);
+		expect(file.model).toBe("all-minilm");
+		expect(file.dimensions).toBeUndefined();
+	});
+
+	it("ignores a malformed config file", () => {
+		const dir = tempDir();
+		const file = join(dir, "bad.json");
+		writeFileSync(file, "{ not json");
+		expect(readConfigFile(file)).toEqual({});
+		expect(loadConfig({}, file).model).toBe("ordis/jina-embeddings-v2-base-code");
+		expect(readFileSync(file, "utf8")).toBe("{ not json");
 	});
 });
 
@@ -91,7 +159,7 @@ describe("paths", () => {
 		expect(base).toBe(dbPathForProject(profile(), {}));
 		expect(dbPathForProject(profile({ model: "nomic-embed-text" }), {})).not.toBe(base);
 		expect(dbPathForProject(profile({ dimensions: 384 }), {})).not.toBe(base);
-		expect(base).toContain(`pi-semantic-search`);
+		expect(base).toContain("pi-semantic-search");
 		expect(INDEX_VERSION).toBeGreaterThan(0);
 	});
 });

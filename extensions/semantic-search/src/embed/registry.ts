@@ -4,25 +4,20 @@
  * Dimensions and context length are configured per model; `minScore` is the
  * default noise floor for cosine similarity, and higher-dimensional spaces need
  * a lower floor (concentration of measure).
+ *
+ * Ollama is the only backend. To use a model that is not listed here, set
+ * `dimensions` in the config file or `PI_SEMSEARCH_EMBED_DIMS`.
  */
 
 export interface ModelSpec {
 	dims: number;
 	ctxLength: number;
-	/** "ollama", "lmstudio", or undefined for both. */
-	backend?: string;
 	/** Default minimum cosine similarity for search. */
 	minScore: number;
 }
 
 export const DEFAULT_OLLAMA_MODEL = "ordis/jina-embeddings-v2-base-code";
-export const DEFAULT_LMSTUDIO_MODEL = "nomic-ai/nomic-embed-code-GGUF";
 export const DEFAULT_MODEL = DEFAULT_OLLAMA_MODEL;
-
-/** LM Studio exposes some models under different names than their repo id. */
-export const MODEL_ALIASES: Record<string, string> = {
-	"text-embedding-nomic-embed-code": "nomic-ai/nomic-embed-code-GGUF",
-};
 
 export const DEFAULT_MIN_SCORE = 0.2;
 
@@ -30,30 +25,27 @@ export const KNOWN_MODELS: Record<string, ModelSpec> = {
 	"ordis/jina-embeddings-v2-base-code": {
 		dims: 768,
 		ctxLength: 8192,
-		backend: "ollama",
 		minScore: 0.35,
 	},
-	"nomic-embed-text": { dims: 768, ctxLength: 8192, backend: "ollama", minScore: 0.3 },
-	"nomic-ai/nomic-embed-code-GGUF": {
-		dims: 3584,
-		ctxLength: 8192,
-		backend: "lmstudio",
-		minScore: 0.15,
-	},
-	"qwen3-embedding:8b": { dims: 4096, ctxLength: 40960, backend: "ollama", minScore: 0.3 },
-	"qwen3-embedding:4b": { dims: 2560, ctxLength: 40960, backend: "ollama", minScore: 0.3 },
-	"qwen3-embedding:0.6b": { dims: 1024, ctxLength: 32768, backend: "ollama", minScore: 0.3 },
-	"all-minilm": { dims: 384, ctxLength: 512, backend: "ollama", minScore: 0.2 },
+	"nomic-embed-text": { dims: 768, ctxLength: 8192, minScore: 0.3 },
+	"qwen3-embedding:8b": { dims: 4096, ctxLength: 40960, minScore: 0.3 },
+	"qwen3-embedding:4b": { dims: 2560, ctxLength: 40960, minScore: 0.3 },
+	"qwen3-embedding:0.6b": { dims: 1024, ctxLength: 32768, minScore: 0.3 },
+	"all-minilm": { dims: 384, ctxLength: 512, minScore: 0.2 },
 	"manutic/nomic-embed-code:7b": {
 		dims: 3584,
 		ctxLength: 32768,
-		backend: "ollama",
 		minScore: 0.15,
 	},
 };
 
 export function canonicalModel(model: string): string {
-	return MODEL_ALIASES[model] ?? model;
+	return model;
+}
+
+/** Known model names, for the `/semsearch model` picker. */
+export function listKnownModels(): string[] {
+	return Object.keys(KNOWN_MODELS);
 }
 
 export function modelSpec(model: string): ModelSpec | undefined {
