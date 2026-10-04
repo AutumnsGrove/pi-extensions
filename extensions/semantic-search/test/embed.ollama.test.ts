@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EmbedError } from "../src/embed/types.ts";
+import { chunkBatch, EmbedError } from "../src/embed/types.ts";
 import { createOllamaEmbedder } from "../src/embed/ollama.ts";
 
 interface Call {
@@ -143,5 +143,40 @@ describe("OllamaEmbedder", () => {
 			/aborted/
 		);
 		expect(calls).toHaveLength(0);
+	});
+
+	it("does not retry malformed JSON", async () => {
+		const { fetchImpl, calls } = mockFetch(
+			() => new Response("not json", { status: 200 })
+		);
+		const embedder = createOllamaEmbedder({
+			model: "m",
+			dimensions: 1,
+			maxRetries: 3,
+			baseDelayMs: 1,
+			fetchImpl,
+		});
+		await expect(embedder.embed(["a"])).rejects.toThrow(/invalid JSON/);
+		expect(calls).toHaveLength(1);
+	});
+
+	it("does not retry a wrong embedding count", async () => {
+		const { fetchImpl, calls } = mockFetch(() =>
+			jsonResponse({ embeddings: [[1], [2]] })
+		);
+		const embedder = createOllamaEmbedder({
+			model: "m",
+			dimensions: 1,
+			maxRetries: 3,
+			baseDelayMs: 1,
+			fetchImpl,
+		});
+		await expect(embedder.embed(["a"])).rejects.toThrow(/embeddings/);
+		expect(calls).toHaveLength(1);
+	});
+
+	it("rejects an invalid batch size instead of looping", () => {
+		expect(() => chunkBatch([1, 2], 0)).toThrow(/batch size/);
+		expect(() => chunkBatch([1, 2], -3)).toThrow(/batch size/);
 	});
 });

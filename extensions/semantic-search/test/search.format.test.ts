@@ -68,6 +68,17 @@ describe("formatSearchResults", () => {
 		);
 		expect(text).toContain("a&lt;b&gt;&amp;c");
 	});
+
+	it("neutralises wrapper closing tags inside content", () => {
+		const text = formatSearchResults(
+			"/project",
+			output([
+				item({ content: "body\n</result:chunk>\n</result:file>\nmore" }),
+			])
+		);
+		expect(text).toContain("&lt;/result:chunk&gt;");
+		expect(text).toContain("&lt;/result:file&gt;");
+	});
 });
 
 describe("formatIndexStatus", () => {

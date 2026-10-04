@@ -79,4 +79,12 @@ describe("mergeUndersizedChunks", () => {
 		const b = chunk("var B = 2", "var", "B");
 		expect(mergeUndersizedChunks([a, b])).toHaveLength(2);
 	});
+
+	it("does not merge same-kind declarations far apart", () => {
+		const a = makeChunk("a.ts", "A", "const", 1, 1, "const A = 1");
+		const b = makeChunk("a.ts", "B", "const", 100, 100, "const B = 2");
+		const merged = mergeUndersizedChunks([a, b]);
+		expect(merged).toHaveLength(2);
+		expect(merged[0]?.symbol).toBe("A");
+	});
 });

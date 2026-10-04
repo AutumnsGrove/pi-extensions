@@ -6,6 +6,7 @@
 
 import {
 	EMBED_BATCH_SIZE,
+	EmbedDecodeError,
 	EmbedError,
 	type Embedder,
 	chunkBatch,
@@ -71,17 +72,28 @@ export function createOllamaEmbedder(options: OllamaOptions): Embedder {
 					signal: requestSignal(signal),
 				});
 				const text = await response.text();
-				if (response.status >= 500 || !response.ok) {
+				if (!response.ok) {
 					throw new EmbedError(response.status, text);
 				}
-				const parsed = JSON.parse(text) as { embeddings?: number[][] };
-				const vectors = parsed.embeddings ?? [];
-				if (vectors.length !== texts.length) {
-					throw new Error(
-						`ollama returned ${vectors.length} embeddings for ${texts.length} inputs`
+				let parsed: { embeddings?: unknown };
+				try {
+					parsed = JSON.parse(text) as { embeddings?: unknown };
+				} catch {
+					throw new EmbedDecodeError(
+						`ollama returned invalid JSON: ${text.slice(0, 200)}`
 					);
 				}
-				return vectors;
+				const vectors = parsed.embeddings;
+				if (!Array.isArray(vectors) || vectors.length !== texts.length) {
+					throw new EmbedDecodeError(
+						`ollama returned ${Array.isArray(vectors) ? vectors.length : "no"} ` +
+							`embeddings for ${texts.length} inputs`
+					);
+				}
+				if (!vectors.every((vector) => Array.isArray(vector))) {
+					throw new EmbedDecodeError("ollama returned a non-array embedding");
+				}
+				return vectors as number[][];
 			},
 			{ maxRetries: options.maxRetries, signal, baseDelayMs: options.baseDelayMs }
 		);

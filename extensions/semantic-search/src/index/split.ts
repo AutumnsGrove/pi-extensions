@@ -15,6 +15,8 @@ import { type Chunk, type ChunkKind, makeChunk } from "../chunk/types.ts";
 const OVERLAP_LINES = 10;
 const HEADER_LINES = 5;
 const MIN_MERGE_TOKENS = 50;
+/** Maximum line gap between tiny declarations that may still be merged. */
+const MAX_MERGE_GAP = 2;
 
 export function splitOversizedChunks(
 	chunks: readonly Chunk[],
@@ -192,12 +194,20 @@ export function mergeUndersizedChunks(chunks: readonly Chunk[]): Chunk[] {
 		const group: Chunk[] = [chunk];
 		while (i + group.length < chunks.length) {
 			const next = chunks[i + group.length];
+			const previous = group[group.length - 1];
 			if (
 				!next ||
 				next.filePath !== chunk.filePath ||
 				next.kind !== chunk.kind ||
 				next.content.length >= minChars
 			) {
+				break;
+			}
+			// Only merge declarations that are adjacent in the source. Without
+			// this, two tiny same-kind chunks hundreds of lines apart collapsed
+			// into one spanning chunk whose embedded text omitted the code between
+			// them but whose line range included it.
+			if (previous && next.startLine > previous.endLine + MAX_MERGE_GAP) {
 				break;
 			}
 			group.push(next);

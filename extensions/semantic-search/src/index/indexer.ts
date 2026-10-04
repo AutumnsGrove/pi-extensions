@@ -272,6 +272,11 @@ export class Indexer {
 				this.store.upsertFile(relPath, "");
 
 				let chunks = this.chunkers.chunk(relPath, data.toString("utf8"));
+				// Chunkers emit rule-major (grouped by pattern), not source order.
+				// Sort so splitting and merging see the file top to bottom.
+				chunks.sort(
+					(a, b) => a.startLine - b.startLine || a.endLine - b.endLine
+				);
 				chunks = splitOversizedChunks(chunks, this.maxChunkTokens);
 				chunks = mergeUndersizedChunks(chunks);
 				// Merging can produce chunks over the limit; keep each within budget.

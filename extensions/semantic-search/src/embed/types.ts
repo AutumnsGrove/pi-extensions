@@ -23,10 +23,24 @@ export class EmbedError extends Error {
 	}
 }
 
+/**
+ * A response that is structurally wrong (bad JSON, wrong embedding count).
+ * Retrying cannot fix it, so it is never treated as transient.
+ */
+export class EmbedDecodeError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "EmbedDecodeError";
+	}
+}
+
 export const EMBED_BATCH_SIZE = 32;
 export const EMBED_MAX_RETRIES = 3;
 
 export function chunkBatch<T>(items: readonly T[], size = EMBED_BATCH_SIZE): T[][] {
+	if (!Number.isInteger(size) || size < 1) {
+		throw new Error(`invalid embed batch size: ${size}`);
+	}
 	const batches: T[][] = [];
 	for (let i = 0; i < items.length; i += size) {
 		batches.push(items.slice(i, i + size));
@@ -87,6 +101,10 @@ export async function withRetry<T>(
 export function isRetryable(error: unknown): boolean {
 	if (error instanceof EmbedError) {
 		return error.statusCode >= 500;
+	}
+	// A structurally-invalid response is deterministic; retrying is pointless.
+	if (error instanceof EmbedDecodeError) {
+		return false;
 	}
 	// Network / abort errors surface as TypeError or similar; retry them.
 	return true;

@@ -78,6 +78,15 @@ function xmlEscape(value: string): string {
 	return value.replace(/[&<>"]/g, (ch) => XML_ESCAPE[ch] ?? ch);
 }
 
+/**
+ * Neutralise only the result wrapper's closing tags inside source content.
+ * Escaping all of it would mangle code, but leaving these intact lets a file
+ * containing `</result:chunk>` end the block early or smuggle text in.
+ */
+function sanitizeContent(content: string): string {
+	return content.replace(/<\/(result:(?:chunk|file))>/gi, "&lt;/$1&gt;");
+}
+
 export function formatSearchResults(projectPath: string, out: SearchOutput): string {
 	if (out.results.length === 0) {
 		const parts = ["No results found."];
@@ -151,7 +160,7 @@ export function formatSearchResults(projectPath: string, out: SearchOutput): str
 				result.symbol
 			)}" kind="${xmlEscape(result.kind)}" score="${result.score.toFixed(2)}">\n`;
 			if (result.content) {
-				body += `${result.content}\n`;
+				body += `${sanitizeContent(result.content)}\n`;
 			}
 			body += "  </result:chunk>\n";
 		}

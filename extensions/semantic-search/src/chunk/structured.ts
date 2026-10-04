@@ -149,17 +149,19 @@ function yamlEntries(content: string): Entry[] {
 		if (line.trim() === "" || line.startsWith("#")) {
 			continue;
 		}
+		// Check sequence items first: "- key: value" is a list item, not a
+		// top-level key. The key regex below would otherwise capture "- key".
+		if (/^-\s/.test(line) || line === "-") {
+			starts.push(i);
+			symbols.push(`[${sequenceIndex}]`);
+			sequenceIndex += 1;
+			continue;
+		}
 		const key = line.match(/^([^\s#][^:]*?):(\s|$)/);
 		if (key?.[1]) {
 			starts.push(i);
 			symbols.push(key[1].trim());
 			sequenceIndex = 0;
-			continue;
-		}
-		if (/^-\s/.test(line) || line === "-") {
-			starts.push(i);
-			symbols.push(`[${sequenceIndex}]`);
-			sequenceIndex += 1;
 		}
 	}
 	const entries: Entry[] = [];

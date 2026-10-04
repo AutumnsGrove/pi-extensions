@@ -61,4 +61,11 @@ describe("StructuredChunker", () => {
 		const alpha = chunks.find((c) => c.symbol === "alpha");
 		expect(alpha?.startLine).toBe(1);
 	});
+
+	it("treats top-level '- key: value' lines as sequence items", () => {
+		const yaml = "- name: a\n  value: 1\n- name: b\n  value: 2\n";
+		const chunks = tiny.chunk("a.yaml", yaml);
+		expect(chunks.map((c) => c.symbol)).toEqual(["[0]", "[1]"]);
+		expect(chunks[0]?.content).toContain("- name: a");
+	});
 });
