@@ -5,9 +5,9 @@ Native, local semantic code search for pi. A TypeScript port of the ~20% of
 chunking, incremental Merkle indexing, and a `semantic_search` tool the model
 actually reaches for.
 
-Status: **phases 1–2 done** — chunker layer (Go, TS/TSX, JS/JSX, Python,
-Svelte, JSON, YAML, Shell) and the offline embed/store/split layer, 86 tests,
-verified end to end against local Ollama. Phases 3–6 pending.
+Status: **phases 1–3 done** — chunker layer, embed/store/split, and the
+ignore + Merkle + indexer pipeline (120 extension tests), verified end to end
+against local Ollama. Phases 4–6 pending.
 
 ## Decisions (locked)
 
@@ -316,7 +316,7 @@ not, we stop.
 | 0 | `extensions/cost-tracker` (done first) | ✅ `/cost start` → `/cost stop` writes a row |
 | 1 | scaffold, chunkers (Go/TS/JS/Python/Svelte/JSON/YAML/bash) | ✅ 48 chunker tests green |
 | 2 | `embed` + `store` + `split` | ✅ 38 offline tests green; real-Ollama smoke pass |
-| 3 | `ignore` + `merkle` + `indexer` | incremental index tests green |
+| 3 | `ignore` + `merkle` + `indexer` | ✅ 34 tests green; real-Ollama incremental pass |
 | 4 | `search` + `format` + pi wiring (tools/events/commands) | manual search in a real repo |
 | 5 | eval harness + first measured number | ≥3/5 tasks improve |
 | 6 | polish: LM Studio, `semsearch-model`, docs | — |
