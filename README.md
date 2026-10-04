@@ -12,6 +12,7 @@ packaged as a single installable [pi package](https://github.com/earendil-works/
 | [`extension-divider`](extensions/extension-divider/) | A light grey `///` between each item on the extension status line (`/divider`). | working |
 | [`thinking-box`](extensions/thinking-box/) | Collapsible, timed thinking traces: stream into a short box showing duration + reasoning tokens, expand the full trace with `Ctrl+O` (`/thinking-box`). | working |
 | [`pi-q-n-a`](extensions/pi-q-n-a/) | Model-facing `pi-q-n-a` tool: a multi-question form with single/multi-select, an always-present "Type something", per-question notes, optional side-by-side previews, and partial submit. | working |
+| [`pi-tasks`](extensions/pi-tasks/) | Model-facing `todo` tool (create/update/delete/list) with a live task panel above the editor and a full `/todos` view. State replays from the session branch, so it survives `/reload` and compaction. | working |
 | [`cost-tracker`](extensions/cost-tracker/) | Tracks development cost from pi's own session usage. `/cost start` … `/cost stop` in pi, or `pnpm cost` from a shell; finalizes runs and auto-imports the table below. | working |
 | [`semantic-search`](extensions/semantic-search/) | Native local semantic code search: tree-sitter chunking, Merkle-incremental indexing, Ollama embeddings, SQLite + sqlite-vec retrieval (`semantic_search` tool, `/semsearch`). | in progress (tools) |
 | _more to come_ | | |
@@ -76,6 +77,11 @@ pi-extensions/
 │   │   ├── layout.test.ts
 │   │   ├── PLAN.md
 │   │   └── README.md
+│   ├── pi-tasks/
+│   │   ├── index.ts
+│   │   ├── state.ts
+│   │   ├── state.test.ts
+│   │   └── README.md
 │   ├── cost-tracker/
 │   │   ├── index.ts
 │   │   ├── ledger.ts
@@ -126,12 +132,13 @@ pnpm cost report                  # print the ledger without changing anything
 | --- | --- | --- |
 | semantic-search | $0.998 | 3 |
 | provider-pinning | $0.417 | 1 |
+| pi-tasks | $0.304 | 1 |
 | parallel | $0.303 | 1 |
 | pi-q-n-a | $0.228 | 1 |
 | thinking-box | $0.113 | 1 |
 | extension-divider | $0.100 | 1 |
 | cost-tracker | $0.099 | 2 |
-| **Total** | **$2.259** | **10** |
+| **Total** | **$2.563** | **11** |
 <!-- COST:END -->
 
 ## License
