@@ -2,8 +2,8 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
-	realpathSync,
 	rmSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,7 +15,6 @@ import {
 	dataDir,
 	dbPathForProject,
 	defaultConfigFile,
-	gitIdentity,
 	loadConfig,
 	readConfigFile,
 	writeModelConfig,
@@ -162,29 +161,31 @@ describe("paths", () => {
 		expect(base).toContain("pi-semantic-search");
 		expect(INDEX_VERSION).toBeGreaterThan(0);
 	});
-});
 
-describe("gitIdentity", () => {
-	it("uses the .git directory of a repository", () => {
-		const root = tempDir();
-		const gitDir = join(root, ".git");
-		mkdirSync(gitDir);
-		expect(gitIdentity(root)).toBe(realpathSync(gitDir));
-	});
-
-	it("resolves the common dir for a worktree .git file", () => {
+	it("keys the database by the indexed root, not the repository", () => {
+		// Regression: subdirectories and worktrees of one repository used to
+		// collapse to a single database, so indexing one deleted the other's
+		// chunks. Every distinct absolute root must own a distinct database.
 		const repo = tempDir();
-		const commonDir = join(repo, ".git");
-		const worktreeGitDir = join(commonDir, "worktrees", "wt");
-		mkdirSync(worktreeGitDir, { recursive: true });
-		const worktree = join(tempDir(), "wt");
-		mkdirSync(worktree, { recursive: true });
-		writeFileSync(join(worktree, ".git"), `gitdir: ${worktreeGitDir}\n`);
-		expect(gitIdentity(worktree)).toBe(realpathSync(commonDir));
+		mkdirSync(join(repo, ".git"), { recursive: true });
+		const subA = join(repo, "packages", "a");
+		const subB = join(repo, "packages", "b");
+		mkdirSync(subA, { recursive: true });
+		mkdirSync(subB, { recursive: true });
+
+		const rootDb = dbPathForProject(profile({ projectPath: repo }), {});
+		const aDb = dbPathForProject(profile({ projectPath: subA }), {});
+		const bDb = dbPathForProject(profile({ projectPath: subB }), {});
+		expect(new Set([rootDb, aDb, bDb]).size).toBe(3);
 	});
 
-	it("falls back to the project path outside a repository", () => {
+	it("collapses symlinked spellings of the same root", () => {
 		const root = tempDir();
-		expect(gitIdentity(root)).toBe(realpathSync(root));
+		const alias = `${root}-alias`;
+		symlinkSync(root, alias, "dir");
+		dirs.push(alias);
+		expect(
+			dbPathForProject(profile({ projectPath: root }), {})
+		).toBe(dbPathForProject(profile({ projectPath: alias }), {}));
 	});
 });

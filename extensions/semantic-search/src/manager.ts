@@ -10,6 +10,7 @@ import { buildChunkers, type ChunkerSet } from "./chunk/index.ts";
 import {
 	dbPathForProject,
 	loadConfig,
+	resolveProjectRoot,
 	type SearchConfig,
 } from "./config.ts";
 import { createOllamaEmbedder } from "./embed/ollama.ts";
@@ -58,10 +59,11 @@ export class SemanticSearchManager implements SearchManager {
 
 	async ensure(projectDir: string): Promise<{ store: Store; indexer: Indexer }> {
 		const chunkers = await this.chunkersPromise();
-		let entry = this.entries.get(projectDir);
+		const root = resolveProjectRoot(projectDir);
+		let entry = this.entries.get(root);
 		if (!entry) {
 			const dbPath = dbPathForProject({
-				projectPath: projectDir,
+				projectPath: root,
 				model: this.config.model,
 				dimensions: this.config.dimensions,
 				vectorStorage: this.config.vectorStorage,
@@ -74,10 +76,10 @@ export class SemanticSearchManager implements SearchManager {
 				embedder: this.embedder(),
 				chunkers,
 				maxChunkTokens: this.config.maxChunkTokens,
-				projectDir,
+				projectDir: root,
 			});
 			entry = { store, indexer };
-			this.entries.set(projectDir, entry);
+			this.entries.set(root, entry);
 		}
 		return entry;
 	}
@@ -88,7 +90,7 @@ export class SemanticSearchManager implements SearchManager {
 			store,
 			embedder: this.embedder(),
 			indexer,
-			projectDir,
+			projectDir: indexer.projectDir,
 			request,
 		});
 	}

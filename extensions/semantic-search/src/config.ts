@@ -11,14 +11,13 @@
 import { createHash } from "node:crypto";
 import {
 	existsSync,
-	lstatSync,
 	mkdirSync,
 	readFileSync,
 	realpathSync,
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
 	DEFAULT_OLLAMA_MODEL,
 	canonicalModel,
@@ -159,58 +158,14 @@ export function dataDir(env: Env = process.env): string {
 	return join(base, "pi-semantic-search");
 }
 
-function findGitPath(start: string): string | undefined {
-	let dir = resolve(start);
-	for (;;) {
-		const candidate = join(dir, ".git");
-		if (existsSync(candidate)) {
-			return candidate;
-		}
-		const parent = dirname(dir);
-		if (parent === dir) {
-			return undefined;
-		}
-		dir = parent;
-	}
-}
-
 /**
- * Identity shared by all worktrees of one repository: the Git common directory
- * when present, otherwise the resolved project path.
+ * Resolve a project path to a stable identity for index storage. Symlinks and
+ * different spellings of the same directory collapse to one entry; different
+ * directories (including git worktrees and subdirectories of one repository)
+ * stay distinct. The index stores paths relative to the indexed root, so the
+ * database key must be the indexed root itself, not the repository identity.
  */
-export function gitIdentity(projectPath: string): string {
-	const gitPath = findGitPath(projectPath);
-	if (!gitPath) {
-		return safeRealpath(resolve(projectPath));
-	}
-	let isDir = false;
-	try {
-		isDir = lstatSync(gitPath).isDirectory();
-	} catch {
-		isDir = false;
-	}
-	if (isDir) {
-		return safeRealpath(gitPath);
-	}
-	// A `.git` file points at `<repo>/.git/worktrees/<name>` for a worktree.
-	try {
-		const content = readFileSync(gitPath, "utf8");
-		const match = content.match(/^gitdir:\s*(.+)\s*$/m);
-		if (match?.[1]) {
-			let target = match[1].trim();
-			if (!isAbsolute(target)) {
-				target = resolve(dirname(gitPath), target);
-			}
-			const parts = target.split(/[/\\]/);
-			const worktreesIndex = parts.lastIndexOf("worktrees");
-			if (worktreesIndex > 0) {
-				target = parts.slice(0, worktreesIndex).join("/");
-			}
-			return safeRealpath(target);
-		}
-	} catch {
-		// Fall through to the project path.
-	}
+export function resolveProjectRoot(projectPath: string): string {
 	return safeRealpath(resolve(projectPath));
 }
 
@@ -230,10 +185,17 @@ export interface ProfileKey {
 	maxChunkTokens: number;
 }
 
-/** Content-addressed database path for a project + embedding profile. */
+/**
+ * Content-addressed database path for an indexed root + embedding profile.
+ *
+ * The root is part of the key on purpose. Keying only on Git identity made
+ * every subdirectory and worktree of one repository share a database, so
+ * indexing one root deleted the chunks of the other (and two live connections
+ * could write the same file).
+ */
 export function dbPathForProject(key: ProfileKey, env: Env = process.env): string {
 	const profile = [
-		gitIdentity(key.projectPath),
+		resolveProjectRoot(key.projectPath),
 		canonicalModel(key.model),
 		String(key.dimensions),
 		key.vectorStorage,
