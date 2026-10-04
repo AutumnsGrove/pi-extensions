@@ -78,10 +78,18 @@ export default function costTracker(pi: ExtensionAPI): void {
 	let live: CostUsage = zeroUsage();
 	let liveStartedAt: string | undefined;
 
+	// Cost is the widest status, so it gets its own widget line rather than
+	// competing for space on the shared footer status line.
+	const setCostWidget = (ctx: ExtensionContext, text: string | undefined): void => {
+		ctx.ui.setWidget(STATUS_KEY, text ? [text] : undefined, {
+			placement: "belowEditor",
+		});
+	};
+
 	const render = (ctx: ExtensionContext): void => {
 		const active = readActive();
 		if (!active) {
-			ctx.ui.setStatus(STATUS_KEY, undefined);
+			setCostWidget(ctx, undefined);
 			return;
 		}
 		const elapsed = liveStartedAt
@@ -91,7 +99,7 @@ export default function costTracker(pi: ExtensionAPI): void {
 		if (elapsed) {
 			parts.push(elapsed);
 		}
-		ctx.ui.setStatus(STATUS_KEY, parts.join(" · "));
+		setCostWidget(ctx, parts.join(" · "));
 	};
 
 	const syncFromDisk = (ctx: ExtensionContext): void => {
@@ -135,7 +143,7 @@ export default function costTracker(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
-		ctx.ui.setStatus(STATUS_KEY, undefined);
+		setCostWidget(ctx, undefined);
 	});
 
 	const start = (label: string, ctx: ExtensionContext): void => {

@@ -20,6 +20,11 @@ interface FakeCtx {
 	cwd: string;
 	ui: {
 		setStatus: (key: string, text: string | undefined) => void;
+		setWidget: (
+			key: string,
+			content: string[] | undefined,
+			options?: { placement?: string }
+		) => void;
 		notify: (message: string, level?: string) => void;
 	};
 	sessionManager: { getSessionFile: () => string | undefined };
@@ -51,6 +56,7 @@ function setup(): Harness {
 		cwd,
 		ui: {
 			setStatus: () => {},
+			setWidget: () => {},
 			notify: (message: string, level?: string) => notifications.push({ message, level }),
 		},
 		sessionManager: { getSessionFile: () => undefined },
@@ -150,20 +156,20 @@ describe("reload recovery", () => {
 		await commands.get("cost")?.handler("start restore", ctx);
 		writeInWindowUsage(cwd);
 
-		const statuses: Array<string | undefined> = [];
-		ctx.ui.setStatus = (_key, text) => statuses.push(text);
+		const widgets: Array<string[] | undefined> = [];
+		ctx.ui.setWidget = (_key, content) => widgets.push(content);
 		for (const handler of handlers.get("session_start") ?? []) {
 			await handler({ type: "session_start", reason: "reload" }, ctx);
 		}
-		expect(statuses.some((text) => text?.includes("$0.250"))).toBe(true);
+		expect(widgets.some((widget) => widget?.[0]?.includes("$0.250"))).toBe(true);
 	});
 });
 
 describe("live accumulation", () => {
 	it("adds assistant usage only while a run is active", async () => {
 		const { commands, handlers, ctx } = setup();
-		const statuses: Array<string | undefined> = [];
-		ctx.ui.setStatus = (_key, text) => statuses.push(text);
+		const widgets: Array<string[] | undefined> = [];
+		ctx.ui.setWidget = (_key, content) => widgets.push(content);
 		const messageEnd = handlers.get("message_end") ?? [];
 
 		// No active run: nothing happens.
@@ -173,7 +179,7 @@ describe("live accumulation", () => {
 				ctx
 			);
 		}
-		expect(statuses).toHaveLength(0);
+		expect(widgets).toHaveLength(0);
 
 		await commands.get("cost")?.handler("start live", ctx);
 		for (const handler of messageEnd) {
@@ -188,7 +194,7 @@ describe("live accumulation", () => {
 				ctx
 			);
 		}
-		expect(statuses.some((text) => text?.includes("0.010"))).toBe(true);
+		expect(widgets.some((widget) => widget?.[0]?.includes("0.010"))).toBe(true);
 	});
 });
 
