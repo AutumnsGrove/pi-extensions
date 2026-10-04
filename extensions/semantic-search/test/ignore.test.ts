@@ -81,6 +81,26 @@ describe(".gitignore", () => {
 		expect(skip("sub/visible.ts", false)).toBe(false);
 		expect(skip("hidden.ts", false)).toBe(false);
 	});
+
+	it("lets a nested negation override a parent ignore", () => {
+		const root = tempDir();
+		write(root, ".gitignore", "*.ts\n");
+		write(root, "src/.gitignore", "!keep.ts\n");
+		const skip = makeSkip(root, EXTS);
+		expect(skip("drop.ts", false)).toBe(true);
+		expect(skip("src/drop.ts", false)).toBe(true);
+		// Git semantics: the deeper negation wins. Previously the root ignore
+		// was checked first and this file was silently dropped.
+		expect(skip("src/keep.ts", false)).toBe(false);
+	});
+
+	it("lets .pi-searchignore override .gitignore at the same level", () => {
+		const root = tempDir();
+		write(root, ".gitignore", "gen.ts\n");
+		write(root, ".pi-searchignore", "!gen.ts\n");
+		const skip = makeSkip(root, EXTS);
+		expect(skip("gen.ts", false)).toBe(false);
+	});
 });
 
 describe(".pi-searchignore", () => {

@@ -173,21 +173,59 @@ export class IgnoreTree {
 		return entry;
 	}
 
-	private checkIgnoreRules(relPath: string, ancestor: string, isDir: boolean): boolean {
+	private evaluate(
+		relPath: string,
+		ancestor: string,
+		isDir: boolean
+	): "ignore" | "unignore" | "none" {
 		const entry = this.loadDir(ancestor);
 		const fromAncestor =
 			ancestor === "" ? relPath : toPosix(relative(ancestor, relPath));
 		const matchPath = isDir ? `${fromAncestor}/` : fromAncestor;
-		if (entry.gitignore?.ignores(matchPath)) {
-			return true;
+		// `.pi-searchignore` is the tool-specific override, so it wins over the
+		// project's `.gitignore` and `.gitattributes` at the same directory level.
+		const project = entry.projectIgnore?.test(matchPath);
+		if (project?.ignored) {
+			return "ignore";
 		}
-		if (entry.projectIgnore?.ignores(matchPath)) {
-			return true;
+		if (project?.unignored) {
+			return "unignore";
+		}
+		const git = entry.gitignore?.test(matchPath);
+		if (git?.ignored) {
+			return "ignore";
+		}
+		if (git?.unignored) {
+			return "unignore";
 		}
 		if (!isDir && entry.gitattributes?.ignores(fromAncestor)) {
-			return true;
+			return "ignore";
 		}
-		return false;
+		return "none";
+	}
+
+	/**
+	 * Whether any ignore layer excludes `relPath` under Git semantics: the
+	 * deepest decisive match wins, so a nested `.gitignore` negation can
+	 * re-include a file a parent ignore excluded. Without this, a first-match
+	 * scan from the root silently dropped explicitly un-ignored files.
+	 */
+	private isIgnored(relPath: string, isDir: boolean): boolean {
+		const ancestors = ancestorDirs(dirname(relPath));
+		for (let i = ancestors.length - 1; i >= 0; i -= 1) {
+			const ancestor = ancestors[i];
+			if (ancestor === undefined) {
+				continue;
+			}
+			const verdict = this.evaluate(relPath, ancestor, isDir);
+			if (verdict === "unignore") {
+				return false;
+			}
+			if (verdict === "ignore") {
+				return true;
+			}
+		}
+		return this.global?.ignores(relPath) ?? false;
 	}
 
 	readonly shouldSkip: SkipFunc = (rawRelPath, isDir) => {
@@ -202,13 +240,8 @@ export class IgnoreTree {
 		if (!isDir && SKIP_FILES.has(base)) {
 			return true;
 		}
-		if (this.global?.ignores(relPath)) {
+		if (this.isIgnored(relPath, isDir)) {
 			return true;
-		}
-		for (const ancestor of ancestorDirs(dirname(relPath))) {
-			if (this.checkIgnoreRules(relPath, ancestor, isDir)) {
-				return true;
-			}
 		}
 		return !isDir && !this.extSet.has(extname(relPath));
 	};
