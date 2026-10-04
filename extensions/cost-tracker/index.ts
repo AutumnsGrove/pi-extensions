@@ -87,11 +87,7 @@ export default function costTracker(pi: ExtensionAPI): void {
 		const elapsed = liveStartedAt
 			? formatDuration(Date.now() - Date.parse(liveStartedAt))
 			: "";
-		const parts = [
-			`cost ${active.label}`,
-			`${formatUsd(live.cost)}`,
-			`${formatTokens(live.totalTokens)} tok`,
-		];
+		const parts = [`cost ${active.label}`, `${formatUsd(live.cost)}`];
 		if (elapsed) {
 			parts.push(elapsed);
 		}

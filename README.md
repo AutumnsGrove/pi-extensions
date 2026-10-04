@@ -122,16 +122,16 @@ pnpm cost report                  # print the ledger without changing anything
 *Note: The model used to develop is always deepseek/deepseek4.1 provided by Deepseek themselves (pinned via the provider-pinning extension)*
 
 <!-- COST:START -->
-| Extension | Cost | Tokens | Runs |
-| --- | --- | --- | --- |
-| semantic-search | $0.547 | 46.1M | 2 |
-| provider-pinning | $0.417 | 0 | 1 |
-| parallel | $0.303 | 0 | 1 |
-| pi-q-n-a | $0.228 | 0 | 1 |
-| thinking-box | $0.113 | 0 | 1 |
-| extension-divider | $0.100 | 0 | 1 |
-| cost-tracker | $0.082 | 0 | 1 |
-| **Total** | **$1.790** | **46.1M** | **8** |
+| Extension | Cost | Runs |
+| --- | --- | --- |
+| semantic-search | $0.547 | 2 |
+| provider-pinning | $0.417 | 1 |
+| parallel | $0.303 | 1 |
+| pi-q-n-a | $0.228 | 1 |
+| thinking-box | $0.113 | 1 |
+| extension-divider | $0.100 | 1 |
+| cost-tracker | $0.082 | 1 |
+| **Total** | **$1.790** | **8** |
 <!-- COST:END -->
 
 ## License

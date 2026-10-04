@@ -286,9 +286,9 @@ describe("aggregation and rendering", () => {
 
 	it("renders a markdown table with a total row", () => {
 		const table = renderCostTable(runs);
-		expect(table).toContain("| Extension | Cost | Tokens | Runs |");
-		expect(table).toContain("| a | $3.000 | 3.0k | 2 |");
-		expect(table).toContain("| **Total** | **$3.500** | **3.5k** | **3** |");
+		expect(table).toContain("| Extension | Cost | Runs |");
+		expect(table).toContain("| a | $3.000 | 2 |");
+		expect(table).toContain("| **Total** | **$3.500** | **3** |");
 	});
 });
 

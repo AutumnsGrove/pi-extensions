@@ -404,23 +404,12 @@ export function aggregateByLabel(runs: readonly RunRecord[]): LabelTotals[] {
 
 export function renderCostTable(runs: readonly RunRecord[]): string {
 	const totals = aggregateByLabel(runs);
-	const lines = [
-		"| Extension | Cost | Tokens | Runs |",
-		"| --- | --- | --- | --- |",
-	];
+	const lines = ["| Extension | Cost | Runs |", "| --- | --- | --- |"];
 	for (const entry of totals) {
-		lines.push(
-			`| ${entry.label} | ${formatUsd(entry.usage.cost)} | ${formatTokens(
-				entry.usage.totalTokens
-			)} | ${entry.runs} |`
-		);
+		lines.push(`| ${entry.label} | ${formatUsd(entry.usage.cost)} | ${entry.runs} |`);
 	}
 	const grand = totals.reduce((acc, entry) => addUsage(acc, entry.usage), zeroUsage());
-	lines.push(
-		`| **Total** | **${formatUsd(grand.cost)}** | **${formatTokens(
-			grand.totalTokens
-		)}** | **${runs.length}** |`
-	);
+	lines.push(`| **Total** | **${formatUsd(grand.cost)}** | **${runs.length}** |`);
 	return lines.join("\n");
 }
 
