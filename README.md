@@ -124,14 +124,14 @@ pnpm cost report                  # print the ledger without changing anything
 <!-- COST:START -->
 | Extension | Cost | Runs |
 | --- | --- | --- |
-| semantic-search | $0.590 | 3 |
+| semantic-search | $0.998 | 3 |
 | provider-pinning | $0.417 | 1 |
 | parallel | $0.303 | 1 |
 | pi-q-n-a | $0.228 | 1 |
 | thinking-box | $0.113 | 1 |
 | extension-divider | $0.100 | 1 |
 | cost-tracker | $0.099 | 2 |
-| **Total** | **$1.851** | **10** |
+| **Total** | **$2.259** | **10** |
 <!-- COST:END -->
 
 ## License
