@@ -16,6 +16,7 @@ import {
 	dbPathForProject,
 	defaultConfigFile,
 	loadConfig,
+	loadConfigSafe,
 	readConfigFile,
 	writeModelConfig,
 } from "../src/config.ts";
@@ -145,6 +146,54 @@ describe("config file", () => {
 		expect(readConfigFile(file)).toEqual({});
 		expect(loadConfig({}, file).model).toBe("ordis/jina-embeddings-v2-base-code");
 		expect(readFileSync(file, "utf8")).toBe("{ not json");
+	});
+
+	it("ignores wrong-typed fields instead of throwing", () => {
+		const dir = tempDir();
+		const file = join(dir, "bad-types.json");
+		writeFileSync(
+			file,
+			JSON.stringify({
+				model: 42,
+				dimensions: null,
+				contextLength: {},
+				maxChunkTokens: [],
+				vectorStorage: false,
+			})
+		);
+		expect(readConfigFile(file)).toEqual({});
+		// Previously `null` hit `value.trim()` and crashed loadConfig.
+		expect(() => loadConfig({}, file)).not.toThrow();
+		expect(loadConfig({}, file).model).toBe("ordis/jina-embeddings-v2-base-code");
+	});
+
+	it("drops non-positive dimensions so a poisoned file self-heals", () => {
+		const dir = tempDir();
+		const file = join(dir, "poison.json");
+		writeFileSync(file, JSON.stringify({ model: "all-minilm", dimensions: 0 }));
+		expect(readConfigFile(file)).toEqual({ model: "all-minilm" });
+		expect(loadConfig({}, file).dimensions).toBe(384);
+	});
+});
+
+describe("loadConfigSafe", () => {
+	it("falls back to defaults with an error instead of throwing", () => {
+		const dir = tempDir();
+		const file = join(dir, "poison.json");
+		writeFileSync(file, JSON.stringify({ model: "mystery", dimensions: null }));
+		const { config, error } = loadConfigSafe({}, file);
+		expect(config.model).toBe("ordis/jina-embeddings-v2-base-code");
+		expect(config.dimensions).toBe(768);
+		expect(error).toBeTruthy();
+	});
+
+	it("returns the parsed config when valid", () => {
+		const dir = tempDir();
+		const file = join(dir, "good.json");
+		writeFileSync(file, JSON.stringify({ model: "all-minilm" }));
+		const { config, error } = loadConfigSafe({}, file);
+		expect(error).toBeUndefined();
+		expect(config.model).toBe("all-minilm");
 	});
 });
 

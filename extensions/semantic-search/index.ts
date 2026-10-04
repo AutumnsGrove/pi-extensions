@@ -216,8 +216,22 @@ Use grep, find, or read only when you already know the exact literal string (a s
 						);
 						return;
 					}
-					const dimsArg = parts[2] ? Number.parseInt(parts[2], 10) : undefined;
-					const dims = dimsArg ?? modelDimensions(name);
+					// Validate explicit dimensions before touching the config file. A
+					// NaN/0/negative value used to be persisted (JSON.stringify(NaN) ->
+					// null) and then bricked loadConfig on every later start.
+					let providedDims: number | undefined;
+					const rawDims = parts[2];
+					if (rawDims !== undefined) {
+						providedDims = Number.parseInt(rawDims, 10);
+						if (!Number.isInteger(providedDims) || providedDims <= 0) {
+							ctx.ui.notify(
+								`Invalid dimensions "${rawDims}"; expected a positive integer.`,
+								"warning"
+							);
+							return;
+						}
+					}
+					const dims = providedDims ?? modelDimensions(name);
 					if (dims === undefined) {
 						ctx.ui.notify(
 							`Unknown model "${name}"; provide its dimensions: /semsearch model ${name} <dims>`,
@@ -225,11 +239,30 @@ Use grep, find, or read only when you already know the exact literal string (a s
 						);
 						return;
 					}
-					const path = writeModelConfig(name, dimsArg);
+					let path: string;
+					try {
+						path = writeModelConfig(name, providedDims);
+					} catch (error) {
+						ctx.ui.notify(
+							`Could not save the model config: ${
+								error instanceof Error ? error.message : String(error)
+							}`,
+							"error"
+						);
+						return;
+					}
 					resetManager();
+					const envOverride = process.env.PI_SEMSEARCH_MODEL;
+					const envNote =
+						envOverride && envOverride !== name
+							? ` Note: PI_SEMSEARCH_MODEL=${envOverride} overrides the saved value.`
+							: "";
+					const fallbackNote = manager.configError
+						? ` Warning: config unreadable (${manager.configError}); using ${manager.config.model}.`
+						: "";
 					ctx.ui.notify(
 						`Embedding model set to ${name} (${dims} dims); saved to ${path}. ` +
-							"A new index is built on the next search.",
+							`A new index is built on the next search.${envNote}${fallbackNote}`,
 						"info"
 					);
 					return;

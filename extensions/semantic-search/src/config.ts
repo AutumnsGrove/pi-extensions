@@ -53,18 +53,52 @@ export interface SearchConfigFile {
 
 type Env = Record<string, string | undefined>;
 
-function parseIntOrUndefined(value: string | number | undefined): number | undefined {
-	if (value === undefined) {
-		return undefined;
-	}
+/**
+ * Parse an integer from an unknown JSON/env value. Total by design: bad types
+ * (null, objects, arrays) and unparseable strings yield `undefined` instead of
+ * throwing. A config file must never be able to crash config loading.
+ */
+function parseIntOrUndefined(value: unknown): number | undefined {
 	if (typeof value === "number") {
-		return Number.isFinite(value) ? value : undefined;
+		return Number.isFinite(value) ? Math.trunc(value) : undefined;
 	}
-	if (value.trim() === "") {
+	if (typeof value !== "string") {
 		return undefined;
 	}
-	const parsed = Number.parseInt(value, 10);
+	const trimmed = value.trim();
+	if (trimmed === "") {
+		return undefined;
+	}
+	const parsed = Number.parseInt(trimmed, 10);
 	return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/** Keep only known, well-typed, usable fields from a parsed config object. */
+function sanitizeConfigFile(value: unknown): SearchConfigFile {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return {};
+	}
+	const raw = value as Record<string, unknown>;
+	const clean: SearchConfigFile = {};
+	if (typeof raw.model === "string" && raw.model.trim() !== "") {
+		clean.model = raw.model;
+	}
+	const dimensions = parseIntOrUndefined(raw.dimensions);
+	if (dimensions !== undefined && dimensions > 0) {
+		clean.dimensions = dimensions;
+	}
+	const contextLength = parseIntOrUndefined(raw.contextLength);
+	if (contextLength !== undefined && contextLength > 0) {
+		clean.contextLength = contextLength;
+	}
+	const maxChunkTokens = parseIntOrUndefined(raw.maxChunkTokens);
+	if (maxChunkTokens !== undefined && maxChunkTokens > 0) {
+		clean.maxChunkTokens = maxChunkTokens;
+	}
+	if (typeof raw.vectorStorage === "string" && raw.vectorStorage.trim() !== "") {
+		clean.vectorStorage = raw.vectorStorage;
+	}
+	return clean;
 }
 
 /** pi's agent directory, honouring `PI_CODING_AGENT_DIR`. */
@@ -86,8 +120,7 @@ export function readConfigFile(path: string): SearchConfigFile {
 		return {};
 	}
 	try {
-		const parsed = JSON.parse(readFileSync(path, "utf8")) as SearchConfigFile;
-		return parsed && typeof parsed === "object" ? parsed : {};
+		return sanitizeConfigFile(JSON.parse(readFileSync(path, "utf8")));
 	} catch {
 		return {};
 	}
@@ -135,20 +168,49 @@ export function loadConfig(
 		parseIntOrUndefined(file.contextLength) ??
 		spec?.ctxLength;
 
+	const maxChunkTokens =
+		parseIntOrUndefined(env.PI_SEMSEARCH_MAX_CHUNK_TOKENS) ??
+		parseIntOrUndefined(file.maxChunkTokens) ??
+		DEFAULT_MAX_CHUNK_TOKENS;
+
 	return {
 		model,
 		dimensions,
 		contextLength,
 		baseUrl: env.OLLAMA_HOST ?? DEFAULT_OLLAMA_HOST,
 		maxChunkTokens:
-			parseIntOrUndefined(env.PI_SEMSEARCH_MAX_CHUNK_TOKENS) ??
-			parseIntOrUndefined(file.maxChunkTokens) ??
-			DEFAULT_MAX_CHUNK_TOKENS,
+			maxChunkTokens > 0 ? maxChunkTokens : DEFAULT_MAX_CHUNK_TOKENS,
 		vectorStorage:
 			env.PI_SEMSEARCH_VECTOR_STORAGE ??
 			file.vectorStorage ??
 			DEFAULT_VECTOR_STORAGE,
 	};
+}
+
+export interface SafeConfig {
+	config: SearchConfig;
+	/** Present when the requested config was unusable and defaults were used. */
+	error?: string;
+}
+
+/**
+ * Load configuration without throwing. A corrupt or unusable config (bad
+ * dimensions, unknown model, poisoned file) falls back to the built-in default
+ * profile and reports why. Extension construction must never fail because of a
+ * config file.
+ */
+export function loadConfigSafe(
+	env: Env = process.env,
+	configFile: string | null = defaultConfigFile(env)
+): SafeConfig {
+	try {
+		return { config: loadConfig(env, configFile) };
+	} catch (error) {
+		return {
+			config: loadConfig({}, null),
+			error: error instanceof Error ? error.message : String(error),
+		};
+	}
 }
 
 /** Data directory for indexes: `$XDG_DATA_HOME/pi-semantic-search`. */

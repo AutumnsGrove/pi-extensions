@@ -9,7 +9,7 @@ import { dirname } from "node:path";
 import { buildChunkers, type ChunkerSet } from "./chunk/index.ts";
 import {
 	dbPathForProject,
-	loadConfig,
+	loadConfigSafe,
 	resolveProjectRoot,
 	type SearchConfig,
 } from "./config.ts";
@@ -25,6 +25,8 @@ import { Store } from "./store/sqlite.ts";
 
 export interface SearchManager {
 	config: SearchConfig;
+	/** Present when config loading failed and defaults were used. */
+	readonly configError?: string;
 	ensure(projectDir: string): Promise<{ store: Store; indexer: Indexer }>;
 	search(projectDir: string, request: SearchRequest): Promise<SearchResponse>;
 	close(): void;
@@ -32,12 +34,19 @@ export interface SearchManager {
 
 export class SemanticSearchManager implements SearchManager {
 	readonly config: SearchConfig;
+	readonly configError?: string;
 	private chunkers?: Promise<ChunkerSet>;
 	private embedderInstance?: Embedder;
 	private readonly entries = new Map<string, { store: Store; indexer: Indexer }>();
 
-	constructor(config: SearchConfig = loadConfig()) {
-		this.config = config;
+	constructor(config?: SearchConfig) {
+		if (config) {
+			this.config = config;
+			return;
+		}
+		const { config: loaded, error } = loadConfigSafe();
+		this.config = loaded;
+		this.configError = error;
 	}
 
 	private embedder(): Embedder {

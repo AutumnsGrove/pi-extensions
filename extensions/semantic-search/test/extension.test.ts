@@ -289,4 +289,33 @@ describe("/semsearch model", () => {
 		};
 		expect(saved).toEqual({ model: "mystery-model", dimensions: 1024 });
 	});
+
+	it("rejects non-numeric dimensions without touching the config", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "semsearch-model-"));
+		dirs.push(dir);
+		const configFile = join(dir, "config.json");
+		process.env.PI_SEMSEARCH_CONFIG = configFile;
+
+		const harness = setup();
+		const ctx = fakeCtx();
+		await harness.commands.get("semsearch").handler("model mystery abc", ctx);
+		expect(ctx.notifications.at(-1)).toContain("Invalid dimensions");
+		expect(harness.managerCount).toBe(1);
+		// Nothing was written, so the next load cannot be poisoned.
+		expect(() => readFileSync(configFile, "utf8")).toThrow();
+	});
+
+	it("rejects zero dimensions without touching the config", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "semsearch-model-"));
+		dirs.push(dir);
+		const configFile = join(dir, "config.json");
+		process.env.PI_SEMSEARCH_CONFIG = configFile;
+
+		const harness = setup();
+		const ctx = fakeCtx();
+		await harness.commands.get("semsearch").handler("model mystery 0", ctx);
+		expect(ctx.notifications.at(-1)).toContain("Invalid dimensions");
+		expect(harness.managerCount).toBe(1);
+		expect(() => readFileSync(configFile, "utf8")).toThrow();
+	});
 });
