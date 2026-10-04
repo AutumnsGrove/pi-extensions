@@ -33,6 +33,7 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "cost": "node extensions/cost-tracker/cli.ts"
   }
 }

@@ -12,6 +12,7 @@ packaged as a single installable [pi package](https://github.com/earendil-works/
 | [`extension-divider`](extensions/extension-divider/) | A light grey `///` between each item on the extension status line (`/divider`). | working |
 | [`thinking-box`](extensions/thinking-box/) | Collapsible, timed thinking traces: stream into a short box showing duration + reasoning tokens, expand the full trace with `Ctrl+O` (`/thinking-box`). | working |
 | [`pi-q-n-a`](extensions/pi-q-n-a/) | Model-facing `pi-q-n-a` tool: a multi-question form with single/multi-select, an always-present "Type something", per-question notes, optional side-by-side previews, and partial submit. | working |
+| [`cost-tracker`](extensions/cost-tracker/) | Tracks development cost from pi's own session usage. `/cost start` … `/cost stop` in pi, or `pnpm cost` from a shell; finalizes runs and auto-imports the table below. | working |
 | _more to come_ | | |
 
 ## Install
@@ -63,17 +64,24 @@ pi-extensions/
 │   │   ├── stats.test.ts
 │   │   ├── PLAN.md
 │   │   └── README.md
-│   └── pi-q-n-a/
+│   ├── pi-q-n-a/
+│   │   ├── index.ts
+│   │   ├── index.test.ts
+│   │   ├── schema.ts
+│   │   ├── questionnaire.ts
+│   │   ├── questionnaire.test.ts
+│   │   ├── component.test.ts
+│   │   ├── layout.ts
+│   │   ├── layout.test.ts
+│   │   ├── PLAN.md
+│   │   └── README.md
+│   ├── cost-tracker/
 │       ├── index.ts
+│       ├── ledger.ts
+│       ├── cli.ts
+│       ├── ledger.test.ts
 │       ├── index.test.ts
-│       ├── schema.ts
-│       ├── questionnaire.ts
-│       ├── questionnaire.test.ts
-│       ├── component.test.ts
-│       ├── layout.ts
-│       ├── layout.test.ts
-│       ├── PLAN.md
-│       └── README.md
+│       └── PLAN.md
 ├── package.json              # pi manifest: extensions/*/index.ts
 └── tsconfig.json
 ```
@@ -93,16 +101,34 @@ pnpm test           # vitest run
 Extensions are loaded directly as TypeScript by pi (via jiti); there is no build
 step.
 
+### Tracking development cost
+
+`cost-tracker` reads pi's own session usage, so every run is measured exactly.
+Start a run before working on an extension and stop it when done:
+
+```bash
+pnpm cost start semantic-search   # or /cost start semantic-search inside pi
+pnpm cost stop                    # finalize + refresh the table below
+pnpm cost report                  # print the ledger without changing anything
+```
+
+`/cost stop` (or `pnpm cost stop`) rewrites the block between the
+`COST:START`/`COST:END` markers below.
+
 ## Development cost
 *Note: The model used to develop is always deepseek/deepseek4.1 provided by Deepseek themselves (pinned via the provider-pinning extension)*
 
-| Extension | Cost |
-| --- | --- |
-| provider-pinning | $0.417 |
-| parallel | $0.303 |
-| extension-divider | $0.100 |
-| thinking-box | $0.113 |
-| pi-q-n-a | $0.228 |
+<!-- COST:START -->
+| Extension | Cost | Tokens | Runs |
+| --- | --- | --- | --- |
+| provider-pinning | $0.417 | 0 | 1 |
+| parallel | $0.303 | 0 | 1 |
+| pi-q-n-a | $0.228 | 0 | 1 |
+| thinking-box | $0.113 | 0 | 1 |
+| extension-divider | $0.100 | 0 | 1 |
+| cost-tracker | $0.082 | 0 | 1 |
+| **Total** | **$1.243** | **0** | **6** |
+<!-- COST:END -->
 
 ## License
 
