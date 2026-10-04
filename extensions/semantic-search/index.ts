@@ -83,14 +83,29 @@ export function createSemanticSearchExtension(
 			manager = createManager();
 		};
 
+		// The only ctx whose UI we may touch. Background indexing outlives the
+		// session that started it, and pi invalidates a captured ctx after a
+		// reload or session replacement. Tracking the live ctx keeps a late
+		// completion from writing status to a dead one.
+		let activeCtx: ExtensionContext | undefined;
+
 		// Join the shared extension status line. pi can only place widgets above
 		// or below the editor, never below the footer, so a separate bottom line
 		// would require owning the footer (which extension-divider already does).
 		const setIndexStatus = (ctx: ExtensionContext, text: string | undefined): void => {
-			ctx.ui.setStatus(STATUS_KEY, text);
+			if (ctx !== activeCtx) {
+				return;
+			}
+			try {
+				ctx.ui.setStatus(STATUS_KEY, text);
+			} catch {
+				// The runtime can invalidate the ctx between the identity check and
+				// the call. A missed status update is never worth crashing pi over.
+			}
 		};
 
 		pi.on("session_start", (_event, ctx) => {
+			activeCtx = ctx;
 			void (async () => {
 				try {
 					setIndexStatus(ctx, "semsearch: indexing…");
@@ -107,7 +122,10 @@ export function createSemanticSearchExtension(
 			})();
 		});
 
-		pi.on("session_shutdown", () => manager.close());
+		pi.on("session_shutdown", () => {
+			activeCtx = undefined;
+			manager.close();
+		});
 
 		pi.registerTool({
 			name: "semantic_search",

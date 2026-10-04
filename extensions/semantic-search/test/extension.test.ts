@@ -48,7 +48,11 @@ function fakeCtx(cwd = "/project"): FakeCtx {
 	};
 }
 
-function setup() {
+interface SetupOptions {
+	ensureFresh?: () => Promise<{ reindexed: boolean; stats: { indexedFiles: number } }>;
+}
+
+function setup(options: SetupOptions = {}) {
 	const tools = new Map<string, any>();
 	const commands = new Map<string, any>();
 	const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
@@ -67,7 +71,9 @@ function setup() {
 	let managerCount = 0;
 	const store = { stats: () => ({ totalFiles: 3, totalChunks: 10 }) };
 	const indexer = {
-		ensureFresh: async () => ({ reindexed: false, stats: { indexedFiles: 0 } }),
+		ensureFresh:
+			options.ensureFresh ??
+			(async () => ({ reindexed: false, stats: { indexedFiles: 0 } })),
 		index: async (force: boolean) => {
 			forcedReindex = force;
 			return { indexedFiles: 3, chunksCreated: 10 };
@@ -153,6 +159,53 @@ describe("semantic-search extension", () => {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		expect(ctx.statuses.some((text) => text?.startsWith("semsearch:"))).toBe(true);
 		expect(ctx.widgets.length).toBe(0);
+	});
+
+	it("does not touch a captured ctx after the session is replaced", async () => {
+		let releaseFresh!: () => void;
+		const freshGate = new Promise<void>((resolve) => {
+			releaseFresh = resolve;
+		});
+		const harness = setup({
+			ensureFresh: async () => {
+				await freshGate;
+				return { reindexed: false, stats: { indexedFiles: 0 } };
+			},
+		});
+
+		const ctx = fakeCtx();
+		let invalidated = false;
+		let callsAfterInvalidation = 0;
+		ctx.ui.setStatus = () => {
+			if (invalidated) {
+				callsAfterInvalidation += 1;
+				// pi throws when a captured ctx is used after reload/replacement.
+				throw new Error("This extension ctx is stale after session replacement or reload.");
+			}
+		};
+
+		const rejections: unknown[] = [];
+		const onRejection = (reason: unknown): void => {
+			rejections.push(reason);
+		};
+		process.on("unhandledRejection", onRejection);
+		try {
+			for (const handler of harness.handlers.get("session_start") ?? []) {
+				handler({ type: "session_start", reason: "startup" }, ctx);
+			}
+			// Before indexing finishes, the session is torn down and replaced.
+			invalidated = true;
+			for (const handler of harness.handlers.get("session_shutdown") ?? []) {
+				handler({ type: "session_shutdown", reason: "reload" }, ctx);
+			}
+			releaseFresh();
+			await new Promise((resolve) => setTimeout(resolve, 10));
+
+			expect(callsAfterInvalidation).toBe(0);
+			expect(rejections).toEqual([]);
+		} finally {
+			process.off("unhandledRejection", onRejection);
+		}
 	});
 
 	it("executes semantic_search and returns text plus details", async () => {
