@@ -27,6 +27,36 @@ export const META_LAST_INDEX_ERROR = "last_index_error";
 const CHUNK_BATCH_SIZE = 256;
 const SUPPORTED_EXT_SET = new Set(SUPPORTED_EXTENSIONS);
 
+/**
+ * In-process serialization of index runs per project. Search, session startup,
+ * and `/semsearch reindex` can all reach `ensureFresh`/`index` at once, and
+ * interleaved runs against one store collide on the vec0 primary key. Keying by
+ * project directory also serializes two manager instances in the same process.
+ * Cross-process locking is still not ported.
+ */
+const projectLocks = new Map<string, Promise<unknown>>();
+
+async function withProjectLock<T>(
+	projectDir: string,
+	fn: () => Promise<T>
+): Promise<T> {
+	const previous = projectLocks.get(projectDir) ?? Promise.resolve();
+	const run = previous.then(fn, fn);
+	// Keep the chain alive without ever leaking a rejected promise.
+	const settled = run.then(
+		() => undefined,
+		() => undefined
+	);
+	projectLocks.set(projectDir, settled);
+	try {
+		return await run;
+	} finally {
+		if (projectLocks.get(projectDir) === settled) {
+			projectLocks.delete(projectDir);
+		}
+	}
+}
+
 export type ProgressFunc = (current: number, total: number, message: string) => void;
 
 export interface IndexStats {
@@ -107,20 +137,24 @@ export class Indexer {
 
 	/** Build the tree and re-index only when the root hash changed. */
 	async ensureFresh(progress?: ProgressFunc): Promise<EnsureFreshResult> {
-		const tree = await buildTree(this.projectDir, this.skip);
-		const storedHash = this.store.getMeta(META_ROOT_HASH) ?? "";
-		if (storedHash === tree.rootHash && !this.store.hasSentinelFiles()) {
-			return { reindexed: false, stats: emptyStats() };
-		}
-		const stats = await this.indexWithTree(tree, storedHash, false, progress);
-		return { reindexed: true, stats };
+		return withProjectLock(this.projectDir, async () => {
+			const tree = await buildTree(this.projectDir, this.skip);
+			const storedHash = this.store.getMeta(META_ROOT_HASH) ?? "";
+			if (this.claimsFresh(tree, storedHash)) {
+				return { reindexed: false, stats: emptyStats() };
+			}
+			const stats = await this.indexWithTree(tree, storedHash, false, progress);
+			return { reindexed: true, stats };
+		});
 	}
 
 	/** Index unconditionally; `force` reprocesses every file. */
 	async index(force: boolean, progress?: ProgressFunc): Promise<IndexStats> {
-		const tree = await buildTree(this.projectDir, this.skip);
-		const storedHash = this.store.getMeta(META_ROOT_HASH) ?? "";
-		return this.indexWithTree(tree, storedHash, force, progress);
+		return withProjectLock(this.projectDir, async () => {
+			const tree = await buildTree(this.projectDir, this.skip);
+			const storedHash = this.store.getMeta(META_ROOT_HASH) ?? "";
+			return this.indexWithTree(tree, storedHash, force, progress);
+		});
 	}
 
 	private async indexWithTree(
@@ -261,7 +295,10 @@ export class Indexer {
 	}
 
 	private saveMeta(tree: Tree, success: boolean, error?: unknown): void {
-		this.store.setMeta(META_ROOT_HASH, tree.rootHash);
+		// Only a completed run may advance the root hash. Otherwise ensureFresh
+		// would treat the tree as indexed and never retry the files whose batches
+		// aborted, silently leaving gaps while reporting the index as fresh.
+		this.store.setMeta(META_ROOT_HASH, success ? tree.rootHash : "");
 		this.store.setMeta(META_EMBEDDING_MODEL, this.embedder.modelName);
 		this.store.setMeta(META_PROJECT_PATH, this.projectDir);
 		this.store.setMeta(META_TOTAL_FILES, String(tree.files.size));
@@ -274,10 +311,24 @@ export class Indexer {
 		}
 	}
 
+	/**
+	 * Whether the stored index is complete and matches the tree. A recorded
+	 * error means a previous run aborted, so treat it as stale even if the root
+	 * hash and file table look consistent (older versions advanced the hash on
+	 * failure, leaving silent gaps that this re-indexes away).
+	 */
+	private claimsFresh(tree: Tree, storedHash: string): boolean {
+		return (
+			storedHash === tree.rootHash &&
+			!this.store.hasSentinelFiles() &&
+			!this.store.getMeta(META_LAST_INDEX_ERROR)
+		);
+	}
+
 	async isFresh(): Promise<boolean> {
 		const tree = await buildTree(this.projectDir, this.skip);
 		const storedHash = this.store.getMeta(META_ROOT_HASH) ?? "";
-		return storedHash === tree.rootHash && !this.store.hasSentinelFiles();
+		return this.claimsFresh(tree, storedHash);
 	}
 
 	lastIndexedAt(): Date | undefined {

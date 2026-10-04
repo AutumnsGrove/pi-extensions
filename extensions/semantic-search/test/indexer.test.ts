@@ -4,7 +4,11 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { buildChunkers, type ChunkerSet } from "../src/chunk/index.ts";
 import type { Embedder } from "../src/embed/types.ts";
-import { Indexer, META_LAST_INDEX_ERROR } from "../src/index/indexer.ts";
+import {
+	Indexer,
+	META_LAST_INDEX_ERROR,
+	META_ROOT_HASH,
+} from "../src/index/indexer.ts";
 import { Store } from "../src/store/sqlite.ts";
 
 const KEYWORDS = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"];
@@ -171,6 +175,103 @@ describe("Indexer", () => {
 		await indexer.index(false);
 		store.upsertFile("a.ts", "");
 		expect((await indexer.ensureFresh()).reindexed).toBe(true);
+		store.close();
+	});
+
+	it("serializes concurrent reindexes instead of colliding", async () => {
+		const dir = project(START);
+		let active = 0;
+		let maxActive = 0;
+		const embedder: Embedder = {
+			modelName: "keyword",
+			dimensions: KEYWORDS.length,
+			async embed(texts: readonly string[]): Promise<number[][]> {
+				active += 1;
+				maxActive = Math.max(maxActive, active);
+				// Yield to the event loop like a real network embedding call, so
+				// unserialized runs would interleave and hit the vec0 primary key.
+				await new Promise((resolve) => setTimeout(resolve, 10));
+				active -= 1;
+				return texts.map((text) => {
+					const lower = text.toLowerCase();
+					return KEYWORDS.map((keyword) => lower.split(keyword).length - 1);
+				});
+			},
+		};
+		const store = Store.open(":memory:", KEYWORDS.length);
+		const indexer = new Indexer({
+			store,
+			embedder,
+			chunkers,
+			maxChunkTokens: 512,
+			projectDir: dir,
+		});
+		await indexer.index(false);
+		writeFileSync(join(dir, "a.ts"), "export function alpha() {\n  return 'changed';\n}\n");
+
+		const results = await Promise.allSettled([
+			indexer.ensureFresh(),
+			indexer.ensureFresh(),
+			indexer.ensureFresh(),
+		]);
+		expect(results.map((result) => result.status)).toEqual([
+			"fulfilled",
+			"fulfilled",
+			"fulfilled",
+		]);
+		// The lock lets one run embed at a time; the others see a fresh index.
+		expect(maxActive).toBe(1);
+		store.close();
+	});
+
+	it("does not advance the root hash when indexing fails", async () => {
+		const dir = project(START);
+		let failNext = true;
+		const embedder: Embedder = {
+			modelName: "flaky",
+			dimensions: KEYWORDS.length,
+			async embed(texts: readonly string[]): Promise<number[][]> {
+				if (failNext) {
+					throw new Error("boom");
+				}
+				return keywordEmbedder().embed(texts);
+			},
+		};
+		const store = Store.open(":memory:", KEYWORDS.length);
+		const indexer = new Indexer({
+			store,
+			embedder,
+			chunkers,
+			maxChunkTokens: 512,
+			projectDir: dir,
+		});
+
+		await expect(indexer.ensureFresh()).rejects.toThrow("boom");
+		// A failed run must not look fresh, or the aborted files are never retried.
+		expect(store.getMeta(META_ROOT_HASH)).toBe("");
+		expect(await indexer.isFresh()).toBe(false);
+
+		failNext = false;
+		const retry = await indexer.ensureFresh();
+		expect(retry.reindexed).toBe(true);
+		expect(await indexer.isFresh()).toBe(true);
+		store.close();
+	});
+
+	it("reindexes a hash-matching index that recorded an error", async () => {
+		const dir = project(START);
+		const { store, indexer } = makeIndexer(dir);
+		await indexer.index(false);
+		expect(await indexer.isFresh()).toBe(true);
+
+		// Simulate a database written by an older build that advanced the root
+		// hash on failure: the tree still matches, but the run had aborted.
+		store.setMeta(META_LAST_INDEX_ERROR, "UNIQUE constraint failed");
+		expect(await indexer.isFresh()).toBe(false);
+
+		const result = await indexer.ensureFresh();
+		expect(result.reindexed).toBe(true);
+		expect(store.getMeta(META_LAST_INDEX_ERROR)).toBe("");
 		store.close();
 	});
 

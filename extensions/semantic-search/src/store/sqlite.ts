@@ -173,8 +173,9 @@ export class Store {
 
 	/**
 	 * Insert chunks and vectors. Callers must delete a file's existing chunks
-	 * first; vec0 does not support INSERT OR REPLACE, so duplicate ids within
-	 * the batch are dropped here.
+	 * first; vec0 has no upsert, so duplicate ids within the batch are dropped
+	 * and each vector is replaced explicitly. The delete-then-insert also makes
+	 * writes idempotent if a previous partial or racing run left the id behind.
 	 */
 	insertChunks(chunks: readonly Chunk[], vectors: readonly number[][]): void {
 		if (chunks.length !== vectors.length) {
@@ -191,6 +192,9 @@ export class Store {
 			const vecStmt: StatementSync = this.db.prepare(
 				"INSERT INTO vec_chunks (id, embedding) VALUES (?, ?)"
 			);
+			const vecDeleteStmt: StatementSync = this.db.prepare(
+				"DELETE FROM vec_chunks WHERE id = ?"
+			);
 			for (let i = 0; i < chunks.length; i += 1) {
 				const chunk = chunks[i];
 				const vector = vectors[i];
@@ -206,6 +210,7 @@ export class Store {
 					chunk.startLine,
 					chunk.endLine
 				);
+				vecDeleteStmt.run(chunk.id);
 				vecStmt.run(chunk.id, serializeFloat32(vector));
 			}
 		});

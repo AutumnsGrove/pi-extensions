@@ -131,6 +131,18 @@ describe("Store upsert, search, delete", () => {
 		store.close();
 	});
 
+	it("replaces a vector when the same id is inserted again", () => {
+		const store = Store.open(":memory:", 2);
+		const duplicate = chunk("a.ts", "A");
+		store.insertChunks([duplicate], [[1, 0]]);
+		// A later call (retried batch, non-contiguous duplicate) must not trip the
+		// vec0 primary key; the old plain INSERT threw here.
+		expect(() => store.insertChunks([duplicate], [[0, 1]])).not.toThrow();
+		expect(store.stats().totalChunks).toBe(1);
+		expect(store.search([0, 1], 5, 0)[0]?.filePath).toBe("a.ts");
+		store.close();
+	});
+
 	it("reports top symbols and sentinel files", () => {
 		const store = Store.open(":memory:", 2);
 		store.upsertFile("a.ts", "");
