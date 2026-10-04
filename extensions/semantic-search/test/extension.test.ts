@@ -143,7 +143,7 @@ describe("semantic-search extension", () => {
 		expect(tool.annotations).toEqual({ readOnlyHint: true });
 	});
 
-	it("renders index status as a below-editor widget, not the status line", async () => {
+	it("sets the index status on the shared status line", async () => {
 		const { handlers } = setup();
 		const ctx = fakeCtx();
 		for (const handler of handlers.get("session_start") ?? []) {
@@ -151,8 +151,8 @@ describe("semantic-search extension", () => {
 		}
 		// The handler fires background work; let the promise chain settle.
 		await new Promise((resolve) => setTimeout(resolve, 10));
-		expect(ctx.widgets.some((widget) => widget?.[0]?.startsWith("semsearch:"))).toBe(true);
-		expect(ctx.statuses.length).toBe(0);
+		expect(ctx.statuses.some((text) => text?.startsWith("semsearch:"))).toBe(true);
+		expect(ctx.widgets.length).toBe(0);
 	});
 
 	it("executes semantic_search and returns text plus details", async () => {

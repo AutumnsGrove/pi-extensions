@@ -83,27 +83,26 @@ export function createSemanticSearchExtension(
 			manager = createManager();
 		};
 
-		// Render on its own line below the editor instead of joining the shared
-		// footer status line, which other extensions already fill up.
-		const setIndexWidget = (ctx: ExtensionContext, text: string | undefined): void => {
-			ctx.ui.setWidget(STATUS_KEY, text ? [text] : undefined, {
-				placement: "belowEditor",
-			});
+		// Join the shared extension status line. pi can only place widgets above
+		// or below the editor, never below the footer, so a separate bottom line
+		// would require owning the footer (which extension-divider already does).
+		const setIndexStatus = (ctx: ExtensionContext, text: string | undefined): void => {
+			ctx.ui.setStatus(STATUS_KEY, text);
 		};
 
 		pi.on("session_start", (_event, ctx) => {
 			void (async () => {
 				try {
-					setIndexWidget(ctx, "semsearch: indexing…");
+					setIndexStatus(ctx, "semsearch: indexing…");
 					const { store, indexer } = await manager.ensure(ctx.cwd);
 					const fresh = await indexer.ensureFresh();
 					const { totalChunks } = store.stats();
-					setIndexWidget(
+					setIndexStatus(
 						ctx,
 						`semsearch: ${totalChunks} chunks${fresh.reindexed ? " (updated)" : ""}`
 					);
 				} catch {
-					setIndexWidget(ctx, undefined);
+					setIndexStatus(ctx, undefined);
 				}
 			})();
 		});
@@ -222,7 +221,7 @@ Use grep, find, or read only when you already know the exact literal string (a s
 				if (sub === "reindex") {
 					ctx.ui.notify("Re-indexing…", "info");
 					const stats = await indexer.index(true);
-					setIndexWidget(ctx, `semsearch: ${store.stats().totalChunks} chunks`);
+					setIndexStatus(ctx, `semsearch: ${store.stats().totalChunks} chunks`);
 					ctx.ui.notify(
 						`Re-indexed ${stats.indexedFiles} files (${stats.chunksCreated} chunks).`,
 						"info"
