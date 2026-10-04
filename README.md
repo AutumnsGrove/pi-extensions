@@ -130,8 +130,8 @@ pnpm cost report                  # print the ledger without changing anything
 | pi-q-n-a | $0.228 | 1 |
 | thinking-box | $0.113 | 1 |
 | extension-divider | $0.100 | 1 |
-| cost-tracker | $0.082 | 1 |
-| **Total** | **$1.833** | **9** |
+| cost-tracker | $0.099 | 2 |
+| **Total** | **$1.851** | **10** |
 <!-- COST:END -->
 
 ## License
