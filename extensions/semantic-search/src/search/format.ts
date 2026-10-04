@@ -6,6 +6,8 @@
 
 import { readFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
+import type { SearchConfig } from "../config.ts";
+import { EmbedError } from "../embed/types.ts";
 import type { RankedItem } from "./rank.ts";
 
 export interface SearchOutput {
@@ -24,6 +26,45 @@ export interface IndexStatusInfo {
 	embeddingModel?: string;
 	lastIndexedAt?: string;
 	stale?: boolean;
+	lastIndexError?: string;
+	configError?: string;
+}
+
+/**
+ * Turn an embedding/index failure into an actionable message. The model is told
+ * to reach for semantic search first, so a bare "fetch failed" leaves it stuck;
+ * name the likely cause and the exact command that fixes it.
+ */
+export function describeSearchError(error: unknown, config: SearchConfig): string {
+	if (error instanceof EmbedError) {
+		if (error.statusCode === 404) {
+			return (
+				`Embedding model "${config.model}" is not available in Ollama at ` +
+				`${config.baseUrl}. Pull it with \`ollama pull ${config.model}\`, or ` +
+				"choose another model with /semsearch model."
+			);
+		}
+		return (
+			`Ollama returned HTTP ${error.statusCode} for model "${config.model}" ` +
+			`at ${config.baseUrl}: ${error.message}`
+		);
+	}
+	const message = error instanceof Error ? error.message : String(error);
+	if (/abort|cancel/i.test(message)) {
+		return "Semantic search was cancelled.";
+	}
+	if (
+		/fetch failed|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up|network|timed? ?out/i.test(
+			message
+		)
+	) {
+		return (
+			`Cannot reach Ollama at ${config.baseUrl}. Start it with \`ollama serve\` ` +
+			`and pull "${config.model}" (\`ollama pull ${config.model}\`), then retry. ` +
+			"Until then, use grep, find, or read."
+		);
+	}
+	return `Semantic search failed: ${message}`;
 }
 
 const XML_ESCAPE: Record<string, string> = {
@@ -129,6 +170,12 @@ export function formatIndexStatus(info: IndexStatusInfo): string {
 	lines.push(
 		`Last indexed: ${info.lastIndexedAt ?? "never"} | Stale: ${info.stale ? "yes" : "no"}`
 	);
+	if (info.lastIndexError) {
+		lines.push(`Last index error: ${info.lastIndexError}`);
+	}
+	if (info.configError) {
+		lines.push(`Config error: ${info.configError}`);
+	}
 	return lines.join("\n");
 }
 

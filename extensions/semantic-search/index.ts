@@ -18,7 +18,7 @@ import { SemanticSearchManager, type SearchManager } from "./src/manager.ts";
 import { writeModelConfig } from "./src/config.ts";
 import { listKnownModels, modelDimensions } from "./src/embed/registry.ts";
 import { isRootUnindexable } from "./src/index/ignore.ts";
-import { formatIndexStatus } from "./src/search/format.ts";
+import { describeSearchError, formatIndexStatus } from "./src/search/format.ts";
 
 const STATUS_KEY = "semsearch";
 
@@ -133,7 +133,7 @@ export function createSemanticSearchExtension(
 						`semsearch: ${totalChunks} chunks${fresh.reindexed ? " (updated)" : ""}`
 					);
 				} catch {
-					setIndexStatus(ctx, undefined);
+					setIndexStatus(ctx, "semsearch: unavailable");
 				}
 			})();
 		});
@@ -177,18 +177,33 @@ Use grep, find, or read only when you already know the exact literal string (a s
 						details: { resultCount: 0, reindexed: false, results: [] },
 					};
 				}
-				const { output, text } = await manager.search(
-					projectDir,
-					{
-						query: params.query,
-						limit: params.limit,
-						minScore: params.min_score,
-						summary: params.summary,
-						maxLines: params.max_lines,
-						pathPrefix: pathPrefixFor(projectDir, params.path),
-					},
-					signal
-				);
+				let search: Awaited<ReturnType<SearchManager["search"]>>;
+				try {
+					search = await manager.search(
+						projectDir,
+						{
+							query: params.query,
+							limit: params.limit,
+							minScore: params.min_score,
+							summary: params.summary,
+							maxLines: params.max_lines,
+							pathPrefix: pathPrefixFor(projectDir, params.path),
+						},
+						signal
+					);
+				} catch (error) {
+					// Ollama down, model not pulled, aborted, or the store failed. The
+					// model is told to reach for this tool first, so answer with an
+					// actionable error instead of a raw stack trace.
+					return {
+						isError: true,
+						content: [
+							{ type: "text", text: describeSearchError(error, manager.config) },
+						],
+						details: { resultCount: 0, reindexed: false, results: [] },
+					};
+				}
+				const { output, text } = search;
 				return {
 					content: [{ type: "text", text }],
 					details: {
@@ -236,6 +251,8 @@ Use grep, find, or read only when you already know the exact literal string (a s
 					embeddingModel: status.embeddingModel,
 					lastIndexedAt: status.lastIndexedAt,
 					stale,
+					lastIndexError: status.lastIndexError,
+					configError: manager.configError,
 				});
 				return { content: [{ type: "text", text }], details: { stale, ...status } };
 			},

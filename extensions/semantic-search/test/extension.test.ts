@@ -50,6 +50,7 @@ function fakeCtx(cwd = "/project"): FakeCtx {
 
 interface SetupOptions {
 	ensureFresh?: () => Promise<{ reindexed: boolean; stats: { indexedFiles: number } }>;
+	search?: SearchManager["search"];
 }
 
 function setup(options: SetupOptions = {}) {
@@ -98,7 +99,7 @@ function setup(options: SetupOptions = {}) {
 				vectorStorage: "float32",
 			},
 			ensure: async () => ({ store: store as never, indexer: indexer as never }),
-			search: async (_dir, request) => ({
+			search: options.search ?? (async (_dir, request) => ({
 				output: {
 					results: [
 						{
@@ -113,7 +114,7 @@ function setup(options: SetupOptions = {}) {
 					reindexed: false,
 				},
 				text: `Found 1 results for ${request.query}`,
-			}),
+			})),
 			close: () => {},
 		};
 	};
@@ -159,6 +160,20 @@ describe("semantic-search extension", () => {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		expect(ctx.statuses.some((text) => text?.startsWith("semsearch:"))).toBe(true);
 		expect(ctx.widgets.length).toBe(0);
+	});
+
+	it("marks the status unavailable when indexing fails", async () => {
+		const harness = setup({
+			ensureFresh: async () => {
+				throw new TypeError("fetch failed");
+			},
+		});
+		const ctx = fakeCtx();
+		for (const handler of harness.handlers.get("session_start") ?? []) {
+			await handler({ type: "session_start", reason: "startup" }, ctx);
+		}
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(ctx.statuses).toContain("semsearch: unavailable");
 	});
 
 	it("does not touch a captured ctx after the session is replaced", async () => {
@@ -216,6 +231,20 @@ describe("semantic-search extension", () => {
 		expect(result.content[0].text).toContain("Found 1 results for alpha");
 		expect(result.details.resultCount).toBe(1);
 		expect(result.details.results[0].filePath).toBe("src/a.ts");
+	});
+
+	it("returns an actionable error when the backend is unavailable", async () => {
+		const { tools } = setup({
+			search: async () => {
+				throw new TypeError("fetch failed");
+			},
+		});
+		const result = await tools
+			.get("semantic_search")
+			.execute("id", { query: "alpha" }, undefined, undefined, fakeCtx());
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain("Cannot reach Ollama");
+		expect(result.details.resultCount).toBe(0);
 	});
 
 	it("executes index_status", async () => {

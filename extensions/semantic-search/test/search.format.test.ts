@@ -3,11 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	describeSearchError,
 	fillSnippets,
 	formatIndexStatus,
 	formatSearchResults,
 	type SearchOutput,
 } from "../src/search/format.ts";
+import { EmbedError } from "../src/embed/types.ts";
+import type { SearchConfig } from "../src/config.ts";
 import type { RankedItem } from "../src/search/rank.ts";
 
 const dirs: string[] = [];
@@ -79,6 +82,50 @@ describe("formatIndexStatus", () => {
 		});
 		expect(text).toContain("Files: 10 | Indexed chunks: 42 | Model: jina");
 		expect(text).toContain("Stale: no");
+	});
+
+	it("surfaces index and config errors", () => {
+		const text = formatIndexStatus({
+			projectPath: "/project",
+			totalFiles: 0,
+			totalChunks: 0,
+			stale: true,
+			lastIndexError: "fetch failed",
+			configError: "unknown embedding model",
+		});
+		expect(text).toContain("Last index error: fetch failed");
+		expect(text).toContain("Config error: unknown embedding model");
+	});
+});
+
+describe("describeSearchError", () => {
+	const config: SearchConfig = {
+		model: "jina",
+		dimensions: 768,
+		baseUrl: "http://localhost:11434",
+		maxChunkTokens: 512,
+		vectorStorage: "float32",
+	};
+
+	it("names the pull command for a missing model", () => {
+		const text = describeSearchError(new EmbedError(404, "model not found"), config);
+		expect(text).toContain("ollama pull jina");
+	});
+
+	it("explains an unreachable Ollama", () => {
+		const text = describeSearchError(new TypeError("fetch failed"), config);
+		expect(text).toContain("Cannot reach Ollama");
+		expect(text).toContain("ollama serve");
+	});
+
+	it("reports cancellation", () => {
+		expect(describeSearchError(new Error("indexing aborted"), config)).toContain(
+			"cancelled"
+		);
+	});
+
+	it("falls back to a generic message", () => {
+		expect(describeSearchError(new Error("kaboom"), config)).toContain("kaboom");
 	});
 });
 
