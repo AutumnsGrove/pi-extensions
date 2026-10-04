@@ -77,7 +77,7 @@ describe("Indexer", () => {
 		expect(stats.chunksCreated).toBeGreaterThan(0);
 
 		const [query] = await embedder.embed(["alpha"]);
-		const results = store.search(query ?? [], 5, 0);
+		const results = store.search(query ?? [], 5, undefined);
 		expect(results[0]?.filePath).toBe("a.ts");
 		store.close();
 	});
@@ -291,6 +291,27 @@ describe("Indexer", () => {
 		);
 		// An aborted run must not advance the root hash.
 		expect(store.getMeta(META_ROOT_HASH)).toBe("");
+		store.close();
+	});
+
+	it("rejects vectors whose dimensions do not match the index", async () => {
+		const dir = project(START);
+		const wrong: Embedder = {
+			modelName: "wrong",
+			dimensions: 3,
+			async embed(texts: readonly string[]): Promise<number[][]> {
+				return texts.map(() => [1, 2, 3]);
+			},
+		};
+		const store = Store.open(":memory:", KEYWORDS.length);
+		const indexer = new Indexer({
+			store,
+			embedder: wrong,
+			chunkers,
+			maxChunkTokens: 512,
+			projectDir: dir,
+		});
+		await expect(indexer.index(false)).rejects.toThrow(/dimension mismatch/);
 		store.close();
 	});
 });

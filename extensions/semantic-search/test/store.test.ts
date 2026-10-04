@@ -63,7 +63,7 @@ describe("Store upsert, search, delete", () => {
 			]
 		);
 
-		const results = store.search([1, 0], 5, 0);
+		const results = store.search([1, 0], 5, undefined);
 		expect(results[0]?.filePath).toBe("src/a.ts");
 		expect(results[0]?.symbol).toBe("A");
 		expect(results[0]?.distance).toBeCloseTo(0, 5);
@@ -86,7 +86,7 @@ describe("Store upsert, search, delete", () => {
 				[0, 1],
 			]
 		);
-		const all = store.search([1, 0], 5, 0);
+		const all = store.search([1, 0], 5, undefined);
 		const tight = store.search([1, 0], 5, 0.5);
 		expect(all.length).toBe(2);
 		expect(tight.length).toBe(1);
@@ -108,7 +108,7 @@ describe("Store upsert, search, delete", () => {
 				[1, 0],
 			]
 		);
-		const results = store.search([1, 0], 10, 0, "src");
+		const results = store.search([1, 0], 10, undefined, "src");
 		expect(results.map((r) => r.filePath).sort()).toEqual(["src/a.ts"]);
 		store.close();
 	});
@@ -119,7 +119,7 @@ describe("Store upsert, search, delete", () => {
 		store.insertChunks([chunk("a.ts", "A")], [[1, 0]]);
 		store.deleteFileChunks("a.ts");
 		expect(store.stats()).toEqual({ totalFiles: 0, totalChunks: 0 });
-		expect(store.search([1, 0], 5, 0)).toHaveLength(0);
+		expect(store.search([1, 0], 5, undefined)).toHaveLength(0);
 		store.close();
 	});
 
@@ -139,7 +139,7 @@ describe("Store upsert, search, delete", () => {
 		// vec0 primary key; the old plain INSERT threw here.
 		expect(() => store.insertChunks([duplicate], [[0, 1]])).not.toThrow();
 		expect(store.stats().totalChunks).toBe(1);
-		expect(store.search([0, 1], 5, 0)[0]?.filePath).toBe("a.ts");
+		expect(store.search([0, 1], 5, undefined)[0]?.filePath).toBe("a.ts");
 		store.close();
 	});
 

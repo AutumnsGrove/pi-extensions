@@ -219,15 +219,15 @@ export class Store {
 	search(
 		queryVec: readonly number[],
 		limit: number,
-		maxDistance: number,
+		maxDistance: number | undefined,
 		pathPrefix = ""
 	): SearchResult[] {
 		const blob = serializeFloat32(queryVec);
 		const knn = pathPrefix ? Math.min(limit * 3, 300) : limit;
 		const where = ["v.embedding MATCH ?", "v.k = ?"];
 		const args: Array<string | number | Uint8Array> = [blob, knn];
-		if (maxDistance > 0) {
-			where.push("v.distance < ?");
+		if (maxDistance !== undefined) {
+			where.push("v.distance <= ?");
 			args.push(maxDistance);
 		}
 		if (pathPrefix) {

@@ -8,7 +8,7 @@
  *  - `/semsearch` for status and forced re-index
  */
 
-import { isAbsolute, relative } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { Type, type Static } from "typebox";
 import type {
 	ExtensionAPI,
@@ -18,6 +18,7 @@ import { SemanticSearchManager, type SearchManager } from "./src/manager.ts";
 import { writeModelConfig } from "./src/config.ts";
 import { listKnownModels, modelDimensions } from "./src/embed/registry.ts";
 import { isRootUnindexable } from "./src/index/ignore.ts";
+import { MAX_SEARCH_LIMIT } from "./src/search/service.ts";
 import { describeSearchError, formatIndexStatus } from "./src/search/format.ts";
 
 const STATUS_KEY = "semsearch";
@@ -34,11 +35,17 @@ const SearchParams = Type.Object({
 		Type.String({ description: "Project root. Defaults to the session working directory." })
 	),
 	limit: Type.Optional(
-		Type.Integer({ minimum: 1, description: "Max results to return (default 8)." })
+		Type.Integer({
+			minimum: 1,
+			maximum: MAX_SEARCH_LIMIT,
+			description: `Max results to return (default 8, max ${MAX_SEARCH_LIMIT}).`,
+		})
 	),
 	min_score: Type.Optional(
 		Type.Number({
-			description: "Minimum score threshold (-1 to 1). Use -1 to return all results.",
+			minimum: -1,
+			maximum: 1,
+			description: "Minimum cosine similarity (-1 to 1). Use -1 to return all results.",
 		})
 	),
 	summary: Type.Optional(
@@ -47,7 +54,11 @@ const SearchParams = Type.Object({
 		})
 	),
 	max_lines: Type.Optional(
-		Type.Integer({ minimum: 1, description: "Truncate each code snippet to this many lines." })
+		Type.Integer({
+			minimum: 1,
+			maximum: 2000,
+			description: "Truncate each code snippet to this many lines.",
+		})
 	),
 });
 type SearchArgs = Static<typeof SearchParams>;
@@ -63,14 +74,21 @@ function projectRoot(ctx: ExtensionContext, args: { cwd?: string }): string {
 }
 
 function pathPrefixFor(projectDir: string, path: string | undefined): string {
-	if (!path || path === projectDir) {
+	if (!path) {
 		return "";
 	}
-	if (isAbsolute(path)) {
-		const rel = relative(projectDir, path);
-		return rel.startsWith("..") ? "" : rel;
+	// Resolve relative to the project root, then normalise to the store's
+	// posix-relative form. Handles "./src", "src/", absolute paths, and
+	// platform separators; anything outside the root means "no restriction".
+	const abs = isAbsolute(path) ? path : join(projectDir, path);
+	const rel = relative(projectDir, abs);
+	if (rel === "" || rel === ".") {
+		return "";
 	}
-	return path;
+	if (rel === ".." || rel.startsWith(`..${sep}`)) {
+		return "";
+	}
+	return rel.split(sep).join("/");
 }
 
 /**

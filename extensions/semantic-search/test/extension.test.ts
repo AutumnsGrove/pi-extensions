@@ -247,6 +247,25 @@ describe("semantic-search extension", () => {
 		expect(result.details.resultCount).toBe(0);
 	});
 
+	it("normalises the path prefix before searching", async () => {
+		const seen: Array<string | undefined> = [];
+		const { tools } = setup({
+			search: async (_dir, request) => {
+				seen.push(request.pathPrefix);
+				return { output: { results: [], reindexed: false }, text: "ok" };
+			},
+		});
+		const ctx = fakeCtx();
+		const call = (path: string) =>
+			tools
+				.get("semantic_search")
+				.execute("id", { query: "x", path }, undefined, undefined, ctx);
+		await call("./src/");
+		await call("/project/src");
+		await call("/outside");
+		expect(seen).toEqual(["src", "src", ""]);
+	});
+
 	it("executes index_status", async () => {
 		const { tools } = setup();
 		const result = await tools

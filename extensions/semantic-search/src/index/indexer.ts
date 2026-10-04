@@ -220,6 +220,15 @@ export class Indexer {
 					(chunk) => `// ${chunk.filePath}\n${chunk.content}`
 				);
 				const vectors = await this.embedder.embed(texts, signal);
+				for (const vector of vectors) {
+					if (vector.length !== this.store.dimensions) {
+						throw new Error(
+							`embedding dimension mismatch: model "${this.embedder.modelName}" ` +
+								`returned ${vector.length} values but the index expects ` +
+								`${this.store.dimensions}. Re-select the model with /semsearch model.`
+						);
+					}
+				}
 				this.store.insertChunks(batch, vectors);
 				totalChunks += batch.length;
 				batch = [];

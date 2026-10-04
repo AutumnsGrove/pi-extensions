@@ -5,7 +5,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { buildChunkers, type ChunkerSet } from "../src/chunk/index.ts";
 import type { Embedder } from "../src/embed/types.ts";
 import { Indexer } from "../src/index/indexer.ts";
-import { runSearch } from "../src/search/service.ts";
+import { runSearch, computeMaxDistance } from "../src/search/service.ts";
 import { Store } from "../src/store/sqlite.ts";
 
 const KEYWORDS = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"];
@@ -126,5 +126,53 @@ describe("runSearch", () => {
 			})
 		).rejects.toThrow(/aborted/);
 		store.close();
+	});
+
+	it("clamps an oversized limit instead of tripping sqlite-vec", async () => {
+		const { projectDir, embedder, store, indexer } = setup(FILES);
+		const { output } = await runSearch({
+			store,
+			embedder,
+			indexer,
+			projectDir,
+			request: { query: "alpha", limit: 1_000_000 },
+		});
+		expect(output.results.length).toBeLessThanOrEqual(50);
+		store.close();
+	});
+
+	it("rejects a query vector whose dimensions do not match the index", async () => {
+		const { projectDir, store, indexer } = setup(FILES);
+		const wrong: Embedder = {
+			modelName: "wrong",
+			dimensions: 3,
+			async embed(texts) {
+				return texts.map(() => [1, 2, 3]);
+			},
+		};
+		await expect(
+			runSearch({
+				store,
+				embedder: wrong,
+				indexer,
+				projectDir,
+				request: { query: "alpha" },
+			})
+		).rejects.toThrow(/dimension mismatch/);
+		store.close();
+	});
+});
+
+describe("computeMaxDistance", () => {
+	it("clamps min_score to the cosine range", () => {
+		// Above 1 used to become a negative ceiling and disable filtering.
+		expect(computeMaxDistance(2, "m", 8)).toBe(0);
+		expect(computeMaxDistance(1, "m", 8)).toBe(0);
+		expect(computeMaxDistance(0.5, "m", 8)).toBeCloseTo(0.5);
+	});
+
+	it("treats a floor at or below -1 as no filter", () => {
+		expect(computeMaxDistance(-1, "m", 8)).toBeUndefined();
+		expect(computeMaxDistance(-5, "m", 8)).toBeUndefined();
 	});
 });
