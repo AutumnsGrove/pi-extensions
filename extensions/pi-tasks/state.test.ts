@@ -3,6 +3,7 @@ import {
 	applyTodoMutation,
 	emptyState,
 	formatCompactReminder,
+	formatTaskNudge,
 	formatTodoLine,
 	isTodoDetails,
 	replayFromBranch,
@@ -153,6 +154,31 @@ describe("formatCompactReminder", () => {
 		expect(reminder).toContain("+3 more");
 		expect(reminder).toContain("#8 [pending] Task 8");
 		expect(reminder).not.toContain("#9");
+	});
+});
+
+describe("formatTaskNudge", () => {
+	const state: TodoState = {
+		todos: [todo(1, "Done", "completed"), todo(2, "Active", "in_progress", "working")],
+		nextId: 3,
+	};
+
+	it("returns undefined with nothing unfinished", () => {
+		expect(formatTaskNudge(emptyState(), "drift")).toBeUndefined();
+		expect(formatTaskNudge({ todos: [todo(1, "Done", "completed")], nextId: 2 }, "settle")).toBeUndefined();
+	});
+
+	it("drift names the stale list and the workflow", () => {
+		const nudge = formatTaskNudge(state, "drift");
+		expect(nudge).toContain("Task list (1/2 done)");
+		expect(nudge).toContain("#2 [in_progress] Active (working)");
+		expect(nudge).toContain("This list is stale");
+	});
+
+	it("settle is directive about reconciling before stopping", () => {
+		const nudge = formatTaskNudge(state, "settle");
+		expect(nudge).toContain("about to finish with unfinished tasks");
+		expect(nudge).toContain("mark finished work completed");
 	});
 });
 

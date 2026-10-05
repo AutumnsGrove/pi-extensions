@@ -52,6 +52,21 @@ in progress, and never call something done while tests fail.
 - `/todos` prints **every** task, grouped `Pending` / `In Progress` /
   `Completed`.
 
+## Keeping the model honest
+
+Prompt guidelines alone don't make every model maintain the list, so the
+extension nudges. Every nudge is hidden from the TUI (`display: false`) and
+only fires for a plan the model engaged with **in the current run**, so
+leftover tasks from an earlier session never nag.
+
+- **Drift nudge** — after any turn that ran tools but never touched the list, a
+  one-line reminder is injected into the next request. Repeated reminders are
+  deduped by list state and re-sent at most every few turns.
+- **Settle reconciliation** — when a run is about to end with unfinished tasks,
+  the model gets exactly one forced request to reconcile the list: mark
+  finished work completed, start the next task, or tell the user what remains.
+  It fires at most once per run, so there is no loop.
+
 ## Persistence
 
 State lives entirely in each tool result's `details` (the full snapshot after

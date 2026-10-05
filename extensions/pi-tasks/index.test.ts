@@ -217,3 +217,88 @@ describe("pi-tasks /todos command", () => {
 		expect(notify).toHaveBeenCalledWith("No tasks yet. Ask the agent to add some!", "info");
 	});
 });
+
+// Minimal context: the enforcement handlers only need a session id and a branch.
+const enforcementCtx = (sessionId: string) => ({
+	sessionManager: { getSessionId: () => sessionId, getBranch: () => [] },
+});
+
+const turn = (toolNames: string[], turnIndex: number) => ({
+	toolResults: toolNames.map((toolName) => ({ toolName })),
+	turnIndex,
+});
+
+describe("pi-tasks enforcement nudges", () => {
+	it("nudges after a working turn that skipped the list", async () => {
+		const { tool, events } = load();
+		const ctx = enforcementCtx("nudge-drift");
+		events.get("agent_start")!(undefined, ctx);
+		await run(tool, ctx as unknown as ExtensionToolContext, { action: "create", subject: "Write parser" });
+
+		const result = events.get("turn_end")!(turn(["read", "edit"], 2), ctx) as
+			| { entries?: Array<Record<string, unknown>> }
+			| undefined;
+		expect(result?.entries?.[0]).toMatchObject({ type: "custom_message", customType: "pi-tasks", display: false });
+		expect(String(result?.entries?.[0]?.content)).toContain("This list is stale");
+	});
+
+	it("does not nudge on a turn that touched the list", async () => {
+		const { tool, events } = load();
+		const ctx = enforcementCtx("nudge-touched");
+		events.get("agent_start")!(undefined, ctx);
+		await run(tool, ctx as unknown as ExtensionToolContext, { action: "create", subject: "A" });
+
+		expect(events.get("turn_end")!(turn(["todo", "edit"], 2), ctx)).toBeUndefined();
+	});
+
+	it("does not nag about a plan it never touched this run", () => {
+		const { events } = load();
+		const branch = [
+			{
+				type: "message",
+				message: {
+					role: "toolResult",
+					toolName: "todo",
+					details: { todos: [{ id: 1, subject: "Old", status: "pending" }], nextId: 2 },
+				},
+			},
+		];
+		const ctx = {
+			hasUI: false,
+			mode: "print",
+			sessionManager: { getSessionId: () => "nudge-leftover", getBranch: () => branch },
+			ui: { setWidget: vi.fn() },
+		};
+		events.get("session_start")!(undefined, ctx);
+		events.get("agent_start")!(undefined, ctx);
+
+		expect(events.get("turn_end")!(turn(["read"], 1), ctx)).toBeUndefined();
+	});
+
+	it("forces exactly one reconciliation request before settling", async () => {
+		const { tool, events } = load();
+		const ctx = enforcementCtx("nudge-settle");
+		events.get("agent_start")!(undefined, ctx);
+		await run(tool, ctx as unknown as ExtensionToolContext, { action: "create", subject: "Write parser" });
+		events.get("turn_end")!(turn(["edit"], 1), ctx);
+
+		const first = events.get("agent_before_settle")!({ outcome: "completed" }, ctx) as
+			| { continue?: boolean; entries?: Array<Record<string, unknown>> }
+			| undefined;
+		expect(first?.continue).toBe(true);
+		expect(first?.entries?.[0]).toMatchObject({ type: "custom_message", display: false });
+		expect(String(first?.entries?.[0]?.content)).toContain("about to finish with unfinished tasks");
+
+		// No loop: the next settle is left alone.
+		expect(events.get("agent_before_settle")!({ outcome: "completed" }, ctx)).toBeUndefined();
+	});
+
+	it("does not force a turn for a run that only planned", async () => {
+		const { tool, events } = load();
+		const ctx = enforcementCtx("nudge-plan-only");
+		events.get("agent_start")!(undefined, ctx);
+		await run(tool, ctx as unknown as ExtensionToolContext, { action: "create", subject: "A" });
+
+		expect(events.get("agent_before_settle")!({ outcome: "completed" }, ctx)).toBeUndefined();
+	});
+});

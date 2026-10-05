@@ -10,6 +10,11 @@
  * view, and omits completed tasks (the heading keeps the count). `/todos`
  * prints every task grouped by status.
  *
+ * Because prompt guidelines alone don't make every model maintain the list, the
+ * extension also nudges: a drift reminder after a working turn that skipped the
+ * list, and one forced reconciliation request when a run is about to end with
+ * unfinished tasks. Both nudges are hidden from the TUI.
+ *
  * Deliberately smaller than rpiv-todo: no dependency graph, tombstones, owner,
  * metadata, config file, i18n, or turn-based fading.
  */
@@ -19,6 +24,7 @@ import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
+	CustomMessageEntryDraft,
 	Theme,
 } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
@@ -27,6 +33,7 @@ import {
 	applyTodoMutation,
 	emptyState,
 	formatCompactReminder,
+	formatTaskNudge,
 	replayFromBranch,
 	type Todo,
 	type TodoDetails,
@@ -39,6 +46,7 @@ const TOOL_NAME = "todo";
 const COMMAND_NAME = "todos";
 const WIDGET_KEY = "pi-tasks";
 const REMINDER_TYPE = "pi-tasks";
+const DRIFT_RESEND_TURNS = 3;
 const MAX_PANEL_ROWS = 5;
 
 const TodoParamsSchema = Type.Object({
@@ -82,10 +90,28 @@ let primarySession = "";
 let panelCtx: ExtensionContext | undefined;
 let panelRegistered = false;
 
+// Per-run enforcement bookkeeping, reset on `agent_start`. `runTouchedTodos`
+// gates every nudge so leftover tasks from an earlier session never nag.
+let runTouchedTodos = false;
+let runDidWork = false;
+let runReconciled = false;
+let lastNudgeSignature = "";
+let lastNudgeTurn = -DRIFT_RESEND_TURNS;
+
 const sid = (ctx: { sessionManager: { getSessionId(): string } }): string =>
 	ctx.sessionManager.getSessionId() ?? "";
 
 const stateFor = (sessionId: string): TodoState => sessions.get(sessionId) ?? emptyState();
+
+/** Hidden custom-message entry used for the drift and settle nudges. */
+function nudgeEntry(content: string): CustomMessageEntryDraft {
+	return { type: "custom_message", customType: REMINDER_TYPE, content, display: false };
+}
+
+/** Stable signature of the list, used to throttle repeated drift nudges. */
+function taskSignature(state: TodoState): string {
+	return state.todos.map((t) => `${t.id}:${t.status}:${t.subject}`).join("|");
+}
 
 // ---------------------------------------------------------------------------
 // Panel rendering
@@ -236,6 +262,53 @@ export default function piTasks(pi: ExtensionAPI): void {
 		}
 	});
 
+	// Enforcement — the prompt guidelines alone don't make every model keep the
+	// list current, so we nudge. Both nudges are hidden (display:false) and only
+	// fire for a plan the model engaged with in this run, so leftover tasks from
+	// an earlier session never nag.
+
+	pi.on("agent_start", () => {
+		runTouchedTodos = false;
+		runDidWork = false;
+		runReconciled = false;
+		lastNudgeSignature = "";
+		lastNudgeTurn = -DRIFT_RESEND_TURNS;
+	});
+
+	// Drift nudge: a turn did real work but never touched the list. Deduped by
+	// list signature and re-sent at most every DRIFT_RESEND_TURNS turns.
+	pi.on("turn_end", (event, ctx) => {
+		if (event.toolResults.some((r) => r.toolName !== TOOL_NAME)) runDidWork = true;
+		if (!runTouchedTodos || !runDidWork) return;
+		if (event.toolResults.some((r) => r.toolName === TOOL_NAME)) return;
+		if (event.toolResults.length === 0) return;
+
+		const state = stateFor(sid(ctx));
+		const nudge = formatTaskNudge(state, "drift");
+		if (!nudge) return;
+
+		const signature = taskSignature(state);
+		if (signature === lastNudgeSignature && event.turnIndex - lastNudgeTurn < DRIFT_RESEND_TURNS) {
+			return;
+		}
+		lastNudgeSignature = signature;
+		lastNudgeTurn = event.turnIndex;
+		return { entries: [nudgeEntry(nudge)] };
+	});
+
+	// Settle enforcement: force exactly one reconciliation request before the run
+	// ends with unfinished tasks. `runReconciled` guarantees no loop.
+	pi.on("agent_before_settle", (event, ctx) => {
+		if (event.outcome !== "completed" || runReconciled) return;
+		if (!runTouchedTodos || !runDidWork) return;
+
+		const nudge = formatTaskNudge(stateFor(sid(ctx)), "settle");
+		if (!nudge) return;
+
+		runReconciled = true;
+		return { entries: [nudgeEntry(nudge)], continue: true };
+	});
+
 	pi.registerTool({
 		name: TOOL_NAME,
 		label: "Todo",
@@ -247,6 +320,7 @@ export default function piTasks(pi: ExtensionAPI): void {
 		parameters: TodoParamsSchema,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			runTouchedTodos = true;
 			const id = sid(ctx);
 			const result = applyTodoMutation(stateFor(id), params as TodoParams);
 			sessions.set(id, result.state);

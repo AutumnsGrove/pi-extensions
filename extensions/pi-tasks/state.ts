@@ -137,11 +137,11 @@ export function formatTodoLine(todo: Todo): string {
 const REMINDER_MAX_TASKS = 8;
 
 /**
- * One-line task summary injected back into the model's context after a
- * compaction, so the plan, its ids, and the in-progress label survive the
- * summarization boundary. Returns undefined when nothing is unfinished.
+ * `Task list (done/total done): #2 [in_progress] X; #3 [pending] Y`, or
+ * undefined when nothing is unfinished. Shared by the compaction reminder and
+ * the drift/settle nudges.
  */
-export function formatCompactReminder(state: TodoState): string | undefined {
+function formatTaskSummary(state: TodoState): string | undefined {
 	const active = state.todos.filter((t) => t.status !== "completed");
 	if (active.length === 0) return undefined;
 
@@ -152,7 +152,31 @@ export function formatCompactReminder(state: TodoState): string | undefined {
 	});
 	const rest = active.length - REMINDER_MAX_TASKS;
 	if (rest > 0) parts.push(`+${rest} more`);
-	return `Task list (${done}/${state.todos.length} done): ${parts.join("; ")}. Keep updating it with the todo tool.`;
+	return `Task list (${done}/${state.todos.length} done): ${parts.join("; ")}`;
+}
+
+/**
+ * One-line task summary injected back into the model's context after a
+ * compaction, so the plan, its ids, and the in-progress label survive the
+ * summarization boundary. Returns undefined when nothing is unfinished.
+ */
+export function formatCompactReminder(state: TodoState): string | undefined {
+	const summary = formatTaskSummary(state);
+	return summary ? `${summary}. Keep updating it with the todo tool.` : undefined;
+}
+
+/**
+ * Nudge injected when the model drifts from the list ("drift") or is about to
+ * finish with unfinished tasks ("settle"). `settle` is deliberately more
+ * directive because it accompanies one forced reconciliation request.
+ */
+export function formatTaskNudge(state: TodoState, phase: "drift" | "settle"): string | undefined {
+	const summary = formatTaskSummary(state);
+	if (!summary) return undefined;
+	if (phase === "settle") {
+		return `${summary}. You are about to finish with unfinished tasks. Before stopping, call the todo tool to mark finished work completed and move the next task to in_progress, or tell the user exactly what remains.`;
+	}
+	return `${summary}. This list is stale — update it with the todo tool as you work: mark the current task in_progress, and completed as soon as it is done.`;
 }
 
 /** Shape check for defensive branch replay. */
