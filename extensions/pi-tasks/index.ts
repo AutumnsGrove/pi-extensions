@@ -11,9 +11,9 @@
  * prints every task grouped by status.
  *
  * Because prompt guidelines alone don't make every model maintain the list, the
- * extension also nudges: a drift reminder after a working turn that skipped the
- * list, and one forced reconciliation request when a run is about to end with
- * unfinished tasks. Both nudges are hidden from the TUI.
+ * extension also nudges: a drift reminder after two consecutive working turns
+ * that skipped the list, and one forced reconciliation request when a run is
+ * about to end with unfinished tasks. Both nudges are hidden from the TUI.
  *
  * Deliberately smaller than rpiv-todo: no dependency graph, tombstones, owner,
  * metadata, config file, i18n, or turn-based fading.
@@ -46,6 +46,7 @@ const TOOL_NAME = "todo";
 const COMMAND_NAME = "todos";
 const WIDGET_KEY = "pi-tasks";
 const REMINDER_TYPE = "pi-tasks";
+const DRIFT_MIN_WORKING_TURNS = 2;
 const DRIFT_RESEND_TURNS = 3;
 const MAX_PANEL_ROWS = 5;
 
@@ -95,6 +96,7 @@ let panelRegistered = false;
 let runTouchedTodos = false;
 let runDidWork = false;
 let runReconciled = false;
+let workingTurnsWithoutTodo = 0;
 let lastNudgeSignature = "";
 let lastNudgeTurn = -DRIFT_RESEND_TURNS;
 
@@ -271,17 +273,28 @@ export default function piTasks(pi: ExtensionAPI): void {
 		runTouchedTodos = false;
 		runDidWork = false;
 		runReconciled = false;
+		workingTurnsWithoutTodo = 0;
 		lastNudgeSignature = "";
 		lastNudgeTurn = -DRIFT_RESEND_TURNS;
 	});
 
-	// Drift nudge: a turn did real work but never touched the list. Deduped by
-	// list signature and re-sent at most every DRIFT_RESEND_TURNS turns.
+	// Drift nudge: only after DRIFT_MIN_WORKING_TURNS consecutive turns that did
+	// real work without touching the list. A todo call resets the streak, so a
+	// task being actively worked on is not nagged. Deduped by list signature and
+	// re-sent at most every DRIFT_RESEND_TURNS turns.
 	pi.on("turn_end", (event, ctx) => {
-		if (event.toolResults.some((r) => r.toolName !== TOOL_NAME)) runDidWork = true;
-		if (!runTouchedTodos || !runDidWork) return;
-		if (event.toolResults.some((r) => r.toolName === TOOL_NAME)) return;
-		if (event.toolResults.length === 0) return;
+		const touched = event.toolResults.some((r) => r.toolName === TOOL_NAME);
+		const worked = event.toolResults.some((r) => r.toolName !== TOOL_NAME);
+
+		if (touched) {
+			workingTurnsWithoutTodo = 0;
+			return;
+		}
+		if (!worked) return;
+
+		runDidWork = true;
+		workingTurnsWithoutTodo += 1;
+		if (!runTouchedTodos || workingTurnsWithoutTodo < DRIFT_MIN_WORKING_TURNS) return;
 
 		const state = stateFor(sid(ctx));
 		const nudge = formatTaskNudge(state, "drift");
@@ -321,6 +334,7 @@ export default function piTasks(pi: ExtensionAPI): void {
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			runTouchedTodos = true;
+			workingTurnsWithoutTodo = 0;
 			const id = sid(ctx);
 			const result = applyTodoMutation(stateFor(id), params as TodoParams);
 			sessions.set(id, result.state);

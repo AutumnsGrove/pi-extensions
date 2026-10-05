@@ -229,17 +229,32 @@ const turn = (toolNames: string[], turnIndex: number) => ({
 });
 
 describe("pi-tasks enforcement nudges", () => {
-	it("nudges after a working turn that skipped the list", async () => {
+	it("waits for two consecutive working turns before nudging", async () => {
 		const { tool, events } = load();
 		const ctx = enforcementCtx("nudge-drift");
 		events.get("agent_start")!(undefined, ctx);
 		await run(tool, ctx as unknown as ExtensionToolContext, { action: "create", subject: "Write parser" });
 
-		const result = events.get("turn_end")!(turn(["read", "edit"], 2), ctx) as
+		// One working turn is not yet drift.
+		expect(events.get("turn_end")!(turn(["read"], 2), ctx)).toBeUndefined();
+
+		const result = events.get("turn_end")!(turn(["edit"], 3), ctx) as
 			| { entries?: Array<Record<string, unknown>> }
 			| undefined;
 		expect(result?.entries?.[0]).toMatchObject({ type: "custom_message", customType: "pi-tasks", display: false });
 		expect(String(result?.entries?.[0]?.content)).toContain("This list is stale");
+	});
+
+	it("resets the streak when the list is touched", async () => {
+		const { tool, events } = load();
+		const ctx = enforcementCtx("nudge-reset");
+		events.get("agent_start")!(undefined, ctx);
+		await run(tool, ctx as unknown as ExtensionToolContext, { action: "create", subject: "A" });
+
+		expect(events.get("turn_end")!(turn(["read"], 1), ctx)).toBeUndefined();
+		await run(tool, ctx as unknown as ExtensionToolContext, { action: "update", id: 1, status: "in_progress" });
+		expect(events.get("turn_end")!(turn(["edit"], 2), ctx)).toBeUndefined();
+		expect(events.get("turn_end")!(turn(["edit"], 3), ctx)).toBeDefined();
 	});
 
 	it("does not nudge on a turn that touched the list", async () => {
