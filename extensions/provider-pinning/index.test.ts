@@ -54,6 +54,24 @@ const writePin = (agentDir: string): void => {
 	);
 };
 
+const writeContextWindow = (dir: string): void => {
+	writeFileSync(
+		join(dir, "context-window.json"),
+		JSON.stringify({
+			version: 1,
+			models: {
+				"openrouter/deepseek/deepseek-v4.1-flash": {
+					baseId: "deepseek/deepseek-v4.1-flash",
+					limit: 400000,
+					variantId: "deepseek/deepseek-v4.1-flash-400k",
+					updatedAt: "2026-10-02T00:00:00.000Z",
+				},
+			},
+		}),
+		"utf8"
+	);
+};
+
 const context = (overrides: Record<string, unknown> = {}) => ({
 	model: { provider: "openrouter", id: "deepseek/deepseek-v4.1-flash" },
 	hasUI: false,
@@ -162,6 +180,56 @@ describe("providerPinning extension", () => {
 			"No provider pin for deepseek/deepseek-v4.1-flash · /provider to pin",
 			"info"
 		);
+	});
+
+	it("applies the base model's pin to a /context derived model", async () => {
+		writePin(agentDir);
+		writeContextWindow(agentDir);
+		const { pi, handlers } = createMockPi();
+		providerPinning(pi);
+		const variant = { provider: "openrouter", id: "deepseek/deepseek-v4.1-flash-400k" };
+		const ctx = context({ model: variant });
+		const result = await handlers.get("before_provider_request")?.(
+			{ type: "before_provider_request", payload: { model: variant.id } },
+			ctx
+		);
+		expect(result).toEqual({
+			model: variant.id,
+			provider: { only: ["deepseek"], allow_fallbacks: false },
+		});
+	});
+
+	it("picks up a derived model created after the extension loaded", async () => {
+		writePin(agentDir);
+		const { pi, handlers } = createMockPi();
+		// Loaded before any context-window.json exists...
+		providerPinning(pi);
+		// ...then the user runs /context set mid-session.
+		writeContextWindow(agentDir);
+		const variant = { provider: "openrouter", id: "deepseek/deepseek-v4.1-flash-400k" };
+		const ctx = context({ model: variant });
+		const result = await handlers.get("before_provider_request")?.(
+			{ type: "before_provider_request", payload: { model: variant.id } },
+			ctx
+		);
+		expect(result).toEqual({
+			model: variant.id,
+			provider: { only: ["deepseek"], allow_fallbacks: false },
+		});
+	});
+
+	it("does not nudge for a derived model whose base is pinned", async () => {
+		writePin(agentDir);
+		writeContextWindow(agentDir);
+		const { pi, handlers } = createMockPi();
+		providerPinning(pi);
+		const variant = { provider: "openrouter", id: "deepseek/deepseek-v4.1-flash-400k" };
+		const ctx = context({ model: variant });
+		await handlers.get("model_select")?.(
+			{ type: "model_select", source: "set", model: variant, previousModel: undefined },
+			ctx
+		);
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
 	});
 
 	it("clears the pin through /pin off", async () => {

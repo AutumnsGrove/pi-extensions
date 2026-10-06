@@ -57,6 +57,11 @@ pin. Locally owned fields such as `zdr` are preserved. Pins are global per
 model, stored in `provider-pins.json` in the pi agent directory, and survive
 across sessions.
 
+Pins are keyed by the base model id. Derived models from the
+[`context-window`](../context-window/) extension (`...-400k`) are mapped back to
+their base, so a pin on `deepseek/deepseek-v4.1-flash` also covers its derived
+variants for the request, the status badge, and endpoint discovery.
+
 The provider list comes from
 
 ```

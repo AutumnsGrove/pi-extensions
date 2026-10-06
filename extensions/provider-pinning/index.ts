@@ -1,3 +1,4 @@
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type {
 	ExtensionAPI,
@@ -54,12 +55,61 @@ export const resolveBaseUrl = (
 const errorMessage = (error: unknown): string =>
 	error instanceof Error ? error.message : String(error);
 
+/**
+ * Read the context-window extension's limits, if present, to map derived models
+ * (`deepseek/deepseek-v4.1-flash-400k`) back to their base. Pins are stored on
+ * the base model, so a derived model has to resolve to it for pinning, the
+ * status badge, and the endpoint picker to behave.
+ */
+function loadVariantBases(path: string): Map<string, string> {
+	const map = new Map<string, string>();
+	try {
+		const parsed = JSON.parse(readFileSync(path, "utf8")) as {
+			models?: Record<string, { baseId?: unknown; variantId?: unknown }>;
+		};
+		for (const [key, entry] of Object.entries(parsed.models ?? {})) {
+			const slash = key.indexOf("/");
+			const provider = slash >= 0 ? key.slice(0, slash) : "";
+			if (provider && typeof entry?.variantId === "string" && typeof entry?.baseId === "string") {
+				map.set(`${provider}/${entry.variantId}`, entry.baseId);
+			}
+		}
+	} catch {
+		// No context-window config, or unreadable: nothing to map.
+	}
+	return map;
+}
+
+/**
+ * A getter that re-reads the derived-model map when `context-window.json`
+ * changes, so a variant created mid-session is picked up without a reload.
+ */
+function createVariantBasesResolver(path: string): () => Map<string, string> {
+	let cached = new Map<string, string>();
+	let mtimeMs = -1;
+	return () => {
+		try {
+			const stat = statSync(path);
+			if (stat.mtimeMs !== mtimeMs) {
+				cached = loadVariantBases(path);
+				mtimeMs = stat.mtimeMs;
+			}
+		} catch {
+			cached = new Map();
+			mtimeMs = -1;
+		}
+		return cached;
+	};
+}
+
 export default function providerPinning(pi: ExtensionAPI): void {
 	const agentDir = getAgentDir();
 	const pinsPath = join(agentDir, "provider-pins.json");
 	const cachePath = join(agentDir, "provider-endpoints-cache.json");
 	const cache = new EndpointCache(cachePath);
 	const lastServed = new Map<string, string>();
+	const contextWindowPath = join(agentDir, "context-window.json");
+	const getVariantBases = createVariantBasesResolver(contextWindowPath);
 	let pins: PinsFile = loadPins(pinsPath);
 	let statusTimer: ReturnType<typeof setTimeout> | undefined;
 	let activeContext: ExtensionContext | undefined;
@@ -67,13 +117,35 @@ export default function providerPinning(pi: ExtensionAPI): void {
 	const isOpenRouter = (ctx: ExtensionContext): boolean =>
 		ctx.model?.provider === "openrouter";
 
+	/** The base model behind a `/context` derived model, or the id itself. */
+	const effectiveIdFor = (model: { provider: string; id: string }): string =>
+		getVariantBases().get(`${model.provider}/${model.id}`) ?? model.id;
+
+	/** Find the pin for a payload, resolving a derived id to its base. */
+	const resolvePin = (
+		payload: unknown,
+		provider: string | undefined
+	): ProviderPin | undefined => {
+		const direct = pinForModel(payload, pins.pins);
+		if (direct || !provider || !payload || typeof payload !== "object") {
+			return direct;
+		}
+		const model = (payload as { model?: unknown }).model;
+		if (typeof model !== "string") {
+			return undefined;
+		}
+		const base = getVariantBases().get(`${provider}/${model}`);
+		return base ? pins.pins[base] : undefined;
+	};
+
 	/** True when the effective route is DeepSeek's own API, pinned or served. */
 	const isDeepseekActive = (ctx: ExtensionContext): boolean => {
 		if (!isOpenRouter(ctx) || !ctx.model) {
 			return false;
 		}
-		const pin = pins.pins[ctx.model.id];
-		const served = lastServed.get(ctx.model.id);
+		const id = effectiveIdFor(ctx.model);
+		const pin = pins.pins[id];
+		const served = lastServed.get(id);
 		return (
 			isDeepseekProvider(pin?.providerName) ||
 			isDeepseekProvider(pin?.tag) ||
@@ -86,8 +158,9 @@ export default function providerPinning(pi: ExtensionAPI): void {
 			ctx.ui.setStatus(STATUS_KEY, undefined);
 			return;
 		}
-		const pin = pins.pins[ctx.model.id];
-		const served = lastServed.get(ctx.model.id);
+		const id = effectiveIdFor(ctx.model);
+		const pin = pins.pins[id];
+		const served = lastServed.get(id);
 		const parts: string[] = [];
 		if (pin) {
 			parts.push(`pin: ${pin.providerName}${pin.allowFallbacks ? " ↺" : ""}`);
@@ -249,7 +322,7 @@ export default function providerPinning(pi: ExtensionAPI): void {
 		if (!isOpenRouter(ctx)) {
 			return undefined;
 		}
-		return applyPin(event.payload, pinForModel(event.payload, pins.pins));
+		return applyPin(event.payload, resolvePin(event.payload, ctx.model?.provider));
 	});
 
 	// OpenRouter names the provider that served the request in the stream body,
@@ -258,11 +331,12 @@ export default function providerPinning(pi: ExtensionAPI): void {
 		if (!isOpenRouter(ctx) || !ctx.model) {
 			return;
 		}
+		const id = effectiveIdFor(ctx.model);
 		const providerName = extractServedProvider(event.data);
-		if (!providerName || lastServed.get(ctx.model.id) === providerName) {
+		if (!providerName || lastServed.get(id) === providerName) {
 			return;
 		}
-		lastServed.set(ctx.model.id, providerName);
+		lastServed.set(id, providerName);
 		refreshStatus(ctx);
 	});
 
@@ -273,11 +347,11 @@ export default function providerPinning(pi: ExtensionAPI): void {
 		if (event.source !== "set" || event.model.provider !== "openrouter") {
 			return;
 		}
-		if (pins.pins[event.model.id]) {
+		if (pins.pins[effectiveIdFor(event.model)]) {
 			return;
 		}
 		ctx.ui.notify(
-			`No provider pin for ${event.model.id} · /provider to pin`,
+			`No provider pin for ${effectiveIdFor(event.model)} · /provider to pin`,
 			"info"
 		);
 	});
@@ -297,7 +371,7 @@ export default function providerPinning(pi: ExtensionAPI): void {
 			);
 			return;
 		}
-		const modelId = ctx.model.id;
+		const modelId = effectiveIdFor(ctx.model);
 		const argument = args.trim();
 		if (
 			argument === "off" ||
@@ -343,7 +417,7 @@ export default function providerPinning(pi: ExtensionAPI): void {
 				ctx.ui.notify("Interactive UI is not available.", "info");
 				return;
 			}
-			await openTable(ctx, ctx.model.id);
+			await openTable(ctx, effectiveIdFor(ctx.model));
 		},
 	});
 

@@ -14,6 +14,7 @@ packaged as a single installable [pi package](https://github.com/earendil-works/
 | [`pi-q-n-a`](extensions/pi-q-n-a/) | Model-facing `pi-q-n-a` tool: a multi-question form with single/multi-select, an always-present "Type something", per-question notes, optional side-by-side previews, and partial submit. | working |
 | [`pi-tasks`](extensions/pi-tasks/) | Model-facing `todo` tool (create/update/delete/list) with a live task panel above the editor and a full `/todos` view. State replays from the session branch, so it survives `/reload` and compaction. | working |
 | [`cost-tracker`](extensions/cost-tracker/) | Tracks development cost from pi's own session usage. `/cost start` … `/cost stop` in pi, or `pnpm cost` from a shell; finalizes runs and auto-imports the table below. | working |
+| [`context-window`](extensions/context-window/) | Caps the effective context window by deriving a real reduced-window model (`/context`), so auto-compaction fires sooner, with a bar-charted breakdown of where the context went. | working |
 | [`semantic-search`](extensions/semantic-search/) | Native local semantic code search: tree-sitter chunking, Merkle-incremental indexing, Ollama embeddings, SQLite + sqlite-vec retrieval (`semantic_search` tool, `/semsearch`). | in progress (tools) |
 | _more to come_ | | |
 
@@ -89,6 +90,22 @@ pi-extensions/
 │   │   ├── ledger.test.ts
 │   │   ├── index.test.ts
 │   │   └── PLAN.md
+│   ├── context-window/
+│   │   ├── index.ts
+│   │   ├── config.ts
+│   │   ├── variant.ts
+│   │   ├── breakdown.ts
+│   │   ├── bar.ts
+│   │   ├── format.ts
+│   │   ├── json.ts
+│   │   ├── index.test.ts
+│   │   ├── config.test.ts
+│   │   ├── variant.test.ts
+│   │   ├── breakdown.test.ts
+│   │   ├── bar.test.ts
+│   │   ├── format.test.ts
+│   │   ├── PLAN.md
+│   │   └── README.md
 │   └── semantic-search/
 │       └── PLAN.md           # in progress
 ├── package.json              # pi manifest: extensions/*/index.ts
@@ -130,15 +147,15 @@ pnpm cost report                  # print the ledger without changing anything
 <!-- COST:START -->
 | Extension | Cost | Runs |
 | --- | --- | --- |
-| semantic-search | $0.998 | 3 |
+| context-window | $0.643 | 1 |
+| semantic-search | $0.590 | 3 |
 | provider-pinning | $0.417 | 1 |
-| pi-tasks | $0.304 | 1 |
 | parallel | $0.303 | 1 |
 | pi-q-n-a | $0.228 | 1 |
 | thinking-box | $0.113 | 1 |
 | extension-divider | $0.100 | 1 |
 | cost-tracker | $0.099 | 2 |
-| **Total** | **$2.563** | **11** |
+| **Total** | **$2.493** | **11** |
 <!-- COST:END -->
 
 ## License
