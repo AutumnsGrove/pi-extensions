@@ -47,6 +47,60 @@ describe("QuestionnaireComponent", () => {
 		expect(result()?.answers[0]).toMatchObject({ selections: ["Alpha"], skipped: false });
 	});
 
+	it("selects and submits a single option by number", () => {
+		const { component, result } = mount([
+			{ id: "q", prompt: "Which?", options: [{ label: "Alpha" }, { label: "Beta" }] },
+		]);
+		component.handleInput("2");
+		expect(result()?.answers[0]).toMatchObject({ selections: ["Beta"], skipped: false });
+	});
+
+	it("focuses Type something by number without typing the digit", () => {
+		const { component, result } = mount([
+			{ id: "q", prompt: "Which?", options: [{ label: "Alpha" }] },
+		]);
+		// Option 1, Type something is 2, Skip is unnumbered.
+		component.handleInput("2");
+		for (const char of "custom answer") component.handleInput(char);
+		component.handleInput(ENTER);
+		expect(result()?.answers[0]).toMatchObject({ custom: "custom answer", skipped: false });
+	});
+
+	it("toggles a multi-select option by number", () => {
+		const { component, result } = mount([
+			{
+				id: "q",
+				prompt: "Which?",
+				multiSelect: true,
+				options: [{ label: "Alpha" }, { label: "Beta" }],
+			},
+		]);
+		component.handleInput("1"); // Alpha on
+		component.handleInput("2"); // Beta on
+		component.handleInput("2"); // Beta off
+		component.handleInput(ENTER); // advance -> submit
+		expect(result()?.answers[0]?.selections).toEqual(["Alpha"]);
+	});
+
+	it("types digits as text once the Type something row is focused", () => {
+		const { component, result } = mount([
+			{ id: "q", prompt: "Which?", options: [{ label: "Alpha" }] },
+		]);
+		component.handleInput(DOWN); // Move onto Type something
+		for (const char of "42") component.handleInput(char);
+		component.handleInput(ENTER);
+		expect(result()?.answers[0]).toMatchObject({ custom: "42" });
+	});
+
+	it("treats a number past the last row as freeform text", () => {
+		const { component, result } = mount([
+			{ id: "q", prompt: "Which?", options: [{ label: "Alpha" }] },
+		]);
+		component.handleInput("9"); // no row 9 -> jump to Type something and type it
+		component.handleInput(ENTER);
+		expect(result()?.answers[0]).toMatchObject({ custom: "9" });
+	});
+
 	it("types straight into the Type something field and records it", () => {
 		const { component, result } = mount([
 			{ id: "q", prompt: "Which?", options: [{ label: "Alpha" }] },

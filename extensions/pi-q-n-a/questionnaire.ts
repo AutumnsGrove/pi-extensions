@@ -290,6 +290,22 @@ export class QuestionnaireComponent implements Component {
 			return;
 		}
 
+		// A typed number picks that numbered row directly: a regular option is
+		// chosen (and a single-select question advances), while the Type
+		// something row is focused so the user can start typing. The digit is
+		// consumed, never inserted as the first character of the answer.
+		const number = /^([1-9])$/.exec(data);
+		if (number) {
+			const target = options.find(
+				(candidate) => candidate.kind !== "skip" && candidate.index === Number(number[1])
+			);
+			if (target) {
+				if (target.kind === "other") this.focusOther();
+				else this.activate(target, question);
+				return;
+			}
+		}
+
 		// Typing anywhere jumps to the Type something row and starts the answer.
 		if (question.allowOther && this.isPrintable(data)) {
 			this.focusOtherAndType(data);
@@ -451,13 +467,20 @@ export class QuestionnaireComponent implements Component {
 		this.refresh();
 	}
 
+	/** Jump the cursor to the Type something row. Returns false when there is none. */
+	private focusOther(): boolean {
+		const question = this.currentQuestion();
+		if (!question) return false;
+		const otherIndex = optionsFor(question).findIndex((option) => option.kind === "other");
+		if (otherIndex < 0) return false;
+		this.optionIndex = otherIndex;
+		this.refresh();
+		return true;
+	}
+
 	/** Jump the cursor to the Type something row and type the first character. */
 	private focusOtherAndType(data: string): void {
-		const question = this.currentQuestion();
-		if (!question) return;
-		const otherIndex = optionsFor(question).findIndex((option) => option.kind === "other");
-		if (otherIndex < 0) return;
-		this.optionIndex = otherIndex;
+		if (!this.focusOther()) return;
 		this.input.handleInput(data);
 		this.persistInput();
 		this.refresh();
@@ -710,6 +733,7 @@ export class QuestionnaireComponent implements Component {
 			const parts = [
 				"↑↓ move",
 				question?.multiSelect === true ? "Space toggle · Enter next" : "Enter select",
+				"1-9 pick",
 				question?.allowOther ? "type to answer" : undefined,
 				"ctrl+n note",
 			].filter((part): part is string => Boolean(part));

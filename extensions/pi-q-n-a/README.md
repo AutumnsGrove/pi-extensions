@@ -29,6 +29,12 @@ field: move onto it and type, or just start typing anywhere and the cursor jumps
 there. There is no separate box. `Enter` uses the text as the answer; in a
 multi-select question it is added alongside the checkboxes. `Esc` leaves the row.
 
+Every row is also directly selectable by its number, Claude Code style: pressing
+`2` picks row 2 (and a single-select question advances immediately), while
+pressing the number of the **Type something** row focuses it so you can start
+typing. The digit itself is not inserted. Once the cursor is on the Type
+something row, digits type normally.
+
 ## Usage
 
 The model calls the tool; the user drives the form with the keyboard.
@@ -36,6 +42,7 @@ The model calls the tool; the user drives the form with the keyboard.
 | Key | Action |
 | --- | --- |
 | `↑` / `↓` | Move the cursor |
+| `1`–`9` | Pick that numbered row. A regular option is chosen (single-select advances); the **Type something** row is focused without inserting the digit |
 | `Enter` | Single-select: choose and advance. Multi-select: advance with the current set |
 | `Space` | Multi-select: toggle the highlighted option |
 | Any printable key | Jump to the **Type something** row and start typing |
