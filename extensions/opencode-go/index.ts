@@ -38,6 +38,7 @@ import { UsagePanel } from "./panel.ts";
 import {
 	describeUsageError,
 	fetchGoUsage,
+	formatCountdown,
 	formatMeterRow,
 	formatPercent,
 	type UsageMeter,
@@ -45,6 +46,8 @@ import {
 
 const STATUS_KEY = "opencode-go";
 const REFRESH_MS = 5 * 60_000;
+/** Redraw cadence for the status-bar countdown; no network calls. */
+const TICK_MS = 30_000;
 const USAGE = "Usage: /usage [refresh]";
 const DISCOVERY_TIMEOUT_MS = 6_000;
 
@@ -119,6 +122,7 @@ export default async function opencodeGoExtension(pi: ExtensionAPI): Promise<voi
 	let lastError: string | undefined;
 	let updatedAt: number | undefined;
 	let timer: ReturnType<typeof setInterval> | undefined;
+	let ticker: ReturnType<typeof setInterval> | undefined;
 
 	const renderStatus = (ctx: ExtensionContext): void => {
 		if (!ctx.hasUI) return;
@@ -126,7 +130,15 @@ export default async function opencodeGoExtension(pi: ExtensionAPI): Promise<voi
 			ctx.ui.setStatus(STATUS_KEY, undefined);
 			return;
 		}
-		const parts = meters.map((meter) => `${meter.short} ${formatPercent(meter.percent)}`);
+		const parts = meters.map((meter) => {
+			const percent = formatPercent(meter.percent);
+			// Only the rolling 5h window gets a countdown, so the bar stays short.
+			if (meter.kind !== "five_hour") return `${meter.short} ${percent}`;
+			const countdown = formatCountdown(meter.resetsAt);
+			return countdown
+				? `${meter.short} ${percent} (${countdown})`
+				: `${meter.short} ${percent}`;
+		});
 		ctx.ui.setStatus(STATUS_KEY, `go ${parts.join(" · ")}`);
 	};
 
@@ -163,12 +175,21 @@ export default async function opencodeGoExtension(pi: ExtensionAPI): Promise<voi
 			if (latestCtx) void refresh(latestCtx);
 		}, REFRESH_MS);
 		timer.unref?.();
+		if (ticker) clearInterval(ticker);
+		ticker = setInterval(() => {
+			if (latestCtx) renderStatus(latestCtx);
+		}, TICK_MS);
+		ticker.unref?.();
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
 		if (timer) {
 			clearInterval(timer);
 			timer = undefined;
+		}
+		if (ticker) {
+			clearInterval(ticker);
+			ticker = undefined;
 		}
 		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
 	});
