@@ -1,7 +1,8 @@
 # extension-divider
 
 A light grey `///` between each item on pi's extension status line, so several
-status badges read as distinct instead of running together.
+status badges read as distinct instead of running together. Under a
+[pride theme](../../themes/) the separator is recoloured from the active flag.
 
 ```
 ~/Documents/Projects/pi-extensions (main)
@@ -13,6 +14,12 @@ pin: DeepSeek /// DS off-peak 2d3h /// parallel 12/4000 · $0.03
 
 Always on in the terminal. `/divider` toggles it; the built-in footer returns
 when it is off.
+
+When the active theme belongs to the pride pack, each `/` is drawn in a colour
+from that flag: `pride` shows a spectrum, a two-stripe flag alternates, a
+three-stripe flag shows all three. Under every other theme the divider stays
+the usual faint grey. The colours are read from the theme itself (the `syntax*`
+roles), so no palette is hard-coded here and a new flag works automatically.
 
 ## How it works (and the one caveat)
 

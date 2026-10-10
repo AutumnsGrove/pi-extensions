@@ -1,13 +1,52 @@
 import type {
 	ExtensionAPI,
 	ExtensionContext,
+	Theme,
 } from "@earendil-works/pi-coding-agent";
 import { FooterComponent } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import { DEFAULT_DIVIDER, joinStatuses } from "./divider.ts";
+import {
+	DEFAULT_DIVIDER,
+	PRIDE_DIVIDER_ROLES,
+	isPrideTheme,
+	joinStatuses,
+	sampleIndices,
+} from "./divider.ts";
 
 /** Theme role for the divider: a faint grey that reads as a separator. */
 const DIVIDER_COLOR = "dim";
+
+/**
+ * The plain, faint separator.
+ */
+const plainDivider = (theme: Theme): string =>
+	theme.fg(DIVIDER_COLOR, ` ${DEFAULT_DIVIDER} `);
+
+/**
+ * Recolour each separator glyph with the active flag's stripes. Sampling the
+ * theme's own resolved colours keeps this in sync with the palette: the rainbow
+ * theme yields a spectrum, a two-stripe flag alternates, and a three-stripe
+ * flag shows all three.
+ */
+const flagDivider = (theme: Theme): string => {
+	const characters = [...DEFAULT_DIVIDER];
+	const ramp = PRIDE_DIVIDER_ROLES.map((role) => theme.colors[role]);
+	const indices = sampleIndices(
+		ramp.map((color) => String(color)),
+		characters.length
+	);
+	if (indices.length === 0) {
+		return plainDivider(theme);
+	}
+	return ` ${characters
+		.map((character, index) =>
+			theme.style(character, { fg: ramp[indices[index] as number] })
+		)
+		.join("")} `;
+};
+
+const dividerFor = (theme: Theme): string =>
+	isPrideTheme(theme.name) ? flagDivider(theme) : plainDivider(theme);
 
 /**
  * Pi joins extension statuses with a single space and exposes no separator
@@ -65,10 +104,7 @@ export default function extensionDivider(pi: ExtensionAPI): void {
 					if (statuses.size === 0 || lines.length === 0) {
 						return lines;
 					}
-					const statusLine = joinStatuses(
-						statuses,
-						theme.fg(DIVIDER_COLOR, ` ${DEFAULT_DIVIDER} `)
-					);
+					const statusLine = joinStatuses(statuses, dividerFor(theme));
 					// Pi appends the status line last; swap in our divided version.
 					lines[lines.length - 1] = truncateToWidth(
 						statusLine,

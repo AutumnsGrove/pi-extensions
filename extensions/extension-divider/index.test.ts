@@ -99,6 +99,41 @@ describe("extensionDivider", () => {
 		]);
 	});
 
+	it("recolours the separator from the pride palette", () => {
+		const mock = createMockPi();
+		extensionDivider(mock.pi);
+		const { ctx, setFooter, statuses, footerData, tui } = createCtx();
+		statuses.set("a", "alpha");
+		statuses.set("b", "beta");
+
+		mock.handlers.get("session_start")?.({}, ctx);
+		const factory = setFooter.mock.calls[0]?.[0] as (
+			tui: unknown,
+			theme: unknown,
+			footerData: unknown
+		) => { render(width: number): string[] };
+
+		// A pride theme exposes resolved colours per role; the separator samples
+		// six of them, so three slashes draw the 0th, 3rd and 5th.
+		const prideTheme = {
+			name: "pride-dark",
+			colors: {
+				syntaxKeyword: "#red",
+				syntaxFunction: "#orange",
+				syntaxVariable: "#yellow",
+				syntaxString: "#green",
+				syntaxNumber: "#blue",
+				syntaxType: "#violet",
+			},
+			style: (text: string, options: { fg?: string }) =>
+				`<${options.fg}>${text}</>`,
+			fg: (_color: string, text: string) => text,
+		};
+
+		const lines = factory(tui, prideTheme, footerData).render(120);
+		expect(lines[2]).toBe("alpha <#red>/</><#green>/</><#violet>/</> beta");
+	});
+
 	it("does not divide a single status", () => {
 		const mock = createMockPi();
 		extensionDivider(mock.pi);

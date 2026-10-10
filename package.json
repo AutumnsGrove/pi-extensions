@@ -17,6 +17,9 @@
   "pi": {
     "extensions": [
       "extensions/*/index.ts"
+    ],
+    "themes": [
+      "themes/*.json"
     ]
   },
   "peerDependencies": {
@@ -37,7 +40,9 @@
   "scripts": {
     "check": "tsc --noEmit",
     "test": "vitest run",
-    "cost": "node extensions/cost-tracker/cli.ts"
+    "cost": "node extensions/cost-tracker/cli.ts",
+    "themes": "node themes/generate.ts",
+    "themes:check": "node themes/generate.ts --check"
   },
   "dependencies": {
     "@vscode/tree-sitter-wasm": "^0.3.1",

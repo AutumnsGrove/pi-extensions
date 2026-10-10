@@ -1,7 +1,8 @@
 # pi-extensions
 
-A growing collection of [pi](https://github.com/earendil-works/pi) extensions,
-packaged as a single installable [pi package](https://github.com/earendil-works/pi/blob/main/docs/packages.md).
+A growing collection of [pi](https://github.com/earendil-works/pi) extensions and
+themes, packaged as a single installable
+[pi package](https://github.com/earendil-works/pi/blob/main/docs/packages.md).
 
 ## Extensions
 
@@ -18,6 +19,30 @@ packaged as a single installable [pi package](https://github.com/earendil-works/
 | [`opencode-go`](extensions/opencode-go/) | Native OpenCode Go provider: one-click OAuth device sign-in that auto-provisions a Go API key, live Go model discovery merged with pi's catalog, plus a `/usage` panel for the rolling 5h / weekly / monthly meters and a live footer widget. | working |
 | [`semantic-search`](extensions/semantic-search/) | Native local semantic code search: tree-sitter chunking, Merkle-incremental indexing, Ollama embeddings, SQLite + sqlite-vec retrieval (`semantic_search` tool, `/semsearch`). | in progress (tools) |
 | _more to come_ | | |
+
+## Themes
+
+The package also ships a **pride theme pack**: four flags, each with a light and
+dark variant, generated from one palette system so they stay consistent. The
+rainbow theme is the calm default; the trans, bi and pan themes keep the same
+role map with their own stripes.
+
+| Theme | Dark | Light |
+| --- | --- | --- |
+| Progress Pride (rainbow) | `pride-dark` | `pride-light` |
+| Transgender | `pride-trans-dark` | `pride-trans-light` |
+| Bisexual | `pride-bi-dark` | `pride-bi-light` |
+| Pansexual | `pride-pan-dark` | `pride-pan-light` |
+
+Pick one in `/settings` → **Theme**, or set a light/dark pair directly:
+
+```json
+{ "theme": "pride-light/pride-dark" }
+```
+
+While a pride theme is active, `extension-divider` recolours its `///`
+separator from the flag instead of the usual faint grey. See
+[`themes/`](themes/) for the design rules and how to regenerate or add a flag.
 
 ## Install
 
@@ -123,7 +148,12 @@ pi-extensions/
 │   │   └── README.md
 │   └── semantic-search/
 │       └── PLAN.md           # in progress
-├── package.json              # pi manifest: extensions/*/index.ts
+├── themes/                   # pride theme pack (see themes/README.md)
+│   ├── color.ts              # OKLCH + WCAG contrast helpers
+│   ├── palettes.ts           # flag definitions + role mapping
+│   ├── generate.ts           # writes themes/*.json + contrast report
+│   └── pride-*.json          # generated, loaded by pi
+├── package.json              # pi manifest: extensions + themes
 └── tsconfig.json
 ```
 
