@@ -11,6 +11,7 @@ themes, packaged as a single installable
 | [`provider-pinning`](extensions/provider-pinning/) | Pin OpenRouter requests to a chosen upstream provider so prompt caching stays warm, with a full provider comparison table (`/provider`). | working |
 | [`parallel`](extensions/parallel/) | Parallel-backed `web_search` + `web_fetch` tools with a local monthly quota hard cap and model-summarized page reading (`/parallel-login`). | working |
 | [`extension-divider`](extensions/extension-divider/) | A light grey `///` between each item on the extension status line (`/divider`). | working |
+| [`git-status`](extensions/git-status/) | A live git widget above the footer: branch, changed files (untracked included), uncommitted `+insertions/-deletions`, and ahead/behind (`/git-status`). | working |
 | [`thinking-box`](extensions/thinking-box/) | Collapsible, timed thinking traces: stream into a short box showing duration + reasoning tokens, expand the full trace with `Ctrl+O` (`/thinking-box`). | working |
 | [`pi-q-n-a`](extensions/pi-q-n-a/) | Model-facing `pi-q-n-a` tool: a multi-question form with single/multi-select, an always-present "Type something", per-question notes, optional side-by-side previews, and partial submit. | working |
 | [`pi-tasks`](extensions/pi-tasks/) | Model-facing `todo` tool (create/update/delete/list) with a live task panel above the editor and a full `/todos` view. State replays from the session branch, so it survives `/reload` and compaction. | working |
@@ -109,6 +110,12 @@ pi-extensions/
 │   │   ├── state.ts
 │   │   ├── state.test.ts
 │   │   └── README.md
+│   ├── git-status/
+│   │   ├── index.ts
+│   │   ├── git.ts
+│   │   ├── git.test.ts
+│   │   ├── index.test.ts
+│   │   └── README.md
 │   ├── cost-tracker/
 │   │   ├── index.ts
 │   │   ├── ledger.ts
@@ -201,7 +208,8 @@ pnpm cost report                  # print the ledger without changing anything
 | thinking-box | $0.113 | 1 |
 | extension-divider | $0.100 | 1 |
 | cost-tracker | $0.099 | 2 |
-| **Total** | **$2.393** | **12** |
+| git-status | $0.078 | 1 |
+| **Total** | **$2.471** | **13** |
 <!-- COST:END -->
 
 ## License
