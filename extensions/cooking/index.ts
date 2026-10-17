@@ -1,22 +1,22 @@
 /**
- * cooking — animate pi's tab-title glyph while it is working.
+ * cooking — put a steady activity glyph in pi's tab title while it works.
  *
  * Claude Code shows a spinner in its tab title while it thinks, which makes a
  * background session readable at a glance. Pi does not: it sets a static title
  * once, and its OSC 9;4 progress indicator is ignored by terminals that do not
  * implement that protocol (notably macOS Terminal.app).
  *
- * This extension animates the app glyph slot of `ctx.ui.setTitle()` — a title
+ * This extension swaps the app glyph slot of `ctx.ui.setTitle()` — a title
  * glyph works in every terminal that shows a title, Terminal.app included:
  *
- *   ∑ - auth-refactor - pi-extensions     agent is working (π morphs)
+ *   ∞ - auth-refactor - pi-extensions     the agent is working
  *   ◌ - auth-refactor - pi-extensions     waiting on a dialog or approval
  *   ⁇ - auth-refactor - pi-extensions     the pi-q-n-a tool is asking you
  *   π - auth-refactor - pi-extensions     idle (pi's own title)
  *
- * The three non-idle states use different marks so active work, a blocked
- * prompt, and a questionnaire are told apart at a glance. On settle the title
- * returns to pi's own format.
+ * The marks are static rather than animated: with several pi sessions open a
+ * rotating title is visual noise, and one steady glyph per state is enough to
+ * tell active work, a blocked prompt, and a questionnaire apart at a glance.
  */
 
 import type {
@@ -35,11 +35,6 @@ import {
 const COMMAND_NAME = "cooking";
 /** The tool that renders pi's multiple-choice form. */
 const ASK_TOOL_NAME = "pi-q-n-a";
-/** Default ms per working frame: slow enough to read a glyph before it changes. */
-const DEFAULT_FRAME_MS = 400;
-/** Clamp for `/cooking speed`, so the title cannot strobe or crawl. */
-const MIN_FRAME_MS = 40;
-const MAX_FRAME_MS = 2000;
 
 export default function cooking(pi: ExtensionAPI): void {
 	let enabled = true;
@@ -52,9 +47,6 @@ export default function cooking(pi: ExtensionAPI): void {
 	/** In-flight `pi-q-n-a` calls, keyed by tool call id. */
 	const askCalls = new Set<string>();
 	let state: CookingState = "idle";
-	let tick = 0;
-	let frameMs = DEFAULT_FRAME_MS;
-	let timer: ReturnType<typeof setInterval> | undefined;
 	let ctxRef: ExtensionContext | undefined;
 
 	const deriveState = (): CookingState => {
@@ -72,7 +64,7 @@ export default function cooking(pi: ExtensionAPI): void {
 			basename(ctx.cwd)
 		);
 		return enabled
-			? cookingTitle(DEFAULT_APP_TITLE, descriptor, state, tick)
+			? cookingTitle(DEFAULT_APP_TITLE, descriptor, state)
 			: `${DEFAULT_APP_TITLE} - ${descriptor}`;
 	};
 
@@ -83,39 +75,9 @@ export default function cooking(pi: ExtensionAPI): void {
 		ctx.ui.setTitle(titleFor(ctx));
 	};
 
-	const stopTimer = (): void => {
-		if (timer) clearInterval(timer);
-		timer = undefined;
-	};
-
-	const ensureTimer = (): void => {
-		const ctx = ctxRef;
-		if (!ctx?.hasUI || !enabled || state !== "working" || timer) return;
-		// Waiting and asking are static marks; only working animates.
-		timer = setInterval(() => {
-			tick += 1;
-			paint();
-		}, frameMs);
-	};
-
-	/** Re-arm the animation after a live speed change. */
-	const restartTimer = (): void => {
-		stopTimer();
-		ensureTimer();
-	};
-
 	const apply = (ctx: ExtensionContext): void => {
 		ctxRef = ctx;
 		state = deriveState();
-		if (state === "idle") {
-			stopTimer();
-			// Leave zero as the first frame so a new run starts consistently.
-			tick = 0;
-		} else if (state !== "working") {
-			stopTimer();
-		} else {
-			ensureTimer();
-		}
 		paint();
 	};
 
@@ -170,7 +132,6 @@ export default function cooking(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
-		stopTimer();
 		runActive = false;
 		compacting = false;
 		promptActive = false;
@@ -182,31 +143,9 @@ export default function cooking(pi: ExtensionAPI): void {
 
 	pi.registerCommand(COMMAND_NAME, {
 		description:
-			"Animate the tab-title glyph while pi works; on|off toggles, speed <ms> sets the frame time",
+			"Show a tab-title activity glyph while pi works; on|off toggles",
 		handler: async (args: string, ctx: ExtensionCommandContext) => {
-			const parts = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
-			const head = parts[0];
-
-			if (head === "speed") {
-				const ms = Number(parts[1]);
-				if (!Number.isFinite(ms)) {
-					ctx.ui.notify(
-						`Cooking speed is ${frameMs}ms per frame; use /cooking speed <ms>`,
-						"warning"
-					);
-					return;
-				}
-				frameMs = Math.min(
-					MAX_FRAME_MS,
-					Math.max(MIN_FRAME_MS, Math.round(ms))
-				);
-				ctxRef = ctx;
-				state = deriveState();
-				restartTimer();
-				paint();
-				ctx.ui.notify(`Cooking speed ${frameMs}ms per frame`, "info");
-				return;
-			}
+			const head = args.trim().toLowerCase().split(/\s+/).filter(Boolean)[0];
 
 			if (head === "on" || head === "off") {
 				enabled = head === "on";
@@ -216,14 +155,9 @@ export default function cooking(pi: ExtensionAPI): void {
 
 			ctxRef = ctx;
 			state = deriveState();
-			if (enabled && state === "working") {
-				ensureTimer();
-			} else {
-				stopTimer();
-			}
 			paint();
 			ctx.ui.notify(
-				enabled ? "Cooking tab spinner on" : "Cooking tab spinner off",
+				enabled ? "Cooking tab glyph on" : "Cooking tab glyph off",
 				"info"
 			);
 		},
