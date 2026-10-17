@@ -11,6 +11,7 @@ themes, packaged as a single installable
 | [`provider-pinning`](extensions/provider-pinning/) | Pin OpenRouter requests to a chosen upstream provider so prompt caching stays warm, with a full provider comparison table (`/provider`). | working |
 | [`parallel`](extensions/parallel/) | Parallel-backed `web_search` + `web_fetch` tools with a local monthly quota hard cap and model-summarized page reading (`/parallel-login`). | working |
 | [`extension-divider`](extensions/extension-divider/) | A light grey `///` between each item on the extension status line (`/divider`). | working |
+| [`cooking`](extensions/cooking/) | Live activity glyph in the terminal tab title: the leading `π` morphs through math while pi works, with distinct marks for dialogs and `pi-q-n-a` forms. Works in Terminal.app, where OSC 9;4 does not (`/cooking`). | working |
 | [`git-status`](extensions/git-status/) | A live git widget above the footer: branch, changed files (untracked included), uncommitted `+insertions/-deletions`, and ahead/behind (`/git-status`). | working |
 | [`thinking-box`](extensions/thinking-box/) | Collapsible, timed thinking traces: stream into a short box showing duration + reasoning tokens, expand the full trace with `Ctrl+O` (`/thinking-box`). | working |
 | [`pi-q-n-a`](extensions/pi-q-n-a/) | Model-facing `pi-q-n-a` tool: a multi-question form with single/multi-select, an always-present "Type something", per-question notes, optional side-by-side previews, and partial submit. | working |
@@ -209,7 +210,8 @@ pnpm cost report                  # print the ledger without changing anything
 | extension-divider | $0.100 | 1 |
 | cost-tracker | $0.099 | 2 |
 | git-status | $0.078 | 1 |
-| **Total** | **$2.471** | **13** |
+| cooking | $0.068 | 1 |
+| **Total** | **$2.539** | **14** |
 <!-- COST:END -->
 
 ## License
