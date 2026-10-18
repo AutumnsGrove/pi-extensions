@@ -20,7 +20,9 @@ built-in catalog, per-model wire routing (`/chat/completions`, `/responses`,
   merges it with pi's built-in metadata (plus models.dev), cached for 12 hours,
   so `/model` tracks the current Go list.
 - **`/usage`** — an overlay with the rolling 5-hour, weekly, and monthly meters
-  as used-vs-limit bars (`$` and `%`, plus reset countdowns).
+  as used-vs-limit bars (`$` and `%`, plus reset countdowns), each backed by a
+  **pace line**: spend vs. the straight-line budget for the window, where the
+  window is projected to land, and the remaining `$`/hr or `$`/day.
 - **Footer widget** — `go 5h 62% (1h 12m) · wk 31% · mo 44% (12d 0h)`, where
   the parentheticals are the rolling 5-hour and monthly reset countdowns. Usage
   refreshes on session start and every 5 minutes; the countdowns redraw every 30
@@ -63,9 +65,18 @@ OpenCode Go — usage
 updated 2:32:05 PM
 
 Rolling 5h  ██████░░░░░░░░░░░░  62.5%  $12.00 / $19.20   1h 12m
+  under pace (-12.0 pts) · tracks to 50% · $2.40/hr left
 Weekly      ███░░░░░░░░░░░░░░░░  31.4%  $30.10 / $96.00   3d 4h
+  on pace · tracks to 44% · $8.20/day left
 Monthly     ████░░░░░░░░░░░░░░░  44.1%  $42.30 / $96.00   12d 0h
+  under pace (-10.6 pts) · tracks to 62% · $2.23/day left
 ```
+
+Pace compares the meter's `used%` to the straight-line budget at this point in
+its own window (`elapsed% = (now - startsAt) / (resetsAt - startsAt)`). Positive
+drift is `over pace`, negative is `under pace`, and within ±5 points is
+`on pace`; `tracks to` projects the current rate to the window's end. Short
+windows quote an hourly remainder, the month quotes a daily one.
 
 Limits follow OpenCode Go: the 5-hour window is 20% of the plan, the week 50%,
 and the month 100% (so a $60 plan shows $12 / $30 / $60).
@@ -88,7 +99,9 @@ and the month 100% (so a $60 plan shows $12 / $30 / $60).
 - `discovery.ts` fetches the live Go ids, enriches them with models.dev metadata,
   and caches the overlay in `~/.pi/agent/opencode-go-models.json`.
 - `usage.ts` calls `GET /api/go/status` and converts micro-cents (1e-8 USD) to
-  dollars and percentages.
+  dollars and percentages. It reads `startsAt`/`resetsAt` per meter (month falls
+  back to `access.startsAt`/`endsAt`) and `computePace()` compares spend to the
+  linear budget; `panel.ts` renders that as the pace line.
 
 ## Caveats
 

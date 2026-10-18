@@ -4,14 +4,15 @@
  * The Console HTML is client-rendered, so the numbers come from the JSON API:
  *
  *   GET /api/go/status   (Authorization: Bearer <session-or-key>, x-org-id)
- *   -> { access: { meters: {
- *          fiveHour: { resetsAt, limitMicroCents, usedMicroCents },
- *          week:     { resetsAt, limitMicroCents, usedMicroCents },
+ *   -> { access: { startsAt, endsAt, meters: {
+ *          fiveHour: { startsAt, resetsAt, limitMicroCents, usedMicroCents },
+ *          week:     { startsAt, resetsAt, limitMicroCents, usedMicroCents },
  *          month:    { resetsAt, limitMicroCents, usedMicroCents } } } }
  *
- * Money is micro-cents (1e-8 USD). Percentages are used / limit. The month
- * meter reports its own `resetsAt` (the subscription period end); if it is ever
- * absent we fall back to `access.endsAt`.
+ * Money is micro-cents (1e-8 USD). Percentages are used / limit. Each meter's
+ * own `startsAt`/`resetsAt` bound its window (the month meter only reports
+ * `resetsAt`, so it falls back to `access.startsAt`/`access.endsAt`); those
+ * bounds drive both the reset countdown and the pace line.
  */
 
 export type MeterKind = "five_hour" | "calendar_week" | "product_period";
@@ -24,9 +25,29 @@ export interface UsageMeter {
 	percent: number;
 	usedUsd: number;
 	limitUsd: number;
+	/** ISO timestamp the window opened, or null when unknown. */
+	startsAt: string | null;
 	/** ISO timestamp of rollover, or null when unknown. */
 	resetsAt: string | null;
 }
+
+/** Linear-budget comparison for a single meter, used by the `/usage` panel. */
+export interface MeterPace {
+	/** 0-100 percent of the window that has elapsed. */
+	elapsedPercent: number;
+	/** Used% minus the linear budget for this point in the window. */
+	deltaPoints: number;
+	/** Where the window lands if the current rate holds. */
+	projectedPercent: number;
+	status: "under" | "on" | "over";
+	/** USD still available in the window. */
+	remainingUsd: number;
+	/** Hours left in the window (> 0). */
+	remainingHours: number;
+}
+
+/** Points of drift from the linear budget that still counts as "on pace". */
+const PACE_BAND_POINTS = 5;
 
 export type UsageFailureKind =
 	| "no_credentials"
@@ -54,7 +75,14 @@ const MICRO_CENTS_PER_DOLLAR = 100_000_000;
 const WINDOWS = [
 	{ key: "fiveHour", kind: "five_hour", label: "Rolling 5h", short: "5h" },
 	{ key: "week", kind: "calendar_week", label: "Weekly", short: "wk" },
-	{ key: "month", kind: "product_period", label: "Monthly", short: "mo", fallbackPeriodEnd: true },
+	{
+		key: "month",
+		kind: "product_period",
+		label: "Monthly",
+		short: "mo",
+		fallbackPeriodEnd: true,
+		fallbackPeriodStart: true,
+	},
 ] as const;
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
@@ -75,6 +103,7 @@ export function parseGoStatus(payload: unknown): UsageMeter[] {
 	const meters = asRecord(access?.meters);
 	if (!meters) return [];
 	const periodEndMs = typeof access?.endsAt === "string" ? Date.parse(access.endsAt) : Number.NaN;
+	const periodStartMs = typeof access?.startsAt === "string" ? Date.parse(access.startsAt) : Number.NaN;
 	const result: UsageMeter[] = [];
 	for (const window of WINDOWS) {
 		const entry = asRecord(meters[window.key]);
@@ -91,6 +120,12 @@ export function parseGoStatus(payload: unknown): UsageMeter[] {
 			: "fallbackPeriodEnd" in window && window.fallbackPeriodEnd
 				? periodEndMs
 				: Number.NaN;
+		const ownStart = typeof entry.startsAt === "string" ? Date.parse(entry.startsAt) : Number.NaN;
+		const startsAtMs = Number.isFinite(ownStart)
+			? ownStart
+			: "fallbackPeriodStart" in window && window.fallbackPeriodStart
+				? periodStartMs
+				: Number.NaN;
 		result.push({
 			kind: window.kind,
 			label: window.label,
@@ -98,6 +133,7 @@ export function parseGoStatus(payload: unknown): UsageMeter[] {
 			percent: Math.round(Math.min(100, Math.max(0, percent)) * 10) / 10,
 			usedUsd,
 			limitUsd,
+			startsAt: Number.isFinite(startsAtMs) ? new Date(startsAtMs).toISOString() : null,
 			resetsAt: Number.isFinite(resetsAtMs) ? new Date(resetsAtMs).toISOString() : null,
 		});
 	}
@@ -171,6 +207,59 @@ export function formatBar(ratio: number, width = 18): string {
 	const clamped = Math.max(0, Math.min(1, Number.isFinite(ratio) ? ratio : 0));
 	const filled = Math.round(clamped * width);
 	return `${"█".repeat(filled)}${"░".repeat(Math.max(0, width - filled))}`;
+}
+
+/**
+ * Compare a meter's spend to a straight line across its own window.
+ *
+ * `deltaPoints` is used% minus the linear budget: positive means burning ahead
+ * of the clock, negative means headroom. Returns null when the window bounds are
+ * missing, malformed, or not currently active.
+ */
+export function computePace(meter: UsageMeter, now = Date.now()): MeterPace | null {
+	if (!meter.startsAt || !meter.resetsAt) return null;
+	const start = Date.parse(meter.startsAt);
+	const end = Date.parse(meter.resetsAt);
+	if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+	if (now <= start || now >= end) return null;
+	const elapsedRatio = (now - start) / (end - start);
+	const elapsedPercent = elapsedRatio * 100;
+	const deltaPoints = meter.percent - elapsedPercent;
+	const projectedPercent = elapsedRatio > 0 ? meter.percent / elapsedRatio : meter.percent;
+	const remainingUsd = Math.max(0, meter.limitUsd - meter.usedUsd);
+	const remainingHours = (end - now) / 3_600_000;
+	return {
+		elapsedPercent,
+		deltaPoints,
+		projectedPercent,
+		remainingUsd,
+		remainingHours,
+		status:
+			deltaPoints > PACE_BAND_POINTS
+				? "over"
+				: deltaPoints < -PACE_BAND_POINTS
+					? "under"
+					: "on",
+	};
+}
+
+/** `under pace (-10.6 pts) · tracks to 62% · $2.23/day left`. */
+export function formatPace(pace: MeterPace): string {
+	const parts: string[] = [];
+	if (pace.status === "on") {
+		parts.push("on pace");
+	} else {
+		const sign = pace.deltaPoints > 0 ? "+" : "-";
+		parts.push(`${pace.status} pace (${sign}${Math.abs(pace.deltaPoints).toFixed(1)} pts)`);
+	}
+	parts.push(`tracks to ${formatPercent(pace.projectedPercent)}`);
+	// Hourly for the short windows, daily for the month; `$/day` is noise on 5h.
+	const rate =
+		pace.remainingHours <= 48
+			? `${formatUsd(pace.remainingUsd / pace.remainingHours)}/hr left`
+			: `${formatUsd(pace.remainingUsd / (pace.remainingHours / 24))}/day left`;
+	parts.push(rate);
+	return parts.join(" · ");
 }
 
 export function formatCountdown(resetsAt: string | null, now = Date.now()): string | null {

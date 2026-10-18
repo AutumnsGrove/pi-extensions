@@ -7,6 +7,7 @@ const meter = (over: Partial<UsageMeter> & Pick<UsageMeter, "kind" | "short">): 
 	percent: 0,
 	usedUsd: 0,
 	limitUsd: 0,
+	startsAt: null,
 	resetsAt: null,
 	...over,
 });

@@ -1,5 +1,13 @@
 import { Key, matchesKey, type Component } from "@earendil-works/pi-tui";
-import { formatBar, formatCountdown, formatPercent, formatUsd, type UsageMeter } from "./usage.ts";
+import {
+	computePace,
+	formatBar,
+	formatCountdown,
+	formatPace,
+	formatPercent,
+	formatUsd,
+	type UsageMeter,
+} from "./usage.ts";
 
 /** The slice of the pi theme the panel needs; structurally satisfied by Theme. */
 export interface PanelTheme {
@@ -71,6 +79,12 @@ export class UsagePanel implements Component {
 				row += `  ${theme.fg("muted", `${formatUsd(meter.usedUsd)} / ${formatUsd(meter.limitUsd)}`)}`;
 				if (countdown) row += `  ${theme.fg("dim", countdown)}`;
 				lines.push(row);
+				const pace = computePace(meter, now);
+				if (pace) {
+					const paceColor =
+						pace.status === "over" ? "warning" : pace.status === "under" ? "success" : "muted";
+					lines.push(`  ${theme.fg(paceColor, formatPace(pace))}`);
+				}
 			}
 		}
 

@@ -66,7 +66,8 @@ overlay from `GET /zen/go/v1/models` (models.dev-enriched, cached 12h in
 ### UI
 
 - `/usage` — overlay with three used-vs-limit bars (`$` + `%` + reset
-  countdown); `notify` fallback outside the TUI.
+  countdown) and a pace line per meter (drift vs. the linear budget, projected
+  end-of-window %, remaining rate); `notify` fallback outside the TUI.
 - Footer status — `go 5h 62% (1h 12m) · wk 31% · mo 44% (12d 0h)`, refreshed on
   session start and every 5 minutes.
 
