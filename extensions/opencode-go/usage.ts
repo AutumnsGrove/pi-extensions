@@ -7,10 +7,11 @@
  *   -> { access: { meters: {
  *          fiveHour: { resetsAt, limitMicroCents, usedMicroCents },
  *          week:     { resetsAt, limitMicroCents, usedMicroCents },
- *          month:    { limitMicroCents, usedMicroCents } } } }
+ *          month:    { resetsAt, limitMicroCents, usedMicroCents } } } }
  *
- * Money is micro-cents (1e-8 USD). Percentages are used / limit; the month
- * meter has no window of its own, so its reset falls back to `access.endsAt`.
+ * Money is micro-cents (1e-8 USD). Percentages are used / limit. The month
+ * meter reports its own `resetsAt` (the subscription period end); if it is ever
+ * absent we fall back to `access.endsAt`.
  */
 
 export type MeterKind = "five_hour" | "calendar_week" | "product_period";

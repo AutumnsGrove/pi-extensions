@@ -57,6 +57,21 @@ const api = {
 	"openai-responses": withOpenCodeSessionHeader(openAIResponsesApi()),
 };
 
+/** Footer text: `go 5h 62% (1h 12m) · wk 31% · mo 44% (12d 0h)`. */
+export function formatStatusMeters(meters: UsageMeter[], now = Date.now()): string | undefined {
+	if (meters.length === 0) return undefined;
+	const parts = meters.map((meter) => {
+		const percent = formatPercent(meter.percent);
+		// Countdowns for the 5h window (burn rate) and the month (days left).
+		if (meter.kind !== "five_hour" && meter.kind !== "product_period") {
+			return `${meter.short} ${percent}`;
+		}
+		const countdown = formatCountdown(meter.resetsAt, now);
+		return countdown ? `${meter.short} ${percent} (${countdown})` : `${meter.short} ${percent}`;
+	});
+	return `go ${parts.join(" · ")}`;
+}
+
 const readStoredKey = (): string | undefined => {
 	const credential = readStoredCredential(PROVIDER_ID, join(getAgentDir(), "auth.json")) as
 		| { type?: string; key?: string }
@@ -126,20 +141,7 @@ export default async function opencodeGoExtension(pi: ExtensionAPI): Promise<voi
 
 	const renderStatus = (ctx: ExtensionContext): void => {
 		if (!ctx.hasUI) return;
-		if (meters.length === 0) {
-			ctx.ui.setStatus(STATUS_KEY, undefined);
-			return;
-		}
-		const parts = meters.map((meter) => {
-			const percent = formatPercent(meter.percent);
-			// Only the rolling 5h window gets a countdown, so the bar stays short.
-			if (meter.kind !== "five_hour") return `${meter.short} ${percent}`;
-			const countdown = formatCountdown(meter.resetsAt);
-			return countdown
-				? `${meter.short} ${percent} (${countdown})`
-				: `${meter.short} ${percent}`;
-		});
-		ctx.ui.setStatus(STATUS_KEY, `go ${parts.join(" · ")}`);
+		ctx.ui.setStatus(STATUS_KEY, formatStatusMeters(meters));
 	};
 
 	const refresh = async (ctx: ExtensionContext): Promise<void> => {

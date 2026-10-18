@@ -21,9 +21,10 @@ built-in catalog, per-model wire routing (`/chat/completions`, `/responses`,
   so `/model` tracks the current Go list.
 - **`/usage`** — an overlay with the rolling 5-hour, weekly, and monthly meters
   as used-vs-limit bars (`$` and `%`, plus reset countdowns).
-- **Footer widget** — `go 5h 62% (1h 12m) · wk 31% · mo 44%`, where the
-  parenthetical is the rolling 5-hour window's reset countdown. Usage refreshes
-  on session start and every 5 minutes; the countdown redraws every 30 seconds.
+- **Footer widget** — `go 5h 62% (1h 12m) · wk 31% · mo 44% (12d 0h)`, where
+  the parentheticals are the rolling 5-hour and monthly reset countdowns. Usage
+  refreshes on session start and every 5 minutes; the countdowns redraw every 30
+  seconds.
 
 ## Install
 
