@@ -24,6 +24,11 @@ describe("normalizePermissionsConfig", () => {
 		expect(config.mode).toBe("acceptEdits");
 	});
 
+	it("accepts always-allow as an alias for bypass", () => {
+		const { config } = normalizePermissionsConfig({ mode: "always-allow" });
+		expect(config.mode).toBe("bypass");
+	});
+
 	it("normalizes allow arrays and objects", () => {
 		const { config } = normalizePermissionsConfig({
 			allow: ["Bash(git status)", 42],

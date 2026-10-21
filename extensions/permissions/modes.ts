@@ -62,6 +62,11 @@ const ALIASES: Record<string, PermissionMode> = {
 	deny: "dontAsk",
 	bypass: "bypass",
 	yolo: "bypass",
+	"always-allow": "bypass",
+	alwaysallow: "bypass",
+	always_allow: "bypass",
+	"allow-all": "bypass",
+	allowall: "bypass",
 	"bypass-permissions": "bypass",
 };
 

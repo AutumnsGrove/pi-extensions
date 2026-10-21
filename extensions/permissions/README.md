@@ -64,7 +64,7 @@ wins, then ask, then allow.
 | `acceptEdits` | Auto-allow `write`/`edit` inside the project; ask otherwise. |
 | `auto` | Rules, then a classifier; ask only when the classifier is unsure. |
 | `dontAsk` | Never prompt; deny anything unmatched. |
-| `bypass` | Allow everything except explicit denies. |
+| `bypass` | Allow everything except explicit denies. `alwaysAllow` / `yolo` are aliases. |
 
 `plan` mode is intentionally absent: pi has no read-only planning mode.
 
