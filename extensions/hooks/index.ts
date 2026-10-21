@@ -165,7 +165,10 @@ export default function hooks(pi: ExtensionAPI): void {
 		}
 	});
 
-	// Signals that the bus exists so late-loading consumers can register.
+	// Signals that the bus exists so late-loading consumers can register. The
+	// global is the load-order-independent handshake: an extension may load
+	// after this event has already fired.
+	(globalThis as Record<string, unknown>).__piHooksReady = true;
 	pi.events.emit("pi-hooks:ready", {});
 
 	// ---------------------------------------------------------------------
@@ -186,6 +189,7 @@ export default function hooks(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async (event, ctx) => {
+		(globalThis as Record<string, unknown>).__piHooksReady = false;
 		const input: HookInput = {
 			...baseInput("SessionEnd", ctx),
 			reason: sessionEndReason(event.reason),

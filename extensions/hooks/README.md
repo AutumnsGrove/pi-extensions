@@ -163,7 +163,7 @@ const register = () => {
     event: "PreToolUse",
     matcher: "bash",
     source: "my-extension",
-    handler: (input) => ({ decision: "deny", reason: "not today" }),
+    handler: (input, ctx) => ({ decision: "deny", reason: "not today" }),
   });
 };
 

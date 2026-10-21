@@ -8,6 +8,8 @@
  * working.
  */
 
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+
 /** Every event the engine knows about, including ones not wired yet. */
 export const HOOK_EVENTS = [
 	// Session
@@ -242,7 +244,10 @@ export interface InProcessHookHandler {
 	event: HookEventName;
 	/** Optional matcher on `tool_name` for tool events. */
 	matcher?: string;
-	handler: (input: HookInput) => HookOutput | void | Promise<HookOutput | void>;
+	handler: (
+		input: HookInput,
+		ctx: ExtensionContext,
+	) => HookOutput | void | Promise<HookOutput | void>;
 	/** The extension that registered it, for diagnostics. */
 	source: string;
 }

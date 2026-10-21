@@ -174,11 +174,12 @@ async function runOne(
 async function runBusHandler(
 	handler: InProcessHookHandler,
 	input: HookInput,
+	ctx: ExtensionContext,
 	options: DispatchOptions,
 ): Promise<HookRunResult> {
 	const started = Date.now();
 	try {
-		const output = (await handler.handler(input)) ?? null;
+		const output = (await handler.handler(input, ctx)) ?? null;
 		return {
 			hook: {
 				event: handler.event,
@@ -282,7 +283,7 @@ export async function dispatchHooks(
 		runs.push(runOne(hook, input, ctx, options));
 	}
 	for (const handler of busHandlers) {
-		runs.push(runBusHandler(handler, input, options));
+		runs.push(runBusHandler(handler, input, ctx, options));
 	}
 
 	const results = options.fireAndForget
