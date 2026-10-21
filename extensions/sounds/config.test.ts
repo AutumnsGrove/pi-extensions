@@ -7,6 +7,7 @@ import {
 	expandHome,
 	normalizeSoundsConfig,
 	readSoundsConfig,
+	resolveDirectory,
 	resolveSoundFile,
 	soundForEvent,
 } from "./config.ts";
@@ -51,6 +52,14 @@ describe("normalizeSoundsConfig", () => {
 describe("file resolution", () => {
 	it("expands home", () => {
 		expect(expandHome("~/x")).toBe(join(homedir(), "x"));
+	});
+
+	it("resolves the bundled Classic suite", () => {
+		expect(resolveDirectory("Classic")).toContain(join("assets", "Classic"));
+		const { config } = normalizeSoundsConfig(undefined);
+		expect(soundForEvent(config, "SessionStart")).toContain(
+			join("assets", "Classic", "session_start.wav"),
+		);
 	});
 
 	it("joins bare names and passes paths through", () => {

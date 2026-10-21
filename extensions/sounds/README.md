@@ -13,11 +13,15 @@ owns desktop banners, sounds owns audio, and they share no code.
 Under `sounds` in `~/.pi/agent/settings.json` and `.pi/settings.json`. A bare
 filename is resolved against `directory`; `null` disables an event.
 
+The **Classic** suite is bundled with the extension and is the default, so
+sounds work with no configuration at all. `directory` accepts a bundled suite
+name (`Classic`) or any path, and `events` overrides the mapping.
+
 ```json
 {
   "sounds": {
     "enabled": true,
-    "directory": "~/ClaudeCodeSounds/Classic",
+    "directory": "Classic",
     "player": "afplay",
     "volume": 0.7,
     "debounceMs": 150,
@@ -53,9 +57,11 @@ filename is resolved against `directory`; `null` disables an event.
 | `Notification` | `notification.wav` |
 
 Event names are the hooks engine's names, so Claude's vocabulary works as-is.
-The `Classic` and `drift` suites in
-[`ClaudeCodeSounds`](https://github.com/AutumnsGrove/ClaudeCodeSounds) drop in
-by pointing `directory` at either folder.
+The suite lives in [`assets/Classic`](assets/Classic/) and comes from
+[ClaudeCodeSounds](https://github.com/AutumnsGrove/ClaudeCodeSounds) (MIT, see
+[`assets/LICENSE`](assets/LICENSE)). Subagent cues are omitted: pi has no
+subagents. Point `directory` at another folder (for example the `drift` suite
+from that repository) to swap the whole set.
 
 ### Players
 

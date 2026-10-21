@@ -8,6 +8,7 @@
 
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export interface SoundsConfig {
 	enabled: boolean;
@@ -40,11 +41,24 @@ export const DEFAULT_EVENTS: Record<string, string> = {
 
 export const DEFAULT_SOUNDS: SoundsConfig = {
 	enabled: true,
-	directory: "~/ClaudeCodeSounds/Classic",
+	directory: "Classic",
 	volume: 0.7,
 	debounceMs: 150,
 	events: { ...DEFAULT_EVENTS },
 };
+
+/** Sound suites shipped with the extension, resolved relative to this file. */
+export const ASSETS_ROOT = fileURLToPath(new URL("./assets", import.meta.url));
+
+const SUITE_ALIASES: Record<string, string> = {
+	classic: join(ASSETS_ROOT, "Classic"),
+};
+
+/** A bare suite name maps to a bundled suite; anything else is a path. */
+export function resolveDirectory(directory: string): string {
+	const alias = SUITE_ALIASES[directory.trim().toLowerCase()];
+	return alias ?? expandHome(directory);
+}
 
 export interface LoadedSounds {
 	config: SoundsConfig;
@@ -112,7 +126,7 @@ export function expandHome(path: string): string {
 export function resolveSoundFile(file: string, directory: string): string {
 	const expanded = expandHome(file);
 	if (isAbsolute(expanded) || expanded.includes("/")) return expanded;
-	return join(expandHome(directory), expanded);
+	return join(resolveDirectory(directory), expanded);
 }
 
 /** The file to play for an event, or `undefined` when silent. */
@@ -125,7 +139,7 @@ export function soundForEvent(config: SoundsConfig, event: string): string | und
 export function describeSounds(config: SoundsConfig): string[] {
 	const lines = [
 		`Sounds: ${config.enabled ? "on" : "off"}`,
-		`Directory: ${config.directory}`,
+		`Directory: ${resolveDirectory(config.directory)}`,
 		`Player: ${config.player ?? "autodetect"} · volume ${config.volume.toFixed(2)} · debounce ${config.debounceMs}ms`,
 	];
 	for (const [event, file] of Object.entries(config.events)) {
