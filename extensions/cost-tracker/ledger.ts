@@ -441,6 +441,8 @@ export const SEEDED_HISTORY: RunRecord[] = [
 	seed("extension-divider", 0.1),
 	seed("thinking-box", 0.113),
 	seed("pi-q-n-a", 0.228),
+	// Built by hand in one session; usage read off the session total.
+	seed("notify", 0.121),
 	// Built before the tracker existed. Actual session spend was $0.164, halved
 	// to $0.082 to attribute only the cost-tracker work (the rest was lumen
 	// research that belongs to semantic-search).
