@@ -165,6 +165,7 @@ export default function permissions(pi: ExtensionAPI): void {
 		}
 		const detail = describeCall(tool, input);
 		const title = `${reason ?? "Permission required"} · ${detail}`.slice(0, 180);
+		pi.events.emit("pi-permissions:prompt", { tool, reason: reason ?? "permission required" });
 		let choice: string | undefined;
 		try {
 			choice = await ctx.ui.select(
