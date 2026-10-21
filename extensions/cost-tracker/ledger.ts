@@ -447,6 +447,9 @@ export const SEEDED_HISTORY: RunRecord[] = [
 	// to $0.082 to attribute only the cost-tracker work (the rest was lumen
 	// research that belongs to semantic-search).
 	seed("cost-tracker", 0.082),
+	// Hooks, permissions, and sounds were built in one session; usage read off
+	// the session total.
+	seed("hooks + permissions + sounds", 0.379),
 ];
 
 function seed(label: string, cost: number): RunRecord {
