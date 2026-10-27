@@ -1,19 +1,35 @@
 import type { ExtensionToolContext, ToolDefinition, Theme } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { isBlocked, resetBlockers } from "../_shared/blockers.ts";
 import piQnA from "./index.ts";
 import type { QuestionnaireResult } from "./schema.ts";
 
-function loadTool(): ToolDefinition {
+type Handler = (event: unknown, ctx: unknown) => unknown;
+
+function load(): { tool: ToolDefinition; events: Map<string, Handler> } {
 	let registered: ToolDefinition | undefined;
+	const events = new Map<string, Handler>();
 	const pi = {
 		registerTool: (definition: ToolDefinition) => {
 			registered = definition;
 		},
+		on: (event: string, handler: Handler) => {
+			events.set(event, handler);
+			return () => {};
+		},
 	} as unknown as Parameters<typeof piQnA>[0];
 	piQnA(pi);
 	if (!registered) throw new Error("pi-q-n-a did not register a tool");
-	return registered;
+	return { tool: registered, events };
 }
+
+function loadTool(): ToolDefinition {
+	return load().tool;
+}
+
+afterEach(() => {
+	resetBlockers();
+});
 
 const question = {
 	id: "db",
@@ -93,7 +109,7 @@ describe("pi-q-n-a execute", () => {
 		expect(result.isError).toBeFalsy();
 	});
 
-	it("aborts the turn when the user interrupts", async () => {
+	it("aborts and terminates the turn when the user interrupts", async () => {
 		const tool = loadTool();
 		const abort = vi.fn();
 		const result = await tool.execute(
@@ -105,8 +121,77 @@ describe("pi-q-n-a execute", () => {
 		);
 		expect(abort).toHaveBeenCalledOnce();
 		expect(result.details).toMatchObject({ interrupted: true });
+		// `ctx.abort()` stops the stream but the loop would still answer the empty
+		// result. `terminate` ends the batch so the model cannot keep working.
+		expect(result.terminate).toBe(true);
 	});
 
+	it("does not terminate a normal answer", async () => {
+		const tool = loadTool();
+		const result = await tool.execute(
+			"call",
+			{ questions: [question] },
+			undefined,
+			undefined,
+			contextWithResult({
+				questions: [],
+				answers: [{ id: "db", selections: ["SQLite"], skipped: false }],
+				interrupted: false,
+			})
+		);
+		expect(result.terminate).toBeUndefined();
+	});
+});
+
+describe("pi-q-n-a is a hard blocker", () => {
+	it("blocks every tool while the form is open and releases afterwards", async () => {
+		const { tool, events } = load();
+		let blockedDuringForm: boolean | undefined;
+		let blockDuringForm: unknown;
+
+		const ctx = {
+			mode: "tui",
+			abort: () => {},
+			ui: {
+				custom: async () => {
+					blockedDuringForm = isBlocked();
+					blockDuringForm = events.get("tool_call")!(
+						{ type: "tool_call", toolCallId: "other", toolName: "bash", input: { command: "ls" } },
+						{}
+					);
+					return { questions: [], answers: [], interrupted: false };
+				},
+			},
+		} as unknown as ExtensionToolContext;
+
+		await tool.execute("call", { questions: [question] }, undefined, undefined, ctx);
+
+		expect(blockedDuringForm).toBe(true);
+		expect(blockDuringForm).toMatchObject({ block: true, terminate: true });
+		expect(isBlocked()).toBe(false);
+		expect(events.get("tool_call")!({ type: "tool_call", toolCallId: "after", toolName: "bash" }, {})).toBeUndefined();
+	});
+
+	it("releases the blocker when the form throws", async () => {
+		const { tool } = load();
+		const ctx = {
+			mode: "tui",
+			abort: () => {},
+			ui: {
+				custom: async () => {
+					throw new Error("UI closed unexpectedly");
+				},
+			},
+		} as unknown as ExtensionToolContext;
+
+		await expect(
+			tool.execute("call", { questions: [question] }, undefined, undefined, ctx)
+		).rejects.toThrow("UI closed unexpectedly");
+		expect(isBlocked()).toBe(false);
+	});
+});
+
+describe("pi-q-n-a rendering", () => {
 	it("renders a summary in the transcript", () => {
 		const tool = loadTool();
 		const theme = {

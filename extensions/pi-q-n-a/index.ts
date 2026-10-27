@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { activeBlockers, beginBlocker, isBlocked, PI_QNA_TOOL } from "../_shared/blockers.ts";
 import { QuestionnaireParams, type QuestionnaireDetails, type QuestionnaireResult } from "./schema.ts";
 import {
 	answerText,
@@ -8,7 +9,7 @@ import {
 	QuestionnaireComponent,
 } from "./questionnaire.ts";
 
-const TOOL_NAME = "pi-q-n-a";
+const TOOL_NAME = PI_QNA_TOOL;
 
 const DESCRIPTION = [
 	"Ask the user one or more multiple-choice questions and wait for their answers.",
@@ -22,9 +23,24 @@ const DESCRIPTION = [
 
 const PROMPT_GUIDELINES = [
 	"User notes attached to answers from pi-q-n-a are authoritative context: incorporate them into your work and never ignore or contradict them.",
+	"pi-q-n-a is a hard blocker: while its form is open nothing else runs. Never call it alongside other tools or expect the session to continue in the background.",
 ];
 
 export default function piQnA(pi: ExtensionAPI) {
+	// Backstop for every other extension: while a question is open, no tool may
+	// start. A concurrent run (for example one woken by a background job) would
+	// otherwise keep working behind the form instead of waiting for an answer.
+	// `terminate` also ends that run's tool batch so it cannot slip one more
+	// request in after the blocked call.
+	pi.on("tool_call", () => {
+		if (!isBlocked()) return;
+		return {
+			block: true,
+			terminate: true,
+			reason: `${activeBlockers().join(", ")} is waiting for the user. The session is blocked until the question is answered.`,
+		};
+	});
+
 	pi.registerTool({
 		name: TOOL_NAME,
 		label: "Ask user",
@@ -54,13 +70,23 @@ export default function piQnA(pi: ExtensionAPI) {
 				};
 			}
 
-			const result = await ctx.ui.custom<QuestionnaireResult>((tui, theme, _keybindings, done) =>
-				new QuestionnaireComponent({ tui, theme, questions, done })
-			);
+			// Publish the blocker for exactly as long as the form is on screen.
+			// Every turn-triggering extension checks this flag; the `tool_call`
+			// handler above enforces it for everyone else.
+			const release = beginBlocker(TOOL_NAME);
+			let result: QuestionnaireResult;
+			try {
+				result = await ctx.ui.custom<QuestionnaireResult>((tui, theme, _keybindings, done) =>
+					new QuestionnaireComponent({ tui, theme, questions, done })
+				);
+			} finally {
+				release();
+			}
 
 			// Escape means "stop what you are doing", exactly like pressing Escape
 			// during any other pi tool. Abort the turn instead of letting the model
-			// act on a half-filled form.
+			// act on a half-filled form. `terminate` is the backstop: aborting the
+			// stream alone still let the model answer the empty result and continue.
 			if (result.interrupted) ctx.abort();
 
 			return {
@@ -70,6 +96,7 @@ export default function piQnA(pi: ExtensionAPI) {
 					answers: result.answers,
 					interrupted: result.interrupted,
 				} satisfies QuestionnaireDetails,
+				...(result.interrupted ? { terminate: true } : {}),
 			};
 		},
 

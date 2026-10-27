@@ -29,6 +29,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { isBlocked, PI_QNA_TOOL } from "../_shared/blockers.ts";
 import {
 	applyTodoMutation,
 	emptyState,
@@ -44,6 +45,8 @@ import {
 
 const TOOL_NAME = "todo";
 const COMMAND_NAME = "todos";
+/** Asking the user is not progress; it must never satisfy the "did work" check. */
+const QUESTION_TOOL = PI_QNA_TOOL;
 const WIDGET_KEY = "pi-tasks";
 const REMINDER_TYPE = "pi-tasks";
 const DRIFT_MIN_WORKING_TURNS = 2;
@@ -284,13 +287,19 @@ export default function piTasks(pi: ExtensionAPI): void {
 	// re-sent at most every DRIFT_RESEND_TURNS turns.
 	pi.on("turn_end", (event, ctx) => {
 		const touched = event.toolResults.some((r) => r.toolName === TOOL_NAME);
-		const worked = event.toolResults.some((r) => r.toolName !== TOOL_NAME);
+		// pi-q-n-a is a blocker, not work: a turn that only asked the user a
+		// question must not start a drift streak or trigger a nudge.
+		const worked = event.toolResults.some(
+			(r) => r.toolName !== TOOL_NAME && r.toolName !== QUESTION_TOOL
+		);
 
 		if (touched) {
 			workingTurnsWithoutTodo = 0;
 			return;
 		}
 		if (!worked) return;
+		// A question owns the session: never nudge a run that is waiting on one.
+		if (isBlocked()) return;
 
 		runDidWork = true;
 		workingTurnsWithoutTodo += 1;
@@ -314,6 +323,9 @@ export default function piTasks(pi: ExtensionAPI): void {
 	pi.on("agent_before_settle", (event, ctx) => {
 		if (event.outcome !== "completed" || runReconciled) return;
 		if (!runTouchedTodos || !runDidWork) return;
+		// The settle nudge forces `continue: true`, which would let a concurrent
+		// run keep working behind an open pi-q-n-a form. Stay quiet until it closes.
+		if (isBlocked()) return;
 
 		const nudge = formatTaskNudge(stateFor(sid(ctx)), "settle");
 		if (!nudge) return;

@@ -66,10 +66,14 @@ rather than re-running the command.
 - **Completion notification** — when a background job exits, a cleaned tail is
   delivered as a `<task-notification>`. The agent can react immediately, even
   mid-turn. Each job notifies exactly once; reading a finished job suppresses
-  the pending message.
+  the pending message. While `pi-q-n-a` is waiting for an answer the
+  notification is queued instead: waking the agent behind a question made it
+  keep working while the user was still deciding. The queue flushes when the
+  form closes.
 - **`Ctrl+Shift+B`** — move the current foreground command to the background.
   Pi reserves `Ctrl+B` for cursor-left, and tmux owns it as a prefix, so the
-  shifted chord is the portable choice.
+  shifted chord is the portable choice. Detaching is refused while a question
+  is open, since the completion would only be queued behind it.
 - **`/bg`** — list jobs. `/bg <id>` shows recent output, `/bg detach` moves
   the running foreground command to the background (a tmux fallback when the
   chord is swallowed), `/bg kill <id>` stops one, `/bg clear` drops finished

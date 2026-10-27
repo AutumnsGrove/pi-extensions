@@ -63,11 +63,14 @@ leftover tasks from an earlier session never nag.
   touched the list, a one-line reminder is injected into the next request. A
   `todo` call resets the streak, so a task that is actively being worked on is
   never nagged. Repeated reminders are deduped by list state and re-sent at most
-  every few turns.
+  every few turns. A `pi-q-n-a` question does **not** count as work: asking you
+  something is not progress, and a question-only turn must not start a streak.
 - **Settle reconciliation** — when a run is about to end with unfinished tasks,
   the model gets exactly one forced request to reconcile the list: mark
   finished work completed, start the next task, or tell the user what remains.
-  It fires at most once per run, so there is no loop.
+  It fires at most once per run, so there is no loop. It stays completely quiet
+  while a `pi-q-n-a` form is open — the forced `continue` would otherwise let a
+  concurrent run keep working behind the question.
 
 ## Persistence
 

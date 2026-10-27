@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { beginBlocker, resetBlockers } from "../_shared/blockers.ts";
 import piBackground from "./index.ts";
 import { getJob, killAllJobs, killJob, resetRegistry, startJob, summarize, waitForJob } from "./jobs.ts";
 
@@ -49,6 +50,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	resetBlockers();
 	killAllJobs();
 	resetRegistry();
 	delete process.env.PI_BG_LOG_DIR;
@@ -201,6 +203,28 @@ describe("bash override", () => {
 		h.shutdown();
 	});
 
+	it("defers completion notifications while a question is open", async () => {
+		const h = load();
+		h.handlers.get("session_start")?.({ reason: "startup" }, h.ctx);
+		const release = beginBlocker("pi-q-n-a");
+
+		const result = await run(h, "bash", {
+			command: "printf 'later\\n'",
+			run_in_background: true,
+		});
+		const job = getJob(jobIdFrom(textOf(result)));
+		if (!job) throw new Error("job missing");
+		await waitForJob(job, 5000);
+
+		// The job finished, but the agent must not be woken behind the form.
+		expect(h.messages).toHaveLength(0);
+
+		release();
+		await waitUntil(() => h.messages.length > 0);
+		expect(h.messages[0]?.content).toContain("<task-notification>");
+		h.shutdown();
+	});
+
 	it("kills sleep-like commands instead of hiding them", async () => {
 		const h = load();
 		h.handlers.get("session_start")?.({ reason: "startup" }, h.ctx);
@@ -346,6 +370,21 @@ describe("human surfaces", () => {
 		const shortcut = h.shortcuts.get("ctrl+shift+b");
 		await shortcut?.handler(h.ctx);
 		expect(h.notifications.at(-1)?.message).toContain("No foreground command");
+		h.shutdown();
+	});
+
+	it("refuses to detach while a question is open", async () => {
+		const h = load();
+		h.handlers.get("session_start")?.({ reason: "startup" }, h.ctx);
+		const release = beginBlocker("pi-q-n-a");
+		try {
+			await h.commands.get("bg")?.handler("detach", h.ctx);
+			expect(h.notifications.at(-1)?.message).toContain("waiting for an answer");
+			await h.shortcuts.get("ctrl+shift+b")?.handler(h.ctx);
+			expect(h.notifications.at(-1)?.message).toContain("waiting for an answer");
+		} finally {
+			release();
+		}
 		h.shutdown();
 	});
 });

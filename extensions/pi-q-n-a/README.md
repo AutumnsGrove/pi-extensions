@@ -49,7 +49,7 @@ The model calls the tool; the user drives the form with the keyboard.
 | `Tab` / `Shift+Tab` / `←` / `→` | Move between questions and the Submit tab |
 | `Ctrl+N` | Add or edit a note for the current question |
 | `Enter` on **Type something** | Use the typed answer |
-| `Esc` / `Ctrl+C` in the form | Interrupt the tool (aborts the turn, like Escape on any pi tool) |
+| `Esc` / `Ctrl+C` in the form | Interrupt the tool and stop the run (like Escape on any pi tool) |
 
 Every question also has a **Skip this question** row, and the Submit tab accepts
 unanswered questions, so nothing forces a complete form.
@@ -74,6 +74,22 @@ answer field.
   ASCII art wants. Previews are **hidden for multi-select questions** and shown
   side by side when the terminal is wide enough, stacked below otherwise.
   Previews are clipped to 24 lines.
+
+## Blocking
+
+`pi-q-n-a` is a **hard blocker**. While the form is open it publishes a
+session-wide blocker, so:
+
+- no other tool may run — a concurrent or steered run cannot keep working
+  behind the question;
+- background job completions are queued by `pi-background` instead of triggering
+  a new turn, then delivered once the form closes;
+- `pi-tasks` neither counts the question as progress nor forces its
+  drift/settle reconciliation.
+
+Interrupting the form terminates the current run, so the model cannot answer an
+empty result and continue without you. The blocker is released on submit,
+interrupt, or if the form throws.
 
 ## The result
 

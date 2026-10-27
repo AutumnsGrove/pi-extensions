@@ -1,6 +1,11 @@
 import type { ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { beginBlocker, resetBlockers } from "../_shared/blockers.ts";
 import piTasks from "./index.ts";
+
+afterEach(() => {
+	resetBlockers();
+});
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 
@@ -315,5 +320,36 @@ describe("pi-tasks enforcement nudges", () => {
 		await run(tool, ctx as unknown as ExtensionToolContext, { action: "create", subject: "A" });
 
 		expect(events.get("agent_before_settle")!({ outcome: "completed" }, ctx)).toBeUndefined();
+	});
+
+	it("does not count a pi-q-n-a question as working progress", async () => {
+		const { tool, events } = load();
+		const ctx = enforcementCtx("nudge-question-only");
+		events.get("agent_start")!(undefined, ctx);
+		await run(tool, ctx as unknown as ExtensionToolContext, { action: "create", subject: "A" });
+
+		// Two question-only turns must not accumulate a drift streak.
+		expect(events.get("turn_end")!(turn(["pi-q-n-a"], 1), ctx)).toBeUndefined();
+		expect(events.get("turn_end")!(turn(["pi-q-n-a"], 2), ctx)).toBeUndefined();
+		// One real working turn is still not enough to nudge.
+		expect(events.get("turn_end")!(turn(["edit"], 3), ctx)).toBeUndefined();
+		expect(events.get("turn_end")!(turn(["edit"], 4), ctx)).toBeDefined();
+	});
+
+	it("stays quiet while a question is open", async () => {
+		const { tool, events } = load();
+		const ctx = enforcementCtx("nudge-blocked");
+		events.get("agent_start")!(undefined, ctx);
+		await run(tool, ctx as unknown as ExtensionToolContext, { action: "create", subject: "A" });
+
+		const release = beginBlocker("pi-q-n-a");
+		try {
+			// Neither the drift nudge nor the forced settle may run behind the form.
+			expect(events.get("turn_end")!(turn(["edit"], 1), ctx)).toBeUndefined();
+			expect(events.get("turn_end")!(turn(["edit"], 2), ctx)).toBeUndefined();
+			expect(events.get("agent_before_settle")!({ outcome: "completed" }, ctx)).toBeUndefined();
+		} finally {
+			release();
+		}
 	});
 });

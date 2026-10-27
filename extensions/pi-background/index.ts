@@ -33,6 +33,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
+import { isBlocked, onBlockersChange } from "../_shared/blockers.ts";
 import {
 	DEFAULT_AUTO_BACKGROUND_SECONDS,
 	clearFinishedJobs,
@@ -322,6 +323,11 @@ export default function piBackground(pi: ExtensionAPI): void {
 	// Completion notifications
 	// ---------------------------------------------------------------------
 
+	// Notifications that arrived while an interactive blocker (pi-q-n-a) owned
+	// the session. They are delivered only after the form closes: waking the
+	// agent behind a question made it keep working while the user was thinking.
+	let deferredNotifications: Job[] = [];
+
 	const notifyCompletion = (job: Job): void => {
 		if (shutdown || !job.notifyOnExit || job.notified) return;
 		if (job.spawnError) return;
@@ -333,6 +339,13 @@ export default function piBackground(pi: ExtensionAPI): void {
 		// The user asked for this kill; the agent already knows.
 		if (job.status === "killed" && (job.reason ?? "killed") === "killed") return;
 
+		// A question is open. Queue the completion instead of triggering a turn —
+		// a question is a hard blocker and nothing may run until it is answered.
+		if (isBlocked()) {
+			if (!deferredNotifications.includes(job)) deferredNotifications.push(job);
+			return;
+		}
+
 		const tail = readTail(job, 40, 32 * 1024).text;
 		const text = formatNotification(summarize(job), tail);
 		job.notified = true;
@@ -341,6 +354,15 @@ export default function piBackground(pi: ExtensionAPI): void {
 			{ triggerTurn: true, deliverAs: "steer" }
 		);
 	};
+
+	const flushDeferredNotifications = (): void => {
+		if (shutdown || isBlocked() || deferredNotifications.length === 0) return;
+		const queued = deferredNotifications;
+		deferredNotifications = [];
+		for (const job of queued) notifyCompletion(job);
+	};
+
+	const unsubscribeBlockers = onBlockersChange(flushDeferredNotifications);
 
 	const unsubscribe = onJobEvent((event) => {
 		if (event.type === "exit") notifyCompletion(event.job);
@@ -379,6 +401,10 @@ export default function piBackground(pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", (event) => {
 		shutdown = true;
+		if (event.reason === "reload" || event.reason === "quit") unsubscribeBlockers();
+		// Deferred completions belong to the session that queued them. A reload
+		// keeps the registry but re-evaluates this module, so drop the queue.
+		deferredNotifications = [];
 		if (timer) {
 			clearInterval(timer);
 			timer = undefined;
@@ -659,18 +685,27 @@ export default function piBackground(pi: ExtensionAPI): void {
 	// /bg and Ctrl+Shift+B
 	// ---------------------------------------------------------------------
 
+	/** Shared by Ctrl+Shift+B and `/bg detach`. */
+	const detachForeground = (ctx: ExtensionContext): void => {
+		// The user is answering a question. Detaching work would only queue a
+		// completion notification behind the form, so refuse it outright.
+		if (isBlocked()) {
+			notify(ctx, "A question is waiting for an answer; nothing can be backgrounded.", "warning");
+			return;
+		}
+		const detached = detachAllForeground(ctx.sessionManager.getSessionId());
+		notify(
+			ctx,
+			detached > 0
+				? `Backgrounding ${detached} command${detached === 1 ? "" : "s"}…`
+				: "No foreground command to background.",
+			"info"
+		);
+	};
+
 	pi.registerShortcut("ctrl+shift+b", {
 		description: "Move the running foreground command to the background",
-		handler: (ctx) => {
-			const detached = detachAllForeground(ctx.sessionManager.getSessionId());
-			notify(
-				ctx,
-				detached > 0
-					? `Backgrounding ${detached} command${detached === 1 ? "" : "s"}…`
-					: "No foreground command to background.",
-				"info"
-			);
-		},
+		handler: detachForeground,
 	});
 
 	pi.registerCommand(COMMAND, {
@@ -714,6 +749,11 @@ export default function piBackground(pi: ExtensionAPI): void {
 						"Ctrl+Shift+B     same as /bg detach (tmux may need /bg detach)",
 					].join("\n")
 				);
+				return;
+			}
+
+			if (first === "detach") {
+				detachForeground(ctx);
 				return;
 			}
 
