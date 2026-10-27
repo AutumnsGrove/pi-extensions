@@ -23,6 +23,7 @@ themes, packaged as a single installable
 | [`pi-background`](extensions/pi-background/) | Claude-style background shell jobs: `bash` auto-detaches at the deadline, a `jobs` tool lists/reads/waits/kills/searches, completions wake the agent, and a live widget shows running work (`/bg`, `Ctrl+Shift+B`). | working |
 | [`cost-tracker`](extensions/cost-tracker/) | Tracks development cost from pi's own session usage. `/cost start` … `/cost stop` in pi, or `pnpm cost` from a shell; finalizes runs and auto-imports the table below. | working |
 | [`context-window`](extensions/context-window/) | Caps the effective context window by deriving a real reduced-window model (`/context`), so auto-compaction fires sooner, with a bar-charted breakdown of where the context went. | working |
+| [`transcript-window`](extensions/transcript-window/) | Caps how much of the transcript pi renders (`/window`), keeping only recent chat items in the terminal while leaving model context and the session log intact. | working (v1) |
 | [`opencode-go`](extensions/opencode-go/) | Native OpenCode Go provider: one-click OAuth device sign-in that auto-provisions a Go API key, live Go model discovery merged with pi's catalog, plus a `/usage` panel for the rolling 5h / weekly / monthly meters and a live footer widget. | working |
 | [`semantic-search`](extensions/semantic-search/) | Native local semantic code search: tree-sitter chunking, Merkle-incremental indexing, Ollama embeddings, SQLite + sqlite-vec retrieval (`semantic_search` tool, `/semsearch`). | in progress (tools) |
 | _more to come_ | | |
@@ -222,11 +223,12 @@ pnpm cost report                  # print the ledger without changing anything
 | context-window | $0.204 | 1 |
 | notify | $0.121 | 1 |
 | thinking-box | $0.113 | 1 |
+| transcript-window | $0.109 | 1 |
 | extension-divider | $0.100 | 1 |
 | cost-tracker | $0.099 | 2 |
 | git-status | $0.078 | 1 |
 | cooking | $0.068 | 1 |
-| **Total** | **$3.357** | **17** |
+| **Total** | **$3.466** | **18** |
 <!-- COST:END -->
 
 ## License
