@@ -1,13 +1,13 @@
-# pr-review — one-command agentic PR review for pi
+# pi-review — one-command agentic PR review for pi
 
-Goal: run one command inside pi (`/pr-review install`) and have the current
+Goal: run one command inside pi (`/pi-review install`) and have the current
 repository reviewed by a **pi agent running in GitHub Actions** on every pull
 request — the same experience as Claude Code's `/install-github-app`, but with
 whatever provider pi is logged into (OpenCode Go, OpenRouter, …), with the
-model and a **turn budget** configurable from a panel.
+model configurable from a panel.
 
-Status: **plan only — nothing implemented.** Researched 2026-11-05. Tracked in
-the GitHub issue "Add `pr-review` extension".
+Status: **plan only — nothing implemented.** Researched 2026-11-05; scope updated after owner review (name `pi-review`, no turn budget, OpenCode Go in CI is explicitly permitted). Tracked in
+the GitHub issue "Add `pi-review` extension".
 
 ## Why agentic (and not "diff in, comments out")
 
@@ -51,9 +51,9 @@ model with a pasted diff.
   verdict"; 50→80 plus prompt text to abort with a comment before the cap).
   `--max-turns` counts assistant turns, not tool calls. Also: when the cap is
   hit the action's output file is never written (claude-code-action #1226) and
-  some harnesses misclassify `error_max_turns` as retryable. Takeaway: a hard
-  cap that just kills the run is the wrong design — **we need a soft budget
-  with a guaranteed wrap-up turn** (see Design).
+  some harnesses misclassify `error_max_turns` as retryable. Decision: pi has no
+  native turn cap, so we **do not build one** (see Run limits). Cost/runaway
+  protection comes from native GitHub/pi controls instead.
 - Claude's App asks for a broad shared permission set (Actions, Checks,
   Contents, Discussions, Issues, PRs, Workflows, …); a custom minimal App is
   the documented escape hatch.
@@ -100,7 +100,7 @@ model with a pasted diff.
 
 **Gap:** every pi option is a runner; none is an *installer* that provisions the
 credential, writes the workflow, exposes model/turn settings, and handles
-turn-budget exhaustion. That gap is this extension.
+run reporting. That gap is this extension.
 
 ### What pi gives us (verified against `@earendil-works/pi-coding-agent@1.5.0`)
 
@@ -108,13 +108,11 @@ turn-budget exhaustion. That gap is this extension.
   `turn_start` / `turn_end` / `tool_execution_*` / `agent_settled`), `--mode
   rpc`. Print/json modes exit non-zero on `error`/`aborted`. A *turn* = one
   assistant response + its tool calls — the same unit as Claude's `--max-turns`.
-- **There is no max-turns flag/setting in pi** (grepped docs and `dist`). So the
-  turn budget must be implemented by us, in an extension loaded in CI.
-- **Extension hooks that make a soft budget possible**: `turn_start`/`turn_end`
-  events, `pi.sendUserMessage(text, { deliverAs: "steer" })` (lands after the
-  current turn), `ctx.abort()`, `ctx.shutdown()` (no-op in print mode — it exits
-  on its own), `agent_before_settle`, `tool_call` block/terminate, and
-  `pi.registerTool` (to expose a validated `submit_review` tool).
+- **There is no max-turns flag/setting in pi** (grepped docs and `dist`). Decided
+  not to build one; see Run limits.
+- **Extension hooks**: `pi.registerTool` (to expose a validated `submit_review`
+  tool), `tool_call` block/terminate, `agent_before_settle`, and the turn events
+  if a limit is ever wanted later.
 - **Mode awareness**: `ctx.mode` is `"print" | "json" | "rpc" | "tui"`;
   `ctx.hasUI` is false headless, so one extension can serve both the
   interactive installer and the CI runner.
@@ -145,11 +143,12 @@ turn-budget exhaustion. That gap is this extension.
   reuse `requestDeviceCode`/`completeDeviceSignIn`/`provisionApiKey` directly
   with a **distinct key name** (e.g. `pi-review-<owner>-<repo>`) — important
   because `provisionApiKey` revokes any active key with the *same* name, and
-  must not revoke the user's interactive dev key. Open item: Go is rate-limited
-  by rolling 5h/weekly/monthly dollar meters shared by every key in the
-  workspace, so a busy repo can starve interactive use; and I found no
-  statement of OpenCode's terms on CI/automation use — **verify before
-  shipping**.
+  must not revoke the user's interactive dev key. Owner confirmed (from OpenCode's own docs) that CI use of a Go
+  subscription is explicitly allowed and that OpenCode offers a direct pathway
+  to API tokens for this purpose — **look that pathway up during milestone 3**; it
+  may replace or simplify the device-grant + `provisionApiKey` route. Usage
+  meters are not a concern in practice (owner: DeepSeek on Go ≈ 35% of the
+  monthly allowance after ~25 days of heavy use), so no usage guard is planned.
 - **OpenRouter**: two documented ways to get a key for the user, neither needs
   copying their dev key:
   1. **OAuth PKCE** — open `https://openrouter.ai/auth?callback_url=…&code_challenge=…&code_challenge_method=S256&key_label=pi-review-<repo>`,
@@ -193,8 +192,8 @@ turn-budget exhaustion. That gap is this extension.
 ## Design
 
 ```
-extensions/pr-review/
-├── index.ts        /pr-review command; registers mode-specific behaviour
+extensions/pi-review/
+├── index.ts        /pi-review command; registers mode-specific behaviour
 ├── detect.ts       git remote → owner/repo, gh auth, current provider/model
 ├── auth/
 │   ├── index.ts    strategy interface: detect(ctx) → "opencode-go" | "openrouter" | "manual"
@@ -207,10 +206,9 @@ extensions/pr-review/
 │   └── pr.ts       open "create PR" URL for the workflow branch
 ├── workflow.ts     render .github/workflows/pi-review.yml from settings
 ├── settings.ts     .github/pi-review.json (committed) schema + defaults
-├── panel.ts        TUI panel: provider, model, thinking, max turns, triggers, tools
+├── panel.ts        TUI panel: provider, model, thinking, triggers, tools
 ├── runner/
 │   ├── index.ts    CI-only: activated by PI_REVIEW=1, ctx.mode print/json
-│   ├── budget.ts   soft turn budget + wrap-up
 │   ├── submit.ts   submit_review tool: validate inline positions, post one review
 │   └── prompt.ts   review prompt, PR context, REVIEW.md (base branch)
 ├── *.test.ts
@@ -220,7 +218,7 @@ extensions/pr-review/
 
 ### Command surface
 
-`/pr-review` opens the panel. Subcommands: `install` (wizard), `settings`,
+`/pi-review` opens the panel. Subcommands: `install` (wizard), `settings`,
 `status` (is the workflow/secret/App present?), `uninstall`, `run` (local dry
 run of the CI agent against the current branch/PR — this is also the main
 manual-test loop while developing).
@@ -239,7 +237,7 @@ manual-test loop while developing).
    questions on naming) via `gh secret set`. The key never touches the repo and
    is never printed.
 4. **Settings**: panel for model (list from `ctx.modelRegistry`, pre-filled with
-   the current one), thinking level, **max turns**, trigger events, skip
+   the current one), thinking level, trigger events, skip
    drafts/bots, tool set (read-only vs + bash for running tests), include/exclude
    path globs, cost note. Written to `.github/pi-review.json` so the workflow
    file stays generic and later edits are a settings change, not a YAML edit.
@@ -287,28 +285,22 @@ reviews; `fetch-depth: 0` so `git diff base...head` and blame work.
 `--no-extensions` plus an explicit `-e` for only this package keeps repo `.pi/`
 code (attacker-controlled in a PR) from loading.
 
-### Turn budget (the user's pain point)
+### Run limits (no turn budget)
 
-Implemented in `runner/budget.ts`, active only when `PI_REVIEW=1`:
+Pi has no native max-turns control and we are deliberately not adding one: it
+adds complexity for a problem the owner does not want to own. Instead rely on
+what exists natively:
 
-- `turn_start` counts turns. At `soft = max − 3` it sends a **steer** message:
-  "Budget nearly spent. Stop exploring and call `submit_review` now with what
-  you have; list anything unverified under *Not checked*."
-- At `max − 1`, it removes every tool except `submit_review` (so the only legal
-  move is to submit).
-- At `max`, `ctx.abort()`; the runner's `finally` posts a **fallback review**
-  built from whatever the agent already produced (last assistant text + any
-  findings noted via a scratch `note_finding` tool), clearly labelled
-  *"Review incomplete: reached the turn limit (N)"*, and exits non-zero only if
-  the user opted into `failOnIncomplete`. Never silent, never "no output".
-- Also a wall-clock budget (aligned with `timeout-minutes`) and a token/cost
-  ceiling taken from `turn_end` usage, since turns are a poor proxy for cost.
-- Defaults scale with diff size (e.g. `max = clamp(15 + changedFiles, 20, 60)`)
-  unless the user pins a number; the panel shows the effective value and the
-  last N runs' actual turn counts (from the job summary) so tuning is empirical.
-- The run writes a `GITHUB_STEP_SUMMARY`: turns used/limit, tokens, cost if
-  known, tools called, whether it wrapped up cleanly. That output is written in a
-  `finally`, avoiding claude-code-action #1226.
+- `timeout-minutes` on the job (wall-clock cap) and `concurrency` with
+  `cancel-in-progress` so a new push cancels a stale review.
+- Cap the diff embedded in the prompt (large diffs are summarised by file list;
+  the agent reads the rest on demand).
+- A `GITHUB_STEP_SUMMARY` written in a `finally` (model, duration, tools
+  called, exit status) so a timed-out or failed run is never silent. If the job
+  fails before a review is posted, post a short "review did not complete"
+  comment from an `if: failure()` step.
+- Revisit a turn/cost ceiling only if real runs show a need; `turn_start` /
+  `turn_end` events make it possible later.
 
 ### Posting results
 
@@ -338,38 +330,37 @@ fixed (opt-in). Read `REVIEW.md` from the **base** branch, never the PR branch.
 
 ## Milestones
 
-1. **Runner first** (local-testable, no GitHub setup): `runner/` + `/pr-review
+1. **Runner first** (local-testable, no GitHub setup): `runner/` + `/pi-review
    run` against the working tree, `submit_review` with a `--dry-run` that
-   prints instead of posting, budget logic with unit tests driven by synthetic
-   `turn_start` events.
+   prints instead of posting.
 2. **Workflow + settings + GITHUB_TOKEN path**: `workflow.ts`, `settings.ts`,
    `gh secret set`, branch + PR-compare URL; manual key paste only.
 3. **Provider auth**: OpenCode Go (reuse `provisionApiKey`), then OpenRouter
    PKCE incl. headless code-paste.
-4. **Panel**: model/thinking/max-turns/tools UI, status, uninstall.
+4. **Panel**: model/thinking/tools UI, status, uninstall.
 5. **Custom GitHub App** via manifest flow + `create-github-app-token`.
 6. Polish: incremental re-review, stale-thread resolution, `@pi` mention
    trigger, scheduled sweep, `REVIEW.md`.
 
+## Decisions (owner)
+
+- Name: `pi-review` (command `/pi-review`). Note `earendil-works/pi-review`
+  exists with `/review` and `/end-review`; no command clash, but the package
+  name is similar, so keep READMEs clear about the difference (that one is
+  interactive/local; this one installs and runs in CI).
+- No turn budget.
+- OpenCode Go in CI is permitted; usage limits are not a concern.
+
 ## Open questions
 
-- **Name.** `pr-review` vs `gh-review`; avoid `pi-review` (taken by
-  earendil-works). Command: `/pr-review` or the shorter `/github`?
-- **Where does the runner live?** Same package (`-e git:…@tag`, simple, one
-  versioned thing) vs. a published composite action (nicer YAML, needs a
-  `dist/` build step like narumiruna/pi-action). Plan assumes same package.
+- **Runner location**: same package (`-e git:…@tag`, simple) vs a published
+  composite action. Plan assumes same package.
 - **Secret naming/env mapping**: one generic `PI_REVIEW_API_KEY` mapped to the
-  provider's env var in the workflow, vs. provider-named secrets
-  (`OPENCODE_API_KEY`). Generic is easier to rotate/re-provider.
-- **OpenCode Go in CI**: shared rolling-meter exhaustion and unconfirmed
-  automation terms. Need to read the Go terms and probably add a "pause reviews
-  when meters > X%" guard (the `/api/go/status` endpoint is already wrapped in
-  `opencode-go/usage.ts`).
-- **OpenRouter spend cap**: PKCE keys have no documented `limit`; decide whether
-  to require the provisioning-API path when the user wants a hard cap.
-- **Can `provisionApiKey` mint a key scoped to a *second* service account** or
-  a different workspace for CI? Needs a live check against the Console API.
+  provider env var in the workflow vs provider-named secrets.
+- **OpenCode's direct CI token pathway**: find it in OpenCode's docs and decide
+  whether it replaces the device grant.
+- **OpenRouter spend cap**: PKCE keys have no documented `limit`; a hard cap
+  needs the provisioning API and a management key.
 - **Custom App vs `GITHUB_TOKEN`** as the default identity.
 - Should reviews ever `APPROVE`? Default no.
-- Anything stored in `auth.json` for CI (OAuth-style providers needing refresh)
-  — out of scope for v1; API-key providers only.
+- `auth.json`-style refreshing credentials in CI: out of scope for v1.
