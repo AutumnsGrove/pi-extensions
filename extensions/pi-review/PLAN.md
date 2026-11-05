@@ -172,13 +172,13 @@ run reporting. That gap is this extension.
   `gh`), falling back to printing the value + settings URL when `gh` is missing.
 - **Identity for posting reviews** — three tiers:
   1. `GITHUB_TOKEN` (`pull-requests: write`): zero setup, posts as
-     `github-actions[bot]`, cannot trigger downstream workflows. **Ship this
-     first.**
+     `github-actions[bot]`, cannot trigger downstream workflows. Kept only as a
+     fallback when the user declines the App.
   2. **Custom GitHub App via the manifest flow**: POST a manifest to
      `github.com/settings/apps/new` (or `/organizations/ORG/settings/apps/new`),
      GitHub redirects to a localhost `redirect_url` with a one-hour `code`,
      `POST /app-manifests/{code}/conversions` returns `id`, `pem`,
-     `webhook_secret`. That is how we can honestly say "install Pi as an app":
+     `webhook_secret`. **Default identity (owner decision).** That is how we can honestly say "install Pi as an app":
      minimal permissions (Contents: read, Pull requests: write, Issues: write,
      Checks: write optional), no webhook, an identity like `pi-review[bot]`.
      Store `APP_ID` + `APP_PRIVATE_KEY` as secrets and mint tokens in the
@@ -333,12 +333,15 @@ fixed (opt-in). Read `REVIEW.md` from the **base** branch, never the PR branch.
 1. **Runner first** (local-testable, no GitHub setup): `runner/` + `/pi-review
    run` against the working tree, `submit_review` with a `--dry-run` that
    prints instead of posting.
-2. **Workflow + settings + GITHUB_TOKEN path**: `workflow.ts`, `settings.ts`,
-   `gh secret set`, branch + PR-compare URL; manual key paste only.
-3. **Provider auth**: OpenCode Go (reuse `provisionApiKey`), then OpenRouter
-   PKCE incl. headless code-paste.
-4. **Panel**: model/thinking/tools UI, status, uninstall.
-5. **Custom GitHub App** via manifest flow + `create-github-app-token`.
+2. **Custom Pi GitHub App (default identity)**: manifest flow with a localhost
+   redirect, store `PI_REVIEW_APP_ID` + `PI_REVIEW_APP_PRIVATE_KEY`, one-click
+   install on the repo, `actions/create-github-app-token` in the workflow.
+   `GITHUB_TOKEN` remains as an opt-out fallback.
+3. **Workflow + settings**: `workflow.ts`, `settings.ts`, `gh secret set`,
+   branch + PR-compare URL; manual key paste only.
+4. **Provider auth**: OpenCode Go (CI token pathway or `provisionApiKey`), then
+   OpenRouter PKCE incl. headless code-paste.
+5. **Panel**: model/thinking/tools UI, status, uninstall.
 6. Polish: incremental re-review, stale-thread resolution, `@pi` mention
    trigger, scheduled sweep, `REVIEW.md`.
 
@@ -349,18 +352,25 @@ fixed (opt-in). Read `REVIEW.md` from the **base** branch, never the PR branch.
   name is similar, so keep READMEs clear about the difference (that one is
   interactive/local; this one installs and runs in CI).
 - No turn budget.
+- **Runner lives in this package.** The generated workflow is committed to the
+  *target* repo (e.g. Polaris) and runs on that repo's runner; it fetches this
+  package with `-e git:github.com/AutumnsGrove/pi-extensions@<tag>`. Nothing
+  runs in the pi-extensions repo. (Repo is public, so no token is needed to
+  fetch it.) Pin a tag so extension changes don't silently alter reviews.
+- **Secret name:** generic `PI_REVIEW_API_KEY`, mapped to the provider env var
+  in the workflow.
+- **Identity:** custom Pi GitHub App from day one (`GITHUB_TOKEN` fallback).
+- **Review state:** `COMMENT` by default; `REQUEST_CHANGES` is a panel opt-in;
+  `APPROVE` is not offered.
 - OpenCode Go in CI is permitted; usage limits are not a concern.
 
 ## Open questions
 
-- **Runner location**: same package (`-e git:…@tag`, simple) vs a published
-  composite action. Plan assumes same package.
-- **Secret naming/env mapping**: one generic `PI_REVIEW_API_KEY` mapped to the
-  provider env var in the workflow vs provider-named secrets.
 - **OpenCode's direct CI token pathway**: find it in OpenCode's docs and decide
   whether it replaces the device grant.
 - **OpenRouter spend cap**: PKCE keys have no documented `limit`; a hard cap
   needs the provisioning API and a management key.
-- **Custom App vs `GITHUB_TOKEN`** as the default identity.
-- Should reviews ever `APPROVE`? Default no.
+- **App ownership**: personal vs org account for the manifest flow (the
+  wizard should ask; Polaris may be under a user or an org). Should one App be
+  reused across all of the owner's repos? (Likely yes: one App, installed per repo.)
 - `auth.json`-style refreshing credentials in CI: out of scope for v1.
