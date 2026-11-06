@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "identity": "app",
+  "provider": "opencode-go",
+  "providerEnv": "OPENCODE_API_KEY",
+  "model": "deepseek-v4.1-flash",
+  "thinking": "medium",
+  "tools": {
+    "bash": true
+  },
+  "triggers": {
+    "types": [
+      "opened",
+      "synchronize",
+      "ready_for_review",
+      "reopened"
+    ],
+    "skipDrafts": true,
+    "skipBots": false
+  },
+  "review": {
+    "event": "COMMENT",
+    "maxInlineComments": 25
+  },
+  "paths": {
+    "include": [],
+    "exclude": []
+  },
+  "pi": {
+    "version": "1.5.0",
+    "packageRef": "e8436ccbe9362810671086802613e790d67f2ba1"
+  },
+  "timeoutMinutes": 20
+}
