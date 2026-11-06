@@ -6,8 +6,15 @@ request — the same experience as Claude Code's `/install-github-app`, but with
 whatever provider pi is logged into (OpenCode Go, OpenRouter, …), with the
 model configurable from a panel.
 
-Status: **plan only — nothing implemented.** Researched 2026-11-05; scope updated after owner review (name `pi-review`, no turn budget, OpenCode Go in CI is explicitly permitted). Tracked in
-the GitHub issue "Add `pi-review` extension".
+Status: **milestone 1 (runner) implemented.** Researched 2026-11-05; scope
+updated after owner review (name `pi-review`, no turn budget, OpenCode Go in CI is
+explicitly permitted). Tracked in the GitHub issue "Add `pi-review` extension".
+
+Implemented in milestone 1: `diff.ts`, `detect.ts`, `context.ts`, `review.ts`,
+`submit.ts`, `prompt.ts`, `runner.ts`, `local.ts`, and the `/pi-review run`
+and `/pi-review status` commands, with 73 tests. See
+[`README.md`](./README.md) for the current usage and the deviations recorded at
+the end of this file.
 
 ## Why agentic (and not "diff in, comments out")
 
@@ -193,24 +200,20 @@ run reporting. That gap is this extension.
 
 ```
 extensions/pi-review/
-├── index.ts        /pi-review command; registers mode-specific behaviour
-├── detect.ts       git remote → owner/repo, gh auth, current provider/model
-├── auth/
-│   ├── index.ts    strategy interface: detect(ctx) → "opencode-go" | "openrouter" | "manual"
-│   ├── opencode-go.ts   reuse opencode-go/oauth.ts with key name pi-review-<owner>-<repo>
-│   ├── openrouter.ts    PKCE + localhost callback / headless code paste
-│   └── manual.ts        paste key / use current key (with warning)
-├── github/
-│   ├── secrets.ts  gh secret set (+ fallback instructions)
-│   ├── app.ts      manifest flow, localhost redirect server, pem → secrets
-│   └── pr.ts       open "create PR" URL for the workflow branch
-├── workflow.ts     render .github/workflows/pi-review.yml from settings
-├── settings.ts     .github/pi-review.json (committed) schema + defaults
-├── panel.ts        TUI panel: provider, model, thinking, triggers, tools
-├── runner/
-│   ├── index.ts    CI-only: activated by PI_REVIEW=1, ctx.mode print/json
-│   ├── submit.ts   submit_review tool: validate inline positions, post one review
-│   └── prompt.ts   review prompt, PR context, REVIEW.md (base branch)
+├── index.ts        /pi-review command; switches into runner mode
+├── detect.ts       git remote → owner/repo, branch, base ref, gh auth, PR lookup
+├── context.ts      PR/local diff, metadata, base-branch REVIEW.md + AGENTS.md
+├── diff.ts         unified-diff parsing; inline position index
+├── review.ts       submission validation, summary folding, markdown rendering
+├── submit.ts       submit_review tool + gh api posting
+├── prompt.ts       review instructions + fenced, capped PR context
+├── runner.ts       CI-only wiring (PI_REVIEW=1): tool, context, artifact
+├── local.ts        headless child pi for /pi-review run
+├── auth/           (milestone 4) provider credential strategies
+├── github/         (milestone 2–3) manifest flow, secrets, PR URL
+├── workflow.ts     (milestone 3) render .github/workflows/pi-review.yml
+├── settings.ts     (milestone 3) .github/pi-review.json schema + defaults
+├── panel.ts        (milestone 5) TUI panel: provider, model, thinking, triggers, tools
 ├── *.test.ts
 ├── PLAN.md
 └── README.md
@@ -374,3 +377,35 @@ fixed (opt-in). Read `REVIEW.md` from the **base** branch, never the PR branch.
   wizard should ask; Polaris may be under a user or an org). Should one App be
   reused across all of the owner's repos? (Likely yes: one App, installed per repo.)
 - `auth.json`-style refreshing credentials in CI: out of scope for v1.
+
+## Implementation notes (milestone 1)
+
+Decisions made while building the runner, where it differs from the design above:
+
+- **The child loads the extension file, not the package.** `-e git:github.com/…`
+  loads every extension in the package, including the ones with runtime
+  dependencies that have no place in a review job. `/pi-review run` and the
+  workflow therefore pass `-e <path>/extensions/pi-review/index.ts`, which loads
+  exactly one extension. The workflow will clone this repo at a pinned tag and
+  point at that file.
+- **Context is injected, not embedded in the prompt.** The workflow command line
+  is just `pi -p "Review pull request #N."`; the extension loads the PR, diff,
+  and guidance on `before_agent_start` and returns both a system-prompt section
+  and a `pi-review-context` custom message. One code path serves CI and the
+  local dry run.
+- **The base commit is the only source of guidance.** The child runs with `-nc`,
+  so `AGENTS.md`/`CLAUDE.md` from the merge-result checkout never load; the
+  extension reads `REVIEW.md`, `.github/REVIEW.md`, `AGENTS.md`, and
+  `CLAUDE.md` from the base SHA instead.
+- **`PI_REVIEW_OUTPUT` is the result channel.** `submit_review` writes
+  `{ dryRun, review, markdown, url }` there. `/pi-review run` reads it back; in
+  CI it is the step artifact, and an `agent_settled` handler writes an
+  `incomplete` marker when the agent never submitted, so the workflow can fail
+  loudly.
+- **Review state is still `COMMENT` by default.** `REQUEST_CHANGES` is enabled
+  per run with `PI_REVIEW_REQUEST_CHANGES=1`; the settings panel will write that
+  as a workflow/env setting.
+- **Invalid inline comments are folded, not dropped.** They become a collapsed
+  section of the summary with the reason, because a review that loses findings
+  is worse than one with an unattached paragraph. Invalid `start_line` values
+  are cleared while keeping the comment.
