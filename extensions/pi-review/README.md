@@ -14,7 +14,14 @@ own job.
 
 ## Status
 
-**Milestone 1 — runner.** Implemented and tested:
+**Milestone 2 — installer identity.** `/pi-review install` now creates the Pi
+GitHub App through GitHub's manifest flow, stores `PI_REVIEW_APP_ID` and
+`PI_REVIEW_APP_PRIVATE_KEY` as repository secrets, and walks through installing
+the App on the repo. It can reuse an existing identity, or delete the App
+secrets when you choose `GITHUB_TOKEN` instead. The workflow, settings, and
+provider auth are still to come.
+
+Milestone 1 (the runner) is implemented and tested:
 
 - `submit_review` tool: validates every inline comment against the real diff
   (path, side, line, range), folds anything unattachable into the summary
@@ -29,16 +36,49 @@ own job.
   workflow runs, with the same isolation flags.
 - `/pi-review status`: what a review would use right now.
 
-Not yet: the install wizard, GitHub App, workflow generation, provider auth, and
-settings panel (milestones 2–6 — see [`PLAN.md`](./PLAN.md)).
+Not yet: workflow generation, provider auth, and the settings panel (milestones
+3–6 — see [`PLAN.md`](./PLAN.md)).
 
 ## Commands
 
 ```
+/pi-review install
 /pi-review run [--post] [--pr N] [--base ref] [--model provider/id] [--thinking level] [--bash]
 /pi-review status
 /pi-review help
 ```
+
+## Install
+
+`/pi-review install` sets up the App identity in four steps:
+
+1. **Preflight** — github.com `origin`, `gh` auth, and repository admin. It
+   prints exactly what will change before changing anything.
+2. **Identity choice** — create a Pi GitHub App, reuse the one this repo
+   already has, or drop the App and use `GITHUB_TOKEN`.
+3. **Manifest flow** — a local page auto-POSTs the manifest to GitHub, you
+   approve the App in the browser, and GitHub redirects a one-time `code` back
+   to localhost. The App requests only `contents: read`, `pull_requests: write`,
+   and `issues: write`; it is private, has no webhooks, and no OAuth.
+4. **Secrets + installation** — the private key goes straight to
+   `gh secret set` on stdin (never printed, logged, or written to disk), then
+   the App ID, then a `PI_REVIEW_APP_SLUG` repository variable. Finally the
+   install page opens so you can select the repository.
+
+Notes and limits:
+
+- The App name is `pi-review-<owner>-<repo>` (≤34 characters). GitHub lets you
+  edit the name on the creation page, which is the escape hatch if it collides.
+- The manifest flow needs a browser that can reach your localhost. Over SSH or
+  in a container, forward the port the wizard prints, or wait for the timeout
+  and paste the redirect URL from the address bar.
+- Pressing Escape after something was created prints what already changed and
+  how to resume; re-running detects the existing secrets.
+- Reusing an existing App verifies the installation on the repo, not the stored
+  key (GitHub never returns a secret's value). If reviews later fail with 401,
+  generate a new key in the App settings and run the wizard again.
+- The summary ends with the exact commands to revoke each piece: delete the
+  secrets, uninstall the App, and delete the App.
 
 `/pi-review run` reviews the current branch against its merge base (or a PR when
 one is detected / `--pr` is given) in a **child `pi` process**:

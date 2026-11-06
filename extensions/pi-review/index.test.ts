@@ -91,12 +91,22 @@ describe("pi-review command", () => {
 		expect(message.content).toContain("`/pi-review run");
 	});
 
-	it("explains that install is not implemented yet", async () => {
+	it("explains that settings is not implemented yet", async () => {
 		delete process.env.PI_REVIEW;
 		const { command, sendMessage, ctx } = load();
-		await command.handler("install", ctx);
+		await command.handler("settings", ctx);
 		const message = sendMessage.mock.calls[0]![0] as { content: string };
 		expect(message.content).toContain("not implemented yet");
+	});
+
+	it("reports an install preflight failure instead of throwing", async () => {
+		delete process.env.PI_REVIEW;
+		const { command, notify, ctx } = load();
+		await command.handler("install", ctx);
+		expect(notify).toHaveBeenCalledWith(
+			expect.stringContaining("Not a github.com checkout"),
+			"error"
+		);
 	});
 
 	it("rejects an unknown subcommand", async () => {

@@ -27,6 +27,9 @@ import {
 	run,
 } from "./detect.ts";
 import { parseDiff } from "./diff.ts";
+import { spawnRunner } from "./github/exec.ts";
+import { openExternalUrl } from "./github/open.ts";
+import { installPiReview, renderInstallOutcome, type WizardUI } from "./install.ts";
 import { parseRunArgs, reviewChildEnv, reviewPromptFor, reviewTools, runLocalReview } from "./local.ts";
 import { renderReviewMarkdown, type ReviewMeta } from "./review.ts";
 import { loadReviewTarget } from "./context.ts";
@@ -70,8 +73,9 @@ function helpText(): string {
 		"  run the review agent locally against the current branch or a PR. Dry run by default;",
 		"  prints the review instead of posting it. `--post` publishes it to the pull request.",
 		"- `/pi-review status` — show the repository, pull request, base, diff size, and model a review would use.",
+		"- `/pi-review install` — create the Pi GitHub App, store its secrets, and walk through installing it.",
 		"",
-		"Not implemented yet (next milestones): `install`, `settings`, `uninstall`.",
+		"Not implemented yet (next milestones): `settings`, `uninstall`, and the workflow `/pi-review install` will commit.",
 		"See `extensions/pi-review/PLAN.md` and the tracking issue.",
 	].join("\n");
 }
@@ -235,10 +239,41 @@ function pendingText(subcommand: string): string {
 	return [
 		`### \`/pi-review ${subcommand}\` is not implemented yet`,
 		"",
-		"This build ships the runner, `submit_review` validation, `/pi-review run`, and `/pi-review status`.",
-		`The ${subcommand} step belongs to the next milestones (GitHub App + workflow + provider auth + settings panel).`,
+		"This build ships the runner, `submit_review` validation, `/pi-review run`, `/pi-review status`, and `/pi-review install`.",
+		`The ${subcommand} step belongs to the next milestones (workflow + provider auth + settings panel).`,
 		"See `extensions/pi-review/PLAN.md` for the design and the open issue for progress.",
 	].join("\n");
+}
+
+function wizardUi(ctx: ExtensionCommandContext): WizardUI {
+	return {
+		confirm: (title, message) => ctx.ui.confirm(title, message),
+		select: (title, options) => ctx.ui.select(title, options),
+		input: (title, placeholder) => ctx.ui.input(title, placeholder),
+		notify: (message, type) => ctx.ui.notify(message, type),
+	};
+}
+
+async function installCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+	ctx.ui.setStatus(STATUS_KEY, "install: checking the repository…");
+	try {
+		const outcome = await installPiReview({
+			cwd: ctx.cwd,
+			env: process.env,
+			ui: wizardUi(ctx),
+			deps: {
+				exec: execFor(pi),
+				run: spawnRunner,
+				openUrl: async (url) => openExternalUrl(url),
+			},
+		});
+		await showMessage(pi, ctx, renderInstallOutcome(outcome), { install: outcome.status });
+		if (outcome.status === "created" && !outcome.installed) {
+			ctx.ui.notify("pi-review: the App is created; finish by installing it on the repository", "warning");
+		}
+	} finally {
+		ctx.ui.setStatus(STATUS_KEY, undefined);
+	}
 }
 
 export default function piReview(pi: ExtensionAPI): void {
@@ -263,6 +298,8 @@ export default function piReview(pi: ExtensionAPI): void {
 						await showStatus(pi, ctx);
 						return;
 					case "install":
+						await installCommand(pi, ctx);
+						return;
 					case "settings":
 					case "uninstall":
 						await showMessage(pi, ctx, pendingText(subcommand));

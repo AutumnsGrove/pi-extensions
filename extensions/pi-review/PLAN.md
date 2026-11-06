@@ -6,15 +6,16 @@ request — the same experience as Claude Code's `/install-github-app`, but with
 whatever provider pi is logged into (OpenCode Go, OpenRouter, …), with the
 model configurable from a panel.
 
-Status: **milestone 1 (runner) implemented.** Researched 2026-11-05; scope
+Status: **milestones 1 (runner) and 2 (App identity) implemented.** Researched 2026-11-05; scope
 updated after owner review (name `pi-review`, no turn budget, OpenCode Go in CI is
 explicitly permitted). Tracked in the GitHub issue "Add `pi-review` extension".
 
 Implemented in milestone 1: `diff.ts`, `detect.ts`, `context.ts`, `review.ts`,
 `submit.ts`, `prompt.ts`, `runner.ts`, `local.ts`, and the `/pi-review run`
-and `/pi-review status` commands, with 86 tests. See
-[`README.md`](./README.md) for the current usage and the deviations recorded at
-the end of this file.
+`/pi-review status` commands, and milestone 2 added the manifest flow, secret
+storage, installation check, and `/pi-review install`, with 144 tests in the
+extension. See [`README.md`](./README.md) for the current usage and the
+deviations recorded at the end of this file.
 
 ## Why agentic (and not "diff in, comments out")
 
@@ -209,8 +210,15 @@ extensions/pi-review/
 ├── prompt.ts       review instructions + fenced, capped PR context
 ├── runner.ts       CI-only wiring (PI_REVIEW=1): tool, context, artifact
 ├── local.ts        headless child pi for /pi-review run
+├── install.ts      /pi-review install: preflight + App/secret/installation wizard
+├── github/
+│   ├── app.ts      manifest code exchange, account and installation lookups
+│   ├── exec.ts     stdin-capable command runner (gh secret set)
+│   ├── manifest.ts App manifest, registration and install URLs
+│   ├── open.ts     open a URL in the system browser
+│   ├── secrets.ts  repo secrets and variables via gh
+│   └── server.ts   localhost redirect server for the manifest flow
 ├── auth/           (milestone 4) provider credential strategies
-├── github/         (milestone 2–3) manifest flow, secrets, PR URL
 ├── workflow.ts     (milestone 3) render .github/workflows/pi-review.yml
 ├── settings.ts     (milestone 3) .github/pi-review.json schema + defaults
 ├── panel.ts        (milestone 5) TUI panel: provider, model, thinking, triggers, tools
@@ -339,7 +347,8 @@ fixed (opt-in). Read `REVIEW.md` from the **base** branch, never the PR branch.
 2. **Custom Pi GitHub App (default identity)**: manifest flow with a localhost
    redirect, store `PI_REVIEW_APP_ID` + `PI_REVIEW_APP_PRIVATE_KEY`, one-click
    install on the repo, `actions/create-github-app-token` in the workflow.
-   `GITHUB_TOKEN` remains as an opt-out fallback.
+   `GITHUB_TOKEN` remains as an opt-out fallback. ✅ Done (the workflow's token
+   step lands with milestone 3).
 3. **Workflow + settings**: `workflow.ts`, `settings.ts`, `gh secret set`,
    branch + PR-compare URL; manual key paste only.
 4. **Provider auth**: OpenCode Go (CI token pathway or `provisionApiKey`), then
@@ -409,3 +418,36 @@ Decisions made while building the runner, where it differs from the design above
   section of the summary with the reason, because a review that loses findings
   is worse than one with an unattached paragraph. Invalid `start_line` values
   are cleared while keeping the comment.
+
+## Implementation notes (milestone 2)
+
+- **One App per repository.** The suggested name is
+  `pi-review-<owner>-<repo>`, capped at GitHub's 34 characters. A shared App per
+  owner would keep the App list smaller but needs a name-collision story; the
+  per-repo App is the honest v1 because revocation is per repo. GitHub lets the
+  user edit the name on the creation page if the suggestion collides.
+- **The key is stored first, the id second.** A re-run uses
+  `PI_REVIEW_APP_ID` as the "identity exists" marker, so it must never be
+  written before the key it belongs to. The key goes through `gh secret set`
+  on stdin (`github/exec.ts` exists because `pi.exec` cannot write stdin); it is
+  never printed, logged, or written to disk. GitHub only returns the key once,
+  so a storage failure names the App and points at its advanced settings to
+  generate a new one.
+- **`PI_REVIEW_APP_SLUG` is a repository variable, not a secret.** Secret values
+  cannot be read back, and a re-run needs the slug to find the App's
+  installation. The slug is not sensitive, so a variable is the right store; the
+  workflow can read it as `vars.PI_REVIEW_APP_SLUG` for links.
+- **Reuse verifies the installation, not the stored key.** The key is
+  unreadable, so a reuse run checks `/user/installations` for the App and
+  whether the repository is selected. A wrong key can only surface as a 401 at
+  review time; the summary says how to rotate it.
+- **The manifest flow cannot be pre-filled with a GET**, so the local server
+  serves one page that auto-POSTs the manifest to GitHub. The `state` nonce is
+  echoed back and required, so another local process cannot hand the wizard a
+  code for an App it created. A five-minute timeout falls back to pasting the
+  redirect URL (the SSH/container path); a wrong state is refused.
+- **Choosing `GITHUB_TOKEN` deletes the App secrets** (after a confirmation) so
+  the workflow's fallback is unambiguous rather than silently ignoring them.
+- **The wizard is dependency-injected** (UI, command runner, fetch, browser,
+  redirect server), so all four identity paths plus timeouts, aborts, and
+  storage failures are tested without a browser or network.
