@@ -15,8 +15,22 @@ import { parseDiff, summarizeDiff } from "./diff.ts";
 
 /** How much raw diff the model sees inline before it is cut. */
 export const DIFF_BUDGET_CHARS = 120_000;
+
 /** Total guidance (REVIEW.md + AGENTS.md) included in the prompt. */
 export const GUIDANCE_BUDGET_CHARS = 32_000;
+
+/**
+ * The fence tags are the only boundary between reviewer instructions and PR
+ * text. A PR that writes `</pi-review-context>` into its title, body, or diff
+ * would otherwise close the data region early, so escape our own tags inside
+ * untrusted text. Everything else is left byte-for-byte.
+ */
+const FENCE_TAG = /<\s*\/?\s*(pi-review-context|pull-request-description|changed-files|review-guidance|diff)\b[^>]*>/gi;
+
+export function neutralizeFences(text: string): string {
+	return text.replace(FENCE_TAG, (match) => match.replace("<", "&lt;"));
+}
+
 
 export interface ReviewPrompt {
 	/** Appended to the system prompt. */
@@ -82,9 +96,10 @@ function describeTarget(target: ReviewTarget): string {
 	lines.push(`Repository: ${repo}`);
 	if (target.number) {
 		const author = target.author ? ` by ${target.author}` : "";
-		lines.push(`Pull request: #${target.number} "${target.title.trim() || "(untitled)"}"${author}`);
+		const title = neutralizeFences(target.title.trim()) || "(untitled)";
+		lines.push(`Pull request: #${target.number} "${title}"${author}`);
 	} else {
-		lines.push(`Change: ${target.title.trim() || "(local branch)"}`);
+		lines.push(`Change: ${neutralizeFences(target.title.trim()) || "(local branch)"}`);
 	}
 	lines.push(`Base: ${target.baseRef}${target.baseSha ? ` (${target.baseSha.slice(0, 12)})` : ""}`);
 	if (target.headSha) lines.push(`Head: ${target.headSha.slice(0, 12)}`);
@@ -102,13 +117,13 @@ export function buildReviewPrompt(
 	const diffBudget = options.diffBudget ?? DIFF_BUDGET_CHARS;
 	const guidanceBudget = options.guidanceBudget ?? GUIDANCE_BUDGET_CHARS;
 	const parsed = parseDiff(target.diff);
-	const { text: diff, truncated } = truncate(target.diff, diffBudget);
+	const { text: diff, truncated } = truncate(neutralizeFences(target.diff), diffBudget);
 
-	const body = target.body.trim();
+	const body = neutralizeFences(target.body.trim());
 	const bodyBlock = body
 		? `\n<pull-request-description>\n${truncate(body, 8_000).text}\n</pull-request-description>\n`
 		: "";
-	const fileList = summarizeDiff(parsed);
+	const fileList = neutralizeFences(summarizeDiff(parsed));
 	const diffNote = truncated
 		? `\nThe diff below is cut off. The file list above is complete: use read/grep/find on the checkout to inspect the rest, or run \`git diff\` if a shell is available.`
 		: "";

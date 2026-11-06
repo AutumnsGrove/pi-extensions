@@ -91,14 +91,18 @@ export async function resolveBaseRef(
 	if (fromEnv) candidates.push(fromEnv);
 
 	const remoteHead = await run(exec, "git", ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], { cwd });
-	if (remoteHead) candidates.push(remoteHead.replace(/^origin\//, ""));
+	if (remoteHead) {
+		// In a CI checkout the local default branch may not exist, so try the
+		// remote-tracking ref too before falling back to main/master.
+		candidates.push(remoteHead.replace(/^origin\//, ""), remoteHead);
+	}
 
 	candidates.push("origin/main", "origin/master", "main", "master");
 
 	for (const candidate of candidates) {
 		if (await refExists(exec, cwd, candidate)) return candidate;
 	}
-	return candidates[0];
+	return undefined;
 }
 
 export async function hasGhAuth(exec: Exec, cwd: string): Promise<boolean> {

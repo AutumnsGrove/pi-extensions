@@ -126,6 +126,29 @@ index 3333333..4444444 100644
 		expect([...util.left]).toEqual([10, 11, 30, 31]);
 	});
 
+	it("does not read file headers out of hunk content", () => {
+		// A removed `-- comment` line arrives as `--- comment`, and an added
+		// `++ marker` line as `+++ marker`; neither is a file header.
+		const diff = parseDiff(`diff --git a/db/001.sql b/db/001.sql
+index 1111111..2222222 100644
+--- a/db/001.sql
++++ b/db/001.sql
+@@ -1,3 +1,3 @@
+--- drop the legacy index
++++ keep the index
+ CREATE INDEX idx ON t (a);
+ SELECT 1;
+`);
+		const file = diff.files[0]!;
+		expect(diff.files).toHaveLength(1);
+		expect(file.path).toBe("db/001.sql");
+		expect(file.additions).toBe(1);
+		expect(file.deletions).toBe(1);
+		expect([...file.left]).toEqual([1, 2, 3]);
+		expect([...file.right]).toEqual([1, 2, 3]);
+		expect(diff.byPath.get(" drop the legacy index")).toBeUndefined();
+	});
+
 	it("marks binary files and tolerates an empty diff", () => {
 		const diff = parseDiff(`diff --git a/logo.png b/logo.png
 new file mode 100644

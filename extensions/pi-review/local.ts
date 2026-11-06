@@ -104,6 +104,21 @@ export function parseRunArgs(argv: string[]): RunArgs {
 	return args;
 }
 
+/**
+ * Target variables the child must receive. Without these the child re-detects
+ * from git and reviews the local branch even when `--pr`/`--base` were given,
+ * and `--post` fails after the review has already run.
+ */
+export function reviewChildEnv(options: {
+	prNumber?: number | undefined;
+	baseRef?: string | undefined;
+}): Record<string, string> {
+	const env: Record<string, string> = {};
+	if (options.prNumber !== undefined) env.PR_NUMBER = String(options.prNumber);
+	if (options.baseRef) env.PI_REVIEW_BASE_REF = options.baseRef;
+	return env;
+}
+
 /** Tools the review agent gets. `bash` is opt-in because it can read the env. */
 export function reviewTools(includeBash: boolean): string[] {
 	const tools = ["read", "grep", "find", "ls", "submit_review"];

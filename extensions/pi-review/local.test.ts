@@ -7,6 +7,7 @@ import {
 	type HeadlessRunOptions,
 	parseRunArgs,
 	readReviewArtifact,
+	reviewChildEnv,
 	reviewPromptFor,
 	reviewTools,
 	summarizeEvents,
@@ -56,6 +57,20 @@ describe("parseRunArgs", () => {
 		expect(() => parseRunArgs(["--pr"])).toThrow("--pr needs a value");
 		expect(() => parseRunArgs(["--pr", "abc"])).toThrow("pull request number");
 		expect(() => parseRunArgs(["--model", "--post"])).toThrow("--model needs a value");
+	});
+});
+
+describe("reviewChildEnv", () => {
+	it("forwards the resolved target so the child does not re-detect", () => {
+		expect(reviewChildEnv({ prNumber: 7, baseRef: "main" })).toEqual({
+			PR_NUMBER: "7",
+			PI_REVIEW_BASE_REF: "main",
+		});
+	});
+
+	it("omits keys that were not resolved", () => {
+		expect(reviewChildEnv({})).toEqual({});
+		expect(reviewChildEnv({ baseRef: "release" })).toEqual({ PI_REVIEW_BASE_REF: "release" });
 	});
 });
 

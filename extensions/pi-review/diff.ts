@@ -165,16 +165,16 @@ export function parseDiff(text: string): ParsedDiff {
 			continue;
 		}
 
-		if (line.startsWith("--- ")) {
+		// Inside a hunk these are content: a removed line starting with `-- `
+		// arrives as `--- …`, and an added line starting with `++ ` as `+++ …`.
+		if (!inHunk && line.startsWith("--- ")) {
 			const path = headerPath(line.slice(4));
 			if (path) leftPath = path;
-			inHunk = false;
 			continue;
 		}
-		if (line.startsWith("+++ ")) {
+		if (!inHunk && line.startsWith("+++ ")) {
 			const path = headerPath(line.slice(4));
 			if (path) rightPath = path;
-			inHunk = false;
 			continue;
 		}
 

@@ -77,6 +77,18 @@ describe("resolveBaseRef", () => {
 		expect(await resolveBaseRef(exec, "/repo", "release", {})).toBe("release");
 	});
 
+	it("falls back to the remote default branch when the local one is absent", async () => {
+		const exec = fakeExec({
+			"git symbolic-ref --short refs/remotes/origin/HEAD": { stdout: "origin/develop" },
+			"git rev-parse --verify --quiet origin/develop^{commit}": { stdout: "sha" },
+		});
+		expect(await resolveBaseRef(exec, "/repo", undefined, {})).toBe("origin/develop");
+	});
+
+	it("returns undefined when no candidate ref exists", async () => {
+		expect(await resolveBaseRef(fakeExec({}), "/repo", undefined, {})).toBeUndefined();
+	});
+
 	it("reads the base ref from the environment", async () => {
 		const exec = fakeExec({
 			"git rev-parse --verify --quiet trunk^{commit}": { stdout: "sha" },

@@ -1,6 +1,12 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionCommandContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import piReview from "./index.ts";
+import { runLocalReview } from "./local.ts";
+
+vi.mock("./local.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./local.ts")>();
+	return { ...actual, runLocalReview: vi.fn() };
+});
 
 type Handler = (args: string, ctx: ExtensionCommandContext) => Promise<void>;
 
@@ -12,7 +18,13 @@ interface Harness {
 	ctx: ExtensionCommandContext;
 }
 
-function load(): Harness {
+function load(
+	exec: (command: string, args: string[]) => Promise<{ stdout: string; stderr: string; code: number }> = async () => ({
+		stdout: "",
+		stderr: "",
+		code: 1,
+	})
+): Harness {
 	const tools: ToolDefinition[] = [];
 	const notify = vi.fn();
 	const sendMessage = vi.fn();
@@ -25,7 +37,7 @@ function load(): Harness {
 			tools.push(tool);
 		},
 		on: () => () => {},
-		exec: async () => ({ stdout: "", stderr: "", code: 1, killed: false, truncated: false }),
+		exec,
 		sendMessage,
 	} as unknown as Parameters<typeof piReview>[0];
 	piReview(pi);
@@ -45,6 +57,10 @@ function load(): Harness {
 }
 
 const original = process.env.PI_REVIEW;
+
+beforeEach(() => {
+	vi.mocked(runLocalReview).mockReset();
+});
 
 afterEach(() => {
 	if (original === undefined) delete process.env.PI_REVIEW;
@@ -88,6 +104,41 @@ describe("pi-review command", () => {
 		const { command, notify, ctx } = load();
 		await command.handler("nope", ctx);
 		expect(notify).toHaveBeenCalledWith(expect.stringContaining("unknown subcommand"), "error");
+	});
+
+	it("passes the resolved PR and base to the child process", async () => {
+		delete process.env.PI_REVIEW;
+		vi.mocked(runLocalReview).mockResolvedValue({
+			code: 0,
+			timedOut: false,
+			aborted: false,
+			stdout: "",
+			stderr: "",
+			text: "",
+			toolCalls: ["submit_review"],
+			review: { event: "COMMENT", summary: "Fine.", comments: [], dropped: [] },
+		});
+		const { command, ctx } = load();
+		await command.handler("run --pr 7 --base release", ctx);
+		expect(runLocalReview).toHaveBeenCalledWith(
+			expect.objectContaining({
+				dryRun: true,
+				env: { PR_NUMBER: "7", PI_REVIEW_BASE_REF: "release" },
+				tools: ["read", "grep", "find", "ls", "submit_review"],
+			})
+		);
+	});
+
+	it("refuses --post without a pull request", async () => {
+		delete process.env.PI_REVIEW;
+		const { command, notify, ctx } = load(async (command, args) =>
+			command === "git" && args[0] === "remote"
+				? { stdout: "git@github.com:owner/repo.git", stderr: "", code: 0 }
+				: { stdout: "", stderr: "", code: 1 }
+		);
+		await command.handler("run --post", ctx);
+		expect(runLocalReview).not.toHaveBeenCalled();
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("--post needs a pull request"), "error");
 	});
 
 	it("suggests subcommands for completion", () => {

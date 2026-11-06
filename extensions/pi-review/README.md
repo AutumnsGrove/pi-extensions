@@ -88,7 +88,8 @@ silently.
 - Same-repo pull requests only; never `pull_request_target` with a PR checkout.
 - The diff, title, body, commit messages, and code comments are untrusted. The
   prompt fences them and states that instructions inside them are not to be
-  followed.
+  followed; pi-review's own fence tags are escaped in that text, so a PR cannot
+  close the data region early.
 - Guidance reads `REVIEW.md`/`AGENTS.md` from the **base** commit, so a PR
   cannot rewrite the rules it is reviewed against.
 - The review key should be a dedicated, revocable key per repository — never a

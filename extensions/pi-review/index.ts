@@ -25,7 +25,7 @@ import {
 	resolveRepo,
 } from "./detect.ts";
 import { parseDiff } from "./diff.ts";
-import { parseRunArgs, reviewPromptFor, reviewTools, runLocalReview } from "./local.ts";
+import { parseRunArgs, reviewChildEnv, reviewPromptFor, reviewTools, runLocalReview } from "./local.ts";
 import { renderReviewMarkdown, type ReviewMeta } from "./review.ts";
 import { loadReviewTarget } from "./context.ts";
 import { isReviewRunner, registerReviewRunner } from "./runner.ts";
@@ -156,6 +156,7 @@ async function runCommand(
 			thinking,
 			tools: reviewTools(options.bash),
 			dryRun: !options.post,
+			env: reviewChildEnv({ prNumber: pr, baseRef }),
 			onProgress: (line) => ctx.ui.setStatus(STATUS_KEY, `reviewing · ${line}`),
 		});
 		await showRunResult(
