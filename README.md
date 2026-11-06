@@ -6,9 +6,11 @@ themes, packaged as a single installable
 
 ## Pull request reviews
 
-Pull requests in this repository are reviewed by a [pi](https://github.com/earendil-works/pi)
-agent running in GitHub Actions. It reads the diff and the surrounding code,
-may run tests, and posts a review with inline comments.
+Pull requests from branches in this repository are reviewed by a
+[pi](https://github.com/earendil-works/pi) agent running in GitHub Actions. It
+reads the diff and the surrounding code, may run tests, and posts a review with
+inline comments. Fork pull requests are skipped, because a job on a fork has no
+access to the repository's secrets.
 
 The review policy — model, triggers, tools, verdict — is committed in
 [`.github/pi-review.json`](.github/pi-review.json), and the workflow is
