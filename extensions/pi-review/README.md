@@ -14,16 +14,14 @@ own job.
 
 ## Status
 
-**Milestone 3 — workflow + settings.** `/pi-review install` now finishes the
-job: it asks for the review settings, commits `.github/pi-review.json` and the
-generated `.github/workflows/pi-review.yml` to a branch off the default branch,
-pushes it, and opens the PR-compare page. The App identity from milestone 2 is
-used by the workflow through `actions/create-github-app-token`, with
-`GITHUB_TOKEN` as the fallback. Provider key minting (OpenCode Go / OpenRouter)
-is still milestone 4; for now the wizard lets you paste a key or skips it.
+**Milestone 4 — provider credentials.** The installer now mints the review key
+instead of only accepting a paste: OpenCode Go reuses the Console device grant
+and provisions a dedicated per-repo key, OpenRouter runs the OAuth PKCE flow and
+exchanges the code for a user-controlled key, and any other provider falls back
+to a pasted key. Everything lands in `PI_REVIEW_API_KEY`.
 
-Milestone 1 (the runner) and milestone 2 (App identity) are implemented and
-tested:
+Milestones 1 (runner), 2 (App identity), and 3 (workflow + settings) are
+implemented and tested:
 
 - `submit_review` tool: validates every inline comment against the real diff
   (path, side, line, range), folds anything unattachable into the summary
@@ -38,8 +36,8 @@ tested:
   workflow runs, with the same isolation flags.
 - `/pi-review status`: what a review would use right now.
 
-Not yet: provider auth (milestone 4), the settings panel and `uninstall`
-(milestone 5), and polish (milestone 6).
+Not yet: the settings panel and `uninstall` (milestone 5), and polish
+(milestone 6).
 
 ## Commands
 
@@ -68,11 +66,22 @@ Not yet: provider auth (milestone 4), the settings panel and `uninstall`
    install page opens so you can select the repository, and the wizard verifies
    it with a short-lived App JWT (`GET /repos/{owner}/{repo}/installation`),
    polling briefly while GitHub catches up.
-5. **Settings** — thinking level, whether the reviewer may run tests (`bash`),
+5. **Review credential** — a dedicated key for the provider in
+   `.github/pi-review.json`, stored as `PI_REVIEW_API_KEY`:
+   - **OpenCode Go** — device sign-in to the Console (the same grant
+     `/login opencode-go` uses), then a new Go key named
+     `pi-review-<owner>-<repo>`. The interactive `pi-<host>` key is never
+     touched, and re-provisioning revokes only keys with that CI name.
+   - **OpenRouter** — OAuth PKCE: a local callback receives a one-time code,
+     the verifier never leaves the process, and `key_label` is the repository
+     name. The headless fallback pastes the code the page shows.
+   - **Anything else** — paste a key, or set `providerEnv` in the settings file
+     and add `PI_REVIEW_API_KEY` yourself.
+6. **Settings** — thinking level, whether the reviewer may run tests (`bash`),
    and `COMMENT` vs `REQUEST_CHANGES`. The model and provider come from the
    session that runs the wizard and are written to `.github/pi-review.json`,
    which you can edit afterwards.
-6. **Workflow** — the settings file and the generated workflow are committed to
+7. **Workflow** — the settings file and the generated workflow are committed to
    `pi-review/setup` (or the next free suffix) off the default branch, pushed,
    and the PR-compare page opens. The default branch is never written to, and
    your checkout is restored. `.github/pi-review.json` is the policy; the YAML is
@@ -147,6 +156,7 @@ The runner activates when `PI_REVIEW=1`. It reads:
 | `GH_TOKEN` | used by `gh pr view`, `gh pr diff`, and `gh api` when posting |
 | `PI_REVIEW_MAX_COMMENTS` | inline comments kept separate; the rest fold into the summary |
 | `PI_REVIEW_REQUEST_CHANGES` | `1` allows `REQUEST_CHANGES` |
+| `OPENCODE_API_KEY` / `OPENROUTER_API_KEY` / … | the provider key, from the `PI_REVIEW_API_KEY` secret |
 
 The intended workflow (milestone 3) checks out the target repo with full
 history, installs a pinned pi, clones this package at a pinned tag, and runs:
@@ -178,6 +188,15 @@ silently.
   developer key.
 - `bash` is opt-in; the runner is the security boundary because pi does not
   sandbox tools.
+- The provider key is minted as a dedicated, revocable key per repository. It
+  is written only to the repository secret, never to the settings file, a log,
+  or the terminal (the paste path is the exception: the key is visible while
+  typing, which the prompt says).
+- OpenRouter PKCE: the code verifier stays in the process, so a leaked
+  authorization code cannot be exchanged; the callback validates `state`.
+  Revoke minted keys at <https://openrouter.ai/keys>.
+- OpenCode Go: keys live under the `pi` service account in the Console; revoke
+  them there. The CI key name makes them easy to spot.
 
 ## Development
 

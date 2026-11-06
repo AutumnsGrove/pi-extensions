@@ -6,8 +6,8 @@ request — the same experience as Claude Code's `/install-github-app`, but with
 whatever provider pi is logged into (OpenCode Go, OpenRouter, …), with the
 model configurable from a panel.
 
-Status: **milestones 1 (runner), 2 (App identity), and 3 (workflow + settings)
-implemented.** Researched 2026-11-05; scope
+Status: **milestones 1–4 implemented:** runner, App identity, workflow +
+settings, and provider credentials. Researched 2026-11-05; scope
 updated after owner review (name `pi-review`, no turn budget, OpenCode Go in CI is
 explicitly permitted). Tracked in the GitHub issue "Add `pi-review` extension".
 
@@ -15,8 +15,9 @@ Implemented in milestone 1: `diff.ts`, `detect.ts`, `context.ts`, `review.ts`,
 `submit.ts`, `prompt.ts`, `runner.ts`, `local.ts`, and the `/pi-review run`
 `/pi-review status` commands, milestone 2 added the manifest flow, secret
 storage, installation check, and `/pi-review install`, and milestone 3 added the
-settings schema, the workflow generator, the branch writer, and the provider-key
-paste, with 186 tests in the extension. See [`README.md`](./README.md) for the current usage and the
+settings schema, the workflow generator, and the branch writer, and milestone 4
+added OpenCode Go and OpenRouter credential minting, with 209 tests in the
+extension. See [`README.md`](./README.md) for the current usage and the
 deviations recorded at the end of this file.
 
 ## Why agentic (and not "diff in, comments out")
@@ -222,7 +223,7 @@ extensions/pi-review/
 │   ├── open.ts     open a URL in the system browser
 │   ├── secrets.ts  repo secrets and variables via gh
 │   └── server.ts   localhost redirect server for the manifest flow
-├── auth/           (milestone 4) provider credential strategies
+├── auth/           provider credential strategies (device grant, PKCE, paste)
 ├── workflow.ts     render .github/workflows/pi-review.yml from settings
 ├── settings.ts     .github/pi-review.json schema, defaults, validation
 ├── panel.ts        (milestone 5) TUI panel: provider, model, thinking, triggers, tools
@@ -356,7 +357,8 @@ fixed (opt-in). Read `REVIEW.md` from the **base** branch, never the PR branch.
 3. **Workflow + settings**: `workflow.ts`, `settings.ts`, `gh secret set`,
    branch + PR-compare URL; manual key paste only. ✅ Done.
 4. **Provider auth**: OpenCode Go (CI token pathway or `provisionApiKey`), then
-   OpenRouter PKCE incl. headless code-paste.
+   OpenRouter PKCE incl. headless code-paste. ✅ Done using the device grant +
+   `provisionApiKey`; no separate CI-token API surfaced.
 5. **Panel**: model/thinking/tools UI, status, uninstall.
 6. Polish: incremental re-review, stale-thread resolution, `@pi` mention
    trigger, scheduled sweep, `REVIEW.md`.
@@ -495,3 +497,27 @@ Decisions made while building the runner, where it differs from the design above
   `PI_REVIEW_API_KEY` from a pasted key (or skip and set it later); milestone 4
   replaces the paste for OpenCode Go / OpenRouter with a minted, dedicated key.
   The settings' `providerEnv` decides which env var the workflow exposes it as.
+
+## Implementation notes (milestone 4)
+
+- **OpenCode Go reuses the existing device grant.** `auth/opencode.ts` calls
+  `deviceSignIn` and `provisionApiKey` from the `opencode-go` extension with a
+  per-repository key name (`pi-review-<owner>-<repo>`), so provisioning can
+  never revoke the interactive `pi-<host>` key (the two names differ, and
+  `provisionApiKey` only revokes active keys with the *same* name). The session
+  `orgId` is forwarded. After re-reading OpenCode's docs, no separate "CI token"
+  endpoint surfaced that was better than provisioning; the documented CI use is
+  what this does. The module graph stays CI-safe (only `node:child_process` and
+  type-only pi-ai imports).
+- **OpenRouter PKCE keeps the verifier in-process.** S256 only; the auth URL
+  carries `callback_url`, `state`, and `key_label` (the repo name). A one-shot
+  localhost callback validates `state` and refuses a mismatched redirect; a
+  five-minute timeout falls back to pasting the code from the page (the headless
+  flow). Exchange is `POST /api/v1/auth/keys` and the response must contain an
+  `sk-or-` key.
+- **The paste path stays for everything else**, and a provider with no known env
+  var gets a warning telling the user to set `providerEnv` in the settings file
+  rather than silently storing a key the workflow cannot see.
+- **One secret, many providers.** `PI_REVIEW_API_KEY` is mapped to the
+  provider's env var by the generated workflow (`providerEnv`), so revoking is a
+  single secret delete.

@@ -17,6 +17,9 @@
 
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { providerFlow, reviewKeyName } from "./auth/index.ts";
+import { authorizeOpenCodeGo } from "./auth/opencode.ts";
+import { authorizeOpenRouter } from "./auth/openrouter.ts";
 import { type Exec, type RepoRef, hasGhAuth, resolveRepo, run } from "./detect.ts";
 import {
 	type FetchLike,
@@ -97,6 +100,9 @@ export interface InstallDeps {
 	waitForInstallation?: (options: { repo: RepoRef; jwt: string }) => Promise<RepoInstallation | undefined>;
 	/** Write the settings + workflow branch (tests inject this). */
 	writeBranch?: typeof writeWorkflowBranch;
+	/** Provider credential flows (tests inject these). */
+	authorizeOpenCode?: typeof authorizeOpenCodeGo;
+	authorizeOpenRouter?: typeof authorizeOpenRouter;
 }
 
 export interface InstallOptions {
@@ -495,7 +501,12 @@ async function collectReviewSettings(
 	return settings;
 }
 
-async function maybeSetProviderKey(
+/**
+ * Store `PI_REVIEW_API_KEY` for the configured provider: a device sign-in for
+ * OpenCode Go, PKCE for OpenRouter, or a pasted key for anything else. A key
+ * already in the repo is left alone.
+ */
+async function configureReviewKey(
 	options: InstallOptions,
 	repo: RepoRef,
 	secrets: string[],
@@ -511,14 +522,44 @@ async function maybeSetProviderKey(
 		);
 		return false;
 	}
-	const set = await ui.confirm(
-		"Set the review API key?",
-		`The workflow reads ${settings.providerEnv} from the ${API_KEY_SECRET} secret.\n\nPaste a dedicated, revocable key now? You can also run \`gh secret set ${API_KEY_SECRET}\` later.`
-	);
-	if (!set) return false;
-	const key = await ui.input(
-		`Paste the ${settings.provider} API key (visible while typing; stored as a repository secret)`
-	);
+
+	const flow = providerFlow(settings.provider);
+	const signIn =
+		flow === "opencode-go"
+			? "Sign in to OpenCode Go (recommended)"
+			: flow === "openrouter"
+				? "Authorize OpenRouter (recommended)"
+				: undefined;
+	const choice = await ui.select(`Review API key for ${settings.provider}`, [
+		...(signIn ? [signIn] : []),
+		"Paste an API key",
+		"Skip for now",
+	]);
+	if (choice === undefined || choice.startsWith("Skip")) return false;
+
+	let key: string | undefined;
+	if (choice.startsWith("Paste")) {
+		key = await ui.input(
+			`Paste the ${settings.provider} API key (visible while typing; stored as a repository secret)`
+		);
+	} else if (flow === "opencode-go") {
+		const authorize = options.deps.authorizeOpenCode ?? authorizeOpenCodeGo;
+		key = await authorize({
+			keyName: reviewKeyName(repo),
+			notify: (message) => ui.notify(message, "info"),
+		});
+	} else if (flow === "openrouter") {
+		const authorize = options.deps.authorizeOpenRouter ?? authorizeOpenRouter;
+		const openUrl = options.deps.openUrl ?? (async (url: string) => openExternalUrl(url));
+		key = await authorize({
+			keyLabel: reviewKeyName(repo),
+			notify: (message) => ui.notify(message, "info"),
+			openUrl,
+			onCodePrompt: () => ui.input("Paste the code OpenRouter showed you"),
+			...(options.deps.fetch ? { fetch: options.deps.fetch } : {}),
+		});
+	}
+
 	if (!key?.trim()) return false;
 	await setRepoSecret({ run: commandRunner, repo, cwd, name: API_KEY_SECRET, value: key.trim() });
 	return true;
@@ -591,11 +632,11 @@ export async function installPiReview(options: InstallOptions): Promise<InstallO
 	const changed = [...identity.changed];
 	let apiKeySet = false;
 	try {
-		apiKeySet = await maybeSetProviderKey(options, repo, state.secrets, settings);
+		apiKeySet = await configureReviewKey(options, repo, state.secrets, settings);
 		if (apiKeySet) changed.push(API_KEY_SECRET);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		ui.notify(`Could not store ${API_KEY_SECRET}: ${message}`, "warning");
+		ui.notify(`Could not set ${API_KEY_SECRET}: ${message}`, "warning");
 	}
 
 	let workflow: WorkflowOutcome | undefined;

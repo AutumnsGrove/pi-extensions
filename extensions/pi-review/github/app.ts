@@ -12,7 +12,7 @@ import { type Exec, type RepoRef, run } from "../detect.ts";
 
 export type FetchLike = (
 	url: string,
-	init?: { method?: string; headers?: Record<string, string> }
+	init?: { method?: string; headers?: Record<string, string>; body?: string }
 ) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
 
 export class ManifestExchangeError extends Error {

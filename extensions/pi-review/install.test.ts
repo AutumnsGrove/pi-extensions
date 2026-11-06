@@ -28,12 +28,17 @@ function scriptedUi(script: {
 	confirm?: Answer<boolean>[];
 	select?: Answer<string | undefined>[];
 	input?: Answer<string | undefined>[];
-}): WizardUI & { notifications: { message: string; type?: string }[]; prompts: string[] } {
+}): WizardUI & {
+	notifications: { message: string; type?: string }[];
+	prompts: string[];
+	selects: { title: string; options: string[] }[];
+} {
 	const confirms = [...(script.confirm ?? [])];
-	const selects = [...(script.select ?? [])];
+	const selectQueue = [...(script.select ?? [])];
 	const inputs = [...(script.input ?? [])];
 	const notifications: { message: string; type?: string }[] = [];
 	const prompts: string[] = [];
+	const selects: { title: string; options: string[] }[] = [];
 	const take = <T>(queue: Answer<T>[], kind: string): T => {
 		if (queue.length === 0) throw new Error(`no scripted ${kind} answer left`);
 		const next = queue.shift()!;
@@ -42,13 +47,15 @@ function scriptedUi(script: {
 	return {
 		notifications,
 		prompts,
+		selects,
 		async confirm(title) {
 			prompts.push(title);
 			return take(confirms, "confirm");
 		},
-		async select(title) {
+		async select(title, options) {
 			prompts.push(title);
-			return take(selects, "select");
+			selects.push({ title, options });
+			return take(selectQueue, "select");
 		},
 		async input(title) {
 			prompts.push(title);
@@ -180,6 +187,9 @@ interface HarnessOptions {
 	waitForInstallation?: () => Promise<{ id: number } | undefined>;
 	writeBranch?: ReturnType<typeof fakeBranchWriter>;
 	opened?: string[];
+	defaults?: { provider?: string; model?: string };
+	authorizeOpenCode?: () => Promise<string>;
+	authorizeOpenRouter?: (options: { keyLabel: string }) => Promise<string>;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -199,7 +209,7 @@ function harness(options: HarnessOptions = {}) {
 				cwd,
 				env,
 				ui,
-				defaults,
+				defaults: options.defaults ?? defaults,
 				deps: {
 					exec: options.exec ?? fakeExec(),
 					run: runner,
@@ -211,6 +221,10 @@ function harness(options: HarnessOptions = {}) {
 					fetch: fakeFetch(),
 					waitForInstallation: options.waitForInstallation ?? (async () => ({ id: 9 })),
 					writeBranch: writer.writeBranch,
+					...(options.authorizeOpenCode ? { authorizeOpenCode: options.authorizeOpenCode as never } : {}),
+					...(options.authorizeOpenRouter
+						? { authorizeOpenRouter: options.authorizeOpenRouter as never }
+						: {}),
 				},
 			}),
 	};
@@ -495,19 +509,78 @@ describe("installPiReview settings and key", () => {
 		expect(settings.model).toBe("openrouter/anthropic/claude-sonnet-4.5");
 	});
 
-	it("offers to store a provider key when the secret is missing", async () => {
+	it("stores a pasted provider key when the secret is missing", async () => {
 		const writer = fakeBranchWriter();
 		const runner = fakeRunner({ secrets: [] });
 		const ui = scriptedUi({
-			confirm: [true, true, true],
-			select: [CREATE, "medium", "Read-only", "Comment only"],
-			input: ["sk-or-secret"],
+			confirm: [true, true],
+			select: [CREATE, "medium", "Read-only", "Comment only", "Paste an API key"],
+			input: ["sk-test-secret"],
 		});
 		const outcome = await harness({ runner, ui, writeBranch: writer }).run();
 		expect(outcome.apiKeySet).toBe(true);
 		const key = runner.calls.find((call) => call.args[2] === API_KEY_SECRET);
-		expect(key?.stdin).toBe("sk-or-secret");
+		expect(key?.stdin).toBe("sk-test-secret");
 		expect(renderInstallOutcome(outcome)).toContain(`\`${API_KEY_SECRET}\`: set`);
+	});
+
+	it("signs in to OpenCode Go and stores the minted key", async () => {
+		const runner = fakeRunner({ secrets: [] });
+		const ui = scriptedUi({
+			confirm: [true, true],
+			select: [
+				CREATE,
+				"medium",
+				"Read-only",
+				"Comment only",
+				"Sign in to OpenCode Go (recommended)",
+			],
+		});
+		const outcome = await harness({
+			runner,
+			ui,
+			authorizeOpenCode: async () => "oc_sk_minted",
+		}).run();
+		expect(outcome.apiKeySet).toBe(true);
+		const keyCall = runner.calls.find((call) => call.args[2] === API_KEY_SECRET);
+		expect(keyCall?.stdin).toBe("oc_sk_minted");
+	});
+
+	it("authorizes OpenRouter with a repository-scoped key label", async () => {
+		const runner = fakeRunner({ secrets: [] });
+		let label: string | undefined;
+		const ui = scriptedUi({
+			confirm: [true, true],
+			select: [CREATE, "medium", "Read-only", "Comment only", "Authorize OpenRouter (recommended)"],
+		});
+		const outcome = await harness({
+			runner,
+			ui,
+			defaults: { provider: "openrouter", model: "anthropic/claude-sonnet-4.5" },
+			authorizeOpenRouter: async (options) => {
+				label = options.keyLabel;
+				return "sk-or-v1-minted";
+			},
+		}).run();
+		expect(outcome.apiKeySet).toBe(true);
+		expect(label).toBe("pi-review-owner-repo");
+		const keyCall = runner.calls.find((call) => call.args[2] === API_KEY_SECRET);
+		expect(keyCall?.stdin).toBe("sk-or-v1-minted");
+	});
+
+	it("warns instead of prompting when the provider has no known env var", async () => {
+		const runner = fakeRunner({ secrets: [] });
+		const ui = scriptedUi({
+			confirm: [true, true],
+			select: [CREATE, "medium", "Read-only", "Comment only"],
+		});
+		await harness({
+			runner,
+			ui,
+			defaults: { provider: "custom-thing", model: "m" },
+		}).run();
+		expect(ui.selects.some((entry) => entry.title.startsWith("Review API key"))).toBe(false);
+		expect(ui.notifications.some((entry) => entry.message.includes("No env var is known"))).toBe(true);
 	});
 
 	it("leaves the key unset when the user declines", async () => {
