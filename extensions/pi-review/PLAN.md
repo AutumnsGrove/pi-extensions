@@ -12,7 +12,7 @@ explicitly permitted). Tracked in the GitHub issue "Add `pi-review` extension".
 
 Implemented in milestone 1: `diff.ts`, `detect.ts`, `context.ts`, `review.ts`,
 `submit.ts`, `prompt.ts`, `runner.ts`, `local.ts`, and the `/pi-review run`
-and `/pi-review status` commands, with 82 tests. See
+and `/pi-review status` commands, with 86 tests. See
 [`README.md`](./README.md) for the current usage and the deviations recorded at
 the end of this file.
 

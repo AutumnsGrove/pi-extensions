@@ -10,7 +10,14 @@
  * rewrite the rules it is reviewed against.
  */
 
-import { type Exec, type RepoRef, resolveBaseRef, resolveRepo, run } from "./detect.ts";
+import {
+	type Exec,
+	type RepoRef,
+	resolveBaseRef,
+	resolveHeadSha,
+	resolveRepo,
+	run,
+} from "./detect.ts";
 
 export interface ReviewTarget {
 	source: "pull-request" | "local";
@@ -148,21 +155,27 @@ export async function loadReviewTarget(options: LoadTargetOptions): Promise<Revi
 
 	const baseRef = (await resolveBaseRef(exec, cwd, options.baseRef, env)) ?? "main";
 	const mergeBase = await run(exec, "git", ["merge-base", baseRef, "HEAD"], { cwd, timeout: timeoutMs });
-	const headSha = await run(exec, "git", ["rev-parse", "HEAD"], { cwd });
+	const headSha = await resolveHeadSha(exec, cwd);
 	const diff =
 		(await gitDiff(exec, cwd, mergeBase ? [`${mergeBase}`] : [`${baseRef}...HEAD`], timeoutMs)) ?? "";
 	if (!mergeBase) notes.push(`Could not find a merge base with \`${baseRef}\`.`);
 	if (!diff.trim()) notes.push("The diff is empty; there may be nothing to review.");
+	if (number) {
+		// Posting still needs the PR number, but the local HEAD is not necessarily
+		// the PR head (in CI it is the merge commit), so never send it as commit_id.
+		notes.push("Posting will omit `commit_id` because the pull request head could not be read.");
+	}
 
 	const commitTitle = await run(exec, "git", ["log", "-1", "--pretty=%s"], { cwd });
 	return {
 		source: "local",
 		repo,
+		...(number ? { number } : {}),
 		title: commitTitle ?? "Local changes",
 		body: "",
 		baseRef,
 		baseSha: mergeBase,
-		headSha,
+		...(number ? {} : { headSha }),
 		diff,
 		notes,
 	};

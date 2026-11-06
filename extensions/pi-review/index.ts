@@ -22,7 +22,9 @@ import {
 	hasGhAuth,
 	resolveBaseRef,
 	resolveBranch,
+	resolveHeadSha,
 	resolveRepo,
+	run,
 } from "./detect.ts";
 import { parseDiff } from "./diff.ts";
 import { parseRunArgs, reviewChildEnv, reviewPromptFor, reviewTools, runLocalReview } from "./local.ts";
@@ -141,6 +143,8 @@ async function runCommand(
 			"--post needs a pull request: run from a branch with an open PR, or pass --pr <number>"
 		);
 	}
+	if (pr !== undefined) await warnOnCheckoutMismatch(exec, ctx, pr);
+
 	const baseRef = options.baseRef ?? (await resolveBaseRef(exec, ctx.cwd));
 	const model = options.model ?? modelLabel(ctx);
 	const thinking = options.thinking ?? ctx.thinkingLevel;
@@ -170,6 +174,32 @@ async function runCommand(
 		ctx.ui.setWorkingMessage();
 		ctx.ui.setStatus(STATUS_KEY, undefined);
 	}
+}
+
+/**
+ * `/pi-review run --pr N` reviews the PR diff but reads files from the local
+ * checkout. If the checkout is neither the PR head nor a merge containing it,
+ * findings can refer to the wrong code, so say so before spending the run.
+ */
+async function warnOnCheckoutMismatch(
+	exec: Exec,
+	ctx: ExtensionCommandContext,
+	pr: number
+): Promise<void> {
+	const [localHead, prHead] = await Promise.all([
+		resolveHeadSha(exec, ctx.cwd),
+		run(exec, "gh", ["pr", "view", String(pr), "--json", "headRefOid", "--jq", ".headRefOid"], {
+			cwd: ctx.cwd,
+			timeout: 15_000,
+		}),
+	]);
+	if (!localHead || !prHead || localHead === prHead) return;
+	const ancestor = await exec("git", ["merge-base", "--is-ancestor", prHead, "HEAD"], { cwd: ctx.cwd });
+	if ((ancestor.code ?? 1) === 0) return;
+	ctx.ui.notify(
+		`pi-review: the checkout is ${localHead.slice(0, 7)}, but PR #${pr} head is ${prHead.slice(0, 7)} — file reads may not match the diff`,
+		"warning"
+	);
 }
 
 async function showStatus(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {

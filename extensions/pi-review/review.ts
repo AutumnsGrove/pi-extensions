@@ -9,7 +9,7 @@
  * when the model guessed a line number.
  */
 
-import { type DiffSide, type ParsedDiff, isValidPosition } from "./diff.ts";
+import { type DiffSide, type ParsedDiff, findDiffFile, isValidPosition } from "./diff.ts";
 
 export type ReviewEvent = "COMMENT" | "REQUEST_CHANGES";
 
@@ -124,10 +124,14 @@ export function validateReview(
 			drop("the line was not a positive number");
 			continue;
 		}
-		if (!isValidPosition(diff, path, side, line)) {
+		const file = findDiffFile(diff, path);
+		if (!file || !isValidPosition(diff, path, side, line)) {
 			drop(`line ${line} is not a changed or context line on the ${side} side of the diff`);
 			continue;
 		}
+		// GitHub wants the post-rename path; an old-path comment would 422 the
+		// whole review. Deleted files keep their old path as the canonical one.
+		const canonicalPath = file.path;
 		if (comments.length >= maxComments) {
 			drop(`only the first ${maxComments} inline comments are posted separately`);
 			continue;
@@ -140,7 +144,7 @@ export function validateReview(
 		}
 
 		comments.push({
-			path,
+			path: canonicalPath,
 			line,
 			side,
 			body,

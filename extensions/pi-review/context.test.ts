@@ -85,6 +85,13 @@ describe("resolveBaseRef", () => {
 		expect(await resolveBaseRef(exec, "/repo", undefined, {})).toBe("origin/develop");
 	});
 
+	it("resolves an explicit base that only exists as a remote-tracking ref", async () => {
+		const exec = fakeExec({
+			"git rev-parse --verify --quiet origin/release^{commit}": { stdout: "sha" },
+		});
+		expect(await resolveBaseRef(exec, "/repo", "release", {})).toBe("origin/release");
+	});
+
 	it("returns undefined when no candidate ref exists", async () => {
 		expect(await resolveBaseRef(fakeExec({}), "/repo", undefined, {})).toBeUndefined();
 	});
@@ -150,10 +157,13 @@ describe("loadReviewTarget", () => {
 		});
 		const target = await loadReviewTarget({ exec, cwd: "/repo", prNumber: 12, env: {} });
 		expect(target.source).toBe("local");
+		expect(target.number).toBe(12);
 		expect(target.baseRef).toBe("origin/main");
 		expect(target.baseSha).toBe("merge-sha");
 		expect(target.diff).toBe("LOCAL DIFF");
+		expect(target.headSha).toBeUndefined();
 		expect(target.notes.join("\n")).toContain("Could not read pull request #12");
+		expect(target.notes.join("\n")).toContain("omit `commit_id`");
 	});
 
 	it("reviews the working tree against the merge base without a PR", async () => {

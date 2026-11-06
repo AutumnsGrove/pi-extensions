@@ -107,6 +107,21 @@ index 1111111..2222222 100644
 		expect(isValidPosition(diff, "docs/my file.md", "RIGHT", 1)).toBe(true);
 	});
 
+	it("decodes octal escapes in quoted non-ASCII paths", () => {
+		const diff = parseDiff(`diff --git "a/docs/caf\\303\\251.md" "b/docs/caf\\303\\251.md"
+index 1111111..2222222 100644
+--- "a/docs/caf\\303\\251.md"
++++ "b/docs/caf\\303\\251.md"
+@@ -1 +1 @@
+-old
++new
+`);
+		const path = "docs/café.md";
+		expect(diff.files[0]!.path).toBe(path);
+		expect(diff.byPath.get(path)).toBe(diff.files[0]);
+		expect(isValidPosition(diff, path, "RIGHT", 1)).toBe(true);
+	});
+
 	it("parses multiple hunks and files", () => {
 		const diff = parseDiff(`${modified}diff --git a/lib/util.ts b/lib/util.ts
 index 3333333..4444444 100644

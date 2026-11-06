@@ -91,16 +91,21 @@ describe("submit_review tool", () => {
 	});
 
 	it("keeps the run open when posting fails so the model can retry", async () => {
+		const outputPath = await tempFile();
 		const post = vi.fn(async () => {
 			throw new Error("422 Unprocessable Entity");
 		});
-		const tool = createSubmitReviewTool({ getDiff: async () => parsed, dryRun: false, post });
+		const tool = createSubmitReviewTool({ getDiff: async () => parsed, dryRun: false, post, outputPath });
 		const result = await execute(tool, review);
 		expect(result.isError).toBe(true);
 		expect(result.terminate).toBeUndefined();
 		const first = result.content[0];
 		const text = first && first.type === "text" ? first.text : "";
 		expect(text).toContain("422 Unprocessable Entity");
+		// The validated review survives a failed post, for the step summary.
+		const artifact = JSON.parse(await readFile(outputPath, "utf8"));
+		expect(artifact.error).toContain("422 Unprocessable Entity");
+		expect(artifact.review.summary).toBe("Looks reasonable.");
 	});
 
 	it("errors when there is no target to post to", async () => {

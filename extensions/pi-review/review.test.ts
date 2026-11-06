@@ -145,3 +145,26 @@ describe("renderReviewMarkdown", () => {
 		expect(markdown).toContain("_No inline comments._");
 	});
 });
+
+describe("validateReview on renames", () => {
+	const renameDiff = parseDiff(`diff --git a/src/before.ts b/src/after.ts
+similarity index 88%
+rename from src/before.ts
+rename to src/after.ts
+index 1111111..2222222 100644
+--- a/src/before.ts
++++ b/src/after.ts
+@@ -1 +1 @@
+-export const name = "before";
++export const name = "after";
+`);
+
+	it("rewrites an old-path comment to the post-rename path", () => {
+		const review = validateReview(
+			{ comments: [{ path: "src/before.ts", line: 1, body: "Renamed." }] },
+			renameDiff
+		);
+		expect(review.comments).toHaveLength(1);
+		expect(review.comments[0]!.path).toBe("src/after.ts");
+	});
+});

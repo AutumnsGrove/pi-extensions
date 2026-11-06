@@ -157,6 +157,24 @@ describe("registerReviewRunner", () => {
 		expect(artifact.url).toBe("https://example.test/r/1");
 	});
 
+	it("injects the context message once, even when the run restarts", async () => {
+		const { pi, events } = fakePi(fakeExec());
+		registerReviewRunner(pi, { env: { PI_REVIEW: "1", PR_NUMBER: "5" } });
+		const handler = events.get("before_agent_start")!;
+		const first = (await handler(
+			{ messageType: "user", prompt: "x", systemPrompt: "BASE" },
+			{ cwd: "/repo" }
+		)) as { message?: { content: string } };
+		const second = (await handler(
+			{ messageType: "user", prompt: "x", systemPrompt: "BASE" },
+			{ cwd: "/repo" }
+		)) as { message?: { content: string }; systemPrompt: string };
+
+		expect(first.message?.content).toContain("Pull request: #5");
+		expect(second.message).toBeUndefined();
+		expect(second.systemPrompt).toContain("Pull-request review mode");
+	});
+
 	it("marks a run that never submitted a review as incomplete", async () => {
 		const path = await outputPath();
 		const { pi, events } = fakePi(fakeExec());

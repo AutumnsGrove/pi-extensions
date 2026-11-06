@@ -86,7 +86,11 @@ export async function resolveBaseRef(
 	env: Record<string, string | undefined> = process.env
 ): Promise<string | undefined> {
 	const candidates: string[] = [];
-	if (preferred) candidates.push(preferred);
+	if (preferred) {
+		candidates.push(preferred);
+		// A CI checkout often has only the remote-tracking ref for the base.
+		if (!preferred.startsWith("origin/")) candidates.push(`origin/${preferred}`);
+	}
 	const fromEnv = env.PI_REVIEW_BASE_REF ?? env.GITHUB_BASE_REF;
 	if (fromEnv) candidates.push(fromEnv);
 

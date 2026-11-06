@@ -107,6 +107,7 @@ export interface SubmitReviewDetails {
 	dryRun: boolean;
 	review?: ValidatedReview;
 	url?: string;
+	error?: string;
 }
 
 async function writeArtifact(
@@ -228,14 +229,19 @@ export function createSubmitReviewTool(deps: SubmitReviewDeps) {
 					terminate: true,
 				};
 			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				// Keep the validated review: a failed post is exactly when the
+				// findings are most useful to the step summary.
+				const details: SubmitReviewDetails = { dryRun: false, review, error: message };
+				await writeArtifact(deps.outputPath, { ...details, markdown });
 				return {
 					content: [
 						{
 							type: "text" as const,
-							text: `Posting the review failed: ${error instanceof Error ? error.message : String(error)}. Fix the cause and call submit_review again, or report the failure.`,
+							text: `Posting the review failed: ${message}. Fix the cause and call submit_review again, or report the failure.`,
 						},
 					],
-					details: { dryRun: false, review } satisfies SubmitReviewDetails,
+					details,
 					isError: true,
 				};
 			}

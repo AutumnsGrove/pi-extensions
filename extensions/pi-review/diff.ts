@@ -41,27 +41,46 @@ export interface ParsedDiff {
 
 const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 
-/** Git wraps paths containing spaces or control characters in double quotes. */
+/**
+ * Git wraps paths containing spaces or control characters in double quotes and
+ * escapes non-ASCII bytes as octal (`docs/caf\303\251.md`), so decode the
+ * escapes into bytes and then UTF-8. Treating `\303` as two characters mangles
+ * the path and every inline comment on it.
+ */
 function unquotePath(raw: string): string {
 	const value = raw.trim();
 	if (value.length < 2 || !value.startsWith('"') || !value.endsWith('"')) return value;
 	const inner = value.slice(1, -1);
-	let out = "";
+	const bytes: number[] = [];
+	const encoder = new TextEncoder();
+	const push = (char: string): void => {
+		for (const byte of encoder.encode(char)) bytes.push(byte);
+	};
 	for (let index = 0; index < inner.length; index += 1) {
 		const char = inner[index]!;
 		if (char !== "\\") {
-			out += char;
+			push(char);
 			continue;
 		}
 		const next = inner[index + 1];
 		if (next === undefined) break;
+		const octal = /^[0-7]{1,3}/.exec(inner.slice(index + 1));
+		if (octal) {
+			bytes.push(Number.parseInt(octal[0], 8) & 0xff);
+			index += octal[0].length;
+			continue;
+		}
 		index += 1;
-		if (next === "n") out += "\n";
-		else if (next === "t") out += "\t";
-		else if (next === "r") out += "\r";
-		else out += next;
+		if (next === "n") bytes.push(0x0a);
+		else if (next === "t") bytes.push(0x09);
+		else if (next === "r") bytes.push(0x0d);
+		else if (next === "a") bytes.push(0x07);
+		else if (next === "b") bytes.push(0x08);
+		else if (next === "f") bytes.push(0x0c);
+		else if (next === "v") bytes.push(0x0b);
+		else push(next);
 	}
-	return out;
+	return new TextDecoder().decode(new Uint8Array(bytes));
 }
 
 /** Read a `--- a/path` or `+++ b/path` header. `/dev/null` means the side is absent. */

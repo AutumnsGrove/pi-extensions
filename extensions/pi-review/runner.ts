@@ -52,6 +52,9 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 
 	let cwd = process.cwd();
 	let loaded: Promise<LoadedReview> | undefined;
+	// `before_agent_start` runs again for a retry or recovery; the injected
+	// message is already in the transcript, so only the system prompt repeats.
+	let injectedContext = false;
 
 	const load = (): Promise<LoadedReview> => {
 		loaded ??= (async () => {
@@ -127,19 +130,34 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 		if (event.messageType !== "user") return;
 
 		const state = await load();
+		const inject = !injectedContext;
+		injectedContext = true;
 		if (state.error) {
 			return {
 				systemPrompt: `${event.systemPrompt}\n\n## Pull-request review mode (pi-review)\n\nThe review context could not be loaded: ${state.error}\nDo not attempt a code review. Call submit_review with a short summary explaining that the review could not run.`,
+				...(inject
+					? {
+							message: {
+								customType: "pi-review-context",
+								content: `<pi-review-context>\nThe review context could not be loaded: ${state.error}\n</pi-review-context>`,
+								display: false,
+							},
+						}
+					: {}),
 			};
 		}
 		const prompt = buildReviewPrompt(state.target, state.guidance);
 		return {
 			systemPrompt: `${event.systemPrompt}\n\n${prompt.system}`,
-			message: {
-				customType: "pi-review-context",
-				content: prompt.context,
-				display: false,
-			},
+			...(inject
+				? {
+						message: {
+							customType: "pi-review-context",
+							content: prompt.context,
+							display: false,
+						},
+					}
+				: {}),
 		};
 	});
 

@@ -129,6 +129,33 @@ describe("pi-review command", () => {
 		);
 	});
 
+	it("warns when the checkout is not the pull request head", async () => {
+		delete process.env.PI_REVIEW;
+		vi.mocked(runLocalReview).mockResolvedValue({
+			code: 0,
+			timedOut: false,
+			aborted: false,
+			stdout: "",
+			stderr: "",
+			text: "",
+			toolCalls: ["submit_review"],
+			review: { event: "COMMENT", summary: "Fine.", comments: [], dropped: [] },
+		});
+		const { command, notify, ctx } = load(async (command, args) => {
+			const key = `${command} ${args.join(" ")}`;
+			if (key === "git remote get-url origin") {
+				return { stdout: "git@github.com:owner/repo.git", stderr: "", code: 0 };
+			}
+			if (key === "git rev-parse HEAD") return { stdout: "local-sha", stderr: "", code: 0 };
+			if (key === "gh pr view 7 --json headRefOid --jq .headRefOid") {
+				return { stdout: "pr-head-sha", stderr: "", code: 0 };
+			}
+			return { stdout: "", stderr: "", code: 1 };
+		});
+		await command.handler("run --pr 7", ctx);
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("file reads may not match"), "warning");
+	});
+
 	it("refuses --post without a pull request", async () => {
 		delete process.env.PI_REVIEW;
 		const { command, notify, ctx } = load(async (command, args) =>
