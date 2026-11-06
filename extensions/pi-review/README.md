@@ -14,14 +14,16 @@ own job.
 
 ## Status
 
-**Milestone 2 — installer identity.** `/pi-review install` now creates the Pi
-GitHub App through GitHub's manifest flow, stores `PI_REVIEW_APP_ID` and
-`PI_REVIEW_APP_PRIVATE_KEY` as repository secrets, and walks through installing
-the App on the repo. It can reuse an existing identity, or delete the App
-secrets when you choose `GITHUB_TOKEN` instead. The workflow, settings, and
-provider auth are still to come.
+**Milestone 3 — workflow + settings.** `/pi-review install` now finishes the
+job: it asks for the review settings, commits `.github/pi-review.json` and the
+generated `.github/workflows/pi-review.yml` to a branch off the default branch,
+pushes it, and opens the PR-compare page. The App identity from milestone 2 is
+used by the workflow through `actions/create-github-app-token`, with
+`GITHUB_TOKEN` as the fallback. Provider key minting (OpenCode Go / OpenRouter)
+is still milestone 4; for now the wizard lets you paste a key or skips it.
 
-Milestone 1 (the runner) is implemented and tested:
+Milestone 1 (the runner) and milestone 2 (App identity) are implemented and
+tested:
 
 - `submit_review` tool: validates every inline comment against the real diff
   (path, side, line, range), folds anything unattachable into the summary
@@ -36,8 +38,8 @@ Milestone 1 (the runner) is implemented and tested:
   workflow runs, with the same isolation flags.
 - `/pi-review status`: what a review would use right now.
 
-Not yet: workflow generation, provider auth, and the settings panel (milestones
-3–6 — see [`PLAN.md`](./PLAN.md)).
+Not yet: provider auth (milestone 4), the settings panel and `uninstall`
+(milestone 5), and polish (milestone 6).
 
 ## Commands
 
@@ -66,6 +68,15 @@ Not yet: workflow generation, provider auth, and the settings panel (milestones
    install page opens so you can select the repository, and the wizard verifies
    it with a short-lived App JWT (`GET /repos/{owner}/{repo}/installation`),
    polling briefly while GitHub catches up.
+5. **Settings** — thinking level, whether the reviewer may run tests (`bash`),
+   and `COMMENT` vs `REQUEST_CHANGES`. The model and provider come from the
+   session that runs the wizard and are written to `.github/pi-review.json`,
+   which you can edit afterwards.
+6. **Workflow** — the settings file and the generated workflow are committed to
+   `pi-review/setup` (or the next free suffix) off the default branch, pushed,
+   and the PR-compare page opens. The default branch is never written to, and
+   your checkout is restored. `.github/pi-review.json` is the policy; the YAML is
+   generated from it.
 
 Notes and limits:
 
@@ -98,6 +109,29 @@ The review is printed rather than posted unless `--post` is given. `bash` is
 opt-in because a shell on the runner can read the job's environment, including
 the review key.
 
+## The generated workflow
+
+`/pi-review install` writes `.github/workflows/pi-review.yml`:
+
+- triggers: `pull_request` `opened` / `synchronize` / `ready_for_review` /
+  `reopened`, plus optional `paths` filters from `paths.include` / `paths.exclude`
+  (rendered as one `paths` list with `!` negations, because GitHub rejects
+  `paths` and `paths-ignore` together);
+- skips drafts (unless configured), fork PRs (secrets are unavailable), and
+  optionally bot authors;
+- one job, `contents: read`, `pull-requests: write`, `issues: write`,
+  `concurrency` cancel-in-progress, job timeout = review timeout + 5 minutes so
+  the failure step can run;
+- checks out the PR with full history, installs a pinned pi, fetches this
+  package at `settings.pi.packageRef`, mints the App token when
+  `identity: "app"`, then runs one headless pi with the review extension;
+- fails the step if the run wrote no artifact or the artifact says
+  `incomplete`, so the next step posts a "could not complete this review"
+  comment instead of ending silently;
+- always writes a step summary (verdict, inline comment count, review URL).
+
+Edit `.github/pi-review.json`, not the YAML; re-running install regenerates it.
+
 ## Running in CI
 
 The runner activates when `PI_REVIEW=1`. It reads:
@@ -111,6 +145,8 @@ The runner activates when `PI_REVIEW=1`. It reads:
 | `PI_REVIEW_REQUEST_CHANGES` | `1` allows `REQUEST_CHANGES` (default `COMMENT`) |
 | `PI_REVIEW_BASE_REF` | base ref override for the local git fallback |
 | `GH_TOKEN` | used by `gh pr view`, `gh pr diff`, and `gh api` when posting |
+| `PI_REVIEW_MAX_COMMENTS` | inline comments kept separate; the rest fold into the summary |
+| `PI_REVIEW_REQUEST_CHANGES` | `1` allows `REQUEST_CHANGES` |
 
 The intended workflow (milestone 3) checks out the target repo with full
 history, installs a pinned pi, clones this package at a pinned tag, and runs:

@@ -49,6 +49,8 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 	const dryRun = env.PI_REVIEW_DRY_RUN === "1";
 	const outputPath = env.PI_REVIEW_OUTPUT;
 	const requestChanges = env.PI_REVIEW_REQUEST_CHANGES === "1";
+	const maxCommentsRaw = Number(env.PI_REVIEW_MAX_COMMENTS);
+	const maxComments = Number.isInteger(maxCommentsRaw) && maxCommentsRaw > 0 ? maxCommentsRaw : undefined;
 
 	let cwd = process.cwd();
 	let loaded: Promise<LoadedReview> | undefined;
@@ -110,6 +112,7 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 			getDiff: async () => (await load()).diff,
 			dryRun,
 			requestChanges,
+			maxComments,
 			outputPath,
 			post,
 			renderMeta: async () => {

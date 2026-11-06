@@ -99,6 +99,8 @@ export interface SubmitReviewDeps {
 	outputPath?: string;
 	/** Allows REQUEST_CHANGES submissions. */
 	requestChanges?: boolean;
+	/** Inline comments kept separate; the rest fold into the summary. */
+	maxComments?: number;
 	/** Extra context for the rendered markdown, resolved lazily. */
 	renderMeta?: () => ReviewMeta | undefined | Promise<ReviewMeta | undefined>;
 }
@@ -186,6 +188,7 @@ export function createSubmitReviewTool(deps: SubmitReviewDeps) {
 			const diff = await deps.getDiff();
 			const review = validateReview(params as ReviewInput, diff, {
 				requestChanges: deps.requestChanges,
+				...(deps.maxComments === undefined ? {} : { maxComments: deps.maxComments }),
 			});
 			const markdown = renderReviewMarkdown(review, (await deps.renderMeta?.()) ?? {});
 

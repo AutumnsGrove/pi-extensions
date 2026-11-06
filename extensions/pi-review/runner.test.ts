@@ -175,6 +175,33 @@ describe("registerReviewRunner", () => {
 		expect(second.systemPrompt).toContain("Pull-request review mode");
 	});
 
+	it("honors PI_REVIEW_MAX_COMMENTS", async () => {
+		const path = await outputPath();
+		const { pi, tools, events } = fakePi(fakeExec());
+		registerReviewRunner(pi, {
+			env: {
+				PI_REVIEW: "1",
+				PI_REVIEW_DRY_RUN: "1",
+				PI_REVIEW_OUTPUT: path,
+				PI_REVIEW_MAX_COMMENTS: "1",
+				PR_NUMBER: "5",
+			},
+		});
+		await events.get("before_agent_start")!(
+			{ messageType: "user", prompt: "x", systemPrompt: "BASE" },
+			{ cwd: "/repo" }
+		);
+		const result = (await executeTool(tools[0]!, {
+			summary: "Fine.",
+			comments: [
+				{ path: "src/app.ts", line: 2, body: "One." },
+				{ path: "src/app.ts", line: 2, body: "Two." },
+			],
+		})) as { details: { review?: { comments: unknown[]; dropped: unknown[] } } };
+		expect(result.details.review?.comments).toHaveLength(1);
+		expect(result.details.review?.dropped).toHaveLength(1);
+	});
+
 	it("marks a run that never submitted a review as incomplete", async () => {
 		const path = await outputPath();
 		const { pi, events } = fakePi(fakeExec());

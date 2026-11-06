@@ -13,11 +13,14 @@
  * settings panel land in the following milestones; see PLAN.md and the issue.
  */
 
+import { access, readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import {
 	type Exec,
+	type RepoRef,
 	detectPullRequest,
 	hasGhAuth,
 	resolveBaseRef,
@@ -27,13 +30,15 @@ import {
 	run,
 } from "./detect.ts";
 import { parseDiff } from "./diff.ts";
-import { spawnRunner } from "./github/exec.ts";
+import { type CommandRunner, spawnRunner } from "./github/exec.ts";
 import { openExternalUrl } from "./github/open.ts";
-import { installPiReview, renderInstallOutcome, type WizardUI } from "./install.ts";
+import { listRepoSecretNames } from "./github/secrets.ts";
+import { API_KEY_SECRET, installPiReview, renderInstallOutcome, type WizardUI } from "./install.ts";
 import { parseRunArgs, reviewChildEnv, reviewPromptFor, reviewTools, runLocalReview } from "./local.ts";
 import { renderReviewMarkdown, type ReviewMeta } from "./review.ts";
 import { loadReviewTarget } from "./context.ts";
 import { isReviewRunner, registerReviewRunner } from "./runner.ts";
+import { SETTINGS_PATH, WORKFLOW_PATH, type ReviewSettings, parseSettings } from "./settings.ts";
 
 const COMMAND_NAME = "pi-review";
 const STATUS_KEY = "pi-review";
@@ -73,9 +78,9 @@ function helpText(): string {
 		"  run the review agent locally against the current branch or a PR. Dry run by default;",
 		"  prints the review instead of posting it. `--post` publishes it to the pull request.",
 		"- `/pi-review status` — show the repository, pull request, base, diff size, and model a review would use.",
-		"- `/pi-review install` — create the Pi GitHub App, store its secrets, and walk through installing it.",
+		"- `/pi-review install` — create the Pi GitHub App, store its secrets, then commit the settings and the generated workflow to a branch for review.",
 		"",
-		"Not implemented yet (next milestones): `settings`, `uninstall`, and the workflow `/pi-review install` will commit.",
+		"Not implemented yet (next milestones): `settings` and `uninstall`.",
 		"See `extensions/pi-review/PLAN.md` and the tracking issue.",
 	].join("\n");
 }
@@ -231,6 +236,7 @@ async function showStatus(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promi
 	if (target.notes.length > 0) {
 		lines.push("", "Notes:", ...target.notes.map((note) => `- ${note}`));
 	}
+	lines.push(...(await describeReviewSetup(pi, ctx, repo)));
 	lines.push("", "Run `/pi-review run` for a local dry run.");
 	await showMessage(pi, ctx, lines.join("\n"));
 }
@@ -243,6 +249,61 @@ function pendingText(subcommand: string): string {
 		`The ${subcommand} step belongs to the next milestones (workflow + provider auth + settings panel).`,
 		"See `extensions/pi-review/PLAN.md` for the design and the open issue for progress.",
 	].join("\n");
+}
+
+function commandRunnerFor(pi: ExtensionAPI): CommandRunner {
+	return (command, args, options) => pi.exec(command, args, { cwd: options.cwd, timeout: options.timeoutMs });
+}
+
+async function describeReviewSetup(pi: ExtensionAPI, ctx: ExtensionCommandContext, repo: RepoRef | undefined): Promise<string[]> {
+	const settingsPath = join(ctx.cwd, SETTINGS_PATH);
+	let raw: string | undefined;
+	try {
+		raw = await readFile(settingsPath, "utf8");
+	} catch {
+		raw = undefined;
+	}
+	if (raw === undefined) {
+		return ["", "- workflow: not installed — run `/pi-review install`"];
+	}
+
+	let settings: ReviewSettings;
+	try {
+		settings = parseSettings(JSON.parse(raw));
+	} catch (error) {
+		return ["", `- settings: invalid — ${error instanceof Error ? error.message : String(error)}`];
+	}
+
+	let workflowPresent = true;
+	try {
+		await access(join(ctx.cwd, WORKFLOW_PATH));
+	} catch {
+		workflowPresent = false;
+	}
+
+	const lines = [
+		"",
+		`- workflow: ${workflowPresent ? `\`${WORKFLOW_PATH}\`` : `**missing** \`${WORKFLOW_PATH}\``}`,
+		`- identity: ${settings.identity === "app" ? "GitHub App" : "GITHUB_TOKEN"}`,
+		`- review model: ${settings.provider ? `${settings.provider}/` : ""}${settings.model || "(not set)"} · thinking ${settings.thinking}`,
+		`- tools: ${settings.tools.bash ? "read, grep, find, ls, bash" : "read, grep, find, ls"}`,
+		`- verdict: ${settings.review.event} · max ${settings.review.maxInlineComments} inline comments`,
+		`- package ref: \`${settings.pi.packageRef}\` · pi ${settings.pi.version}`,
+	];
+
+	if (repo) {
+		try {
+			const secrets = await listRepoSecretNames({
+				run: commandRunnerFor(pi),
+				repo,
+				cwd: ctx.cwd,
+			});
+			lines.push(`- ${API_KEY_SECRET}: ${secrets.includes(API_KEY_SECRET) ? "set" : "**missing**"}`);
+		} catch {
+			lines.push("- secrets: cannot read (admin required)");
+		}
+	}
+	return lines;
 }
 
 function wizardUi(ctx: ExtensionCommandContext): WizardUI {
@@ -265,6 +326,10 @@ async function installCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext): P
 				exec: execFor(pi),
 				run: spawnRunner,
 				openUrl: async (url) => openExternalUrl(url),
+			},
+			defaults: {
+				...(ctx.model ? { provider: ctx.model.provider, model: ctx.model.id } : {}),
+				...(ctx.thinkingLevel ? { thinking: ctx.thinkingLevel } : {}),
 			},
 		});
 		await showMessage(pi, ctx, renderInstallOutcome(outcome), { install: outcome.status });

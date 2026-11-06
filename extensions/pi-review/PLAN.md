@@ -6,15 +6,17 @@ request — the same experience as Claude Code's `/install-github-app`, but with
 whatever provider pi is logged into (OpenCode Go, OpenRouter, …), with the
 model configurable from a panel.
 
-Status: **milestones 1 (runner) and 2 (App identity) implemented.** Researched 2026-11-05; scope
+Status: **milestones 1 (runner), 2 (App identity), and 3 (workflow + settings)
+implemented.** Researched 2026-11-05; scope
 updated after owner review (name `pi-review`, no turn budget, OpenCode Go in CI is
 explicitly permitted). Tracked in the GitHub issue "Add `pi-review` extension".
 
 Implemented in milestone 1: `diff.ts`, `detect.ts`, `context.ts`, `review.ts`,
 `submit.ts`, `prompt.ts`, `runner.ts`, `local.ts`, and the `/pi-review run`
-`/pi-review status` commands, and milestone 2 added the manifest flow, secret
-storage, installation check, and `/pi-review install`, with 144 tests in the
-extension. See [`README.md`](./README.md) for the current usage and the
+`/pi-review status` commands, milestone 2 added the manifest flow, secret
+storage, installation check, and `/pi-review install`, and milestone 3 added the
+settings schema, the workflow generator, the branch writer, and the provider-key
+paste, with 186 tests in the extension. See [`README.md`](./README.md) for the current usage and the
 deviations recorded at the end of this file.
 
 ## Why agentic (and not "diff in, comments out")
@@ -214,13 +216,15 @@ extensions/pi-review/
 ├── github/
 │   ├── app.ts      manifest code exchange, account and installation lookups
 │   ├── exec.ts     stdin-capable command runner (gh secret set)
+│   ├── git.ts      branch writer for the settings + workflow commit
+│   ├── jwt.ts      App JWT for the installation check
 │   ├── manifest.ts App manifest, registration and install URLs
 │   ├── open.ts     open a URL in the system browser
 │   ├── secrets.ts  repo secrets and variables via gh
 │   └── server.ts   localhost redirect server for the manifest flow
 ├── auth/           (milestone 4) provider credential strategies
-├── workflow.ts     (milestone 3) render .github/workflows/pi-review.yml
-├── settings.ts     (milestone 3) .github/pi-review.json schema + defaults
+├── workflow.ts     render .github/workflows/pi-review.yml from settings
+├── settings.ts     .github/pi-review.json schema, defaults, validation
 ├── panel.ts        (milestone 5) TUI panel: provider, model, thinking, triggers, tools
 ├── *.test.ts
 ├── PLAN.md
@@ -350,7 +354,7 @@ fixed (opt-in). Read `REVIEW.md` from the **base** branch, never the PR branch.
    `GITHUB_TOKEN` remains as an opt-out fallback. ✅ Done (the workflow's token
    step lands with milestone 3).
 3. **Workflow + settings**: `workflow.ts`, `settings.ts`, `gh secret set`,
-   branch + PR-compare URL; manual key paste only.
+   branch + PR-compare URL; manual key paste only. ✅ Done.
 4. **Provider auth**: OpenCode Go (CI token pathway or `provisionApiKey`), then
    OpenRouter PKCE incl. headless code-paste.
 5. **Panel**: model/thinking/tools UI, status, uninstall.
@@ -460,3 +464,34 @@ Decisions made while building the runner, where it differs from the design above
 - **The wizard is dependency-injected** (UI, command runner, fetch, browser,
   redirect server), so all four identity paths plus timeouts, aborts, and
   storage failures are tested without a browser or network.
+
+## Implementation notes (milestone 3)
+
+- **The settings file is the policy, the workflow is generated.** Every knob
+  (triggers, paths, tools, verdict, model, pins, timeout) lives in
+  `.github/pi-review.json`; `workflow.ts` renders deterministic YAML from it
+  without a YAML dependency, because the extension runs from a bare git checkout
+  in CI where this package's `node_modules` is absent. Re-running install
+  regenerates the file (and commits nothing when it is unchanged).
+- **Paths are one list with negations.** GitHub rejects `paths` together with
+  `paths-ignore` on the same event, so excludes become `!pattern` entries; when
+  only excludes are configured the list starts with `**`.
+- **Package pinning defaults to the local commit.** `settings.pi.packageRef`
+  defaults to this checkout's HEAD (only when its `origin` looks like
+  pi-extensions); `PI_REVIEW_PACKAGE_REF` overrides it, and a tag is the right
+  value once released. The workflow fetches that ref with `git fetch --depth 1`
+  and runs `-e <checkout>/extensions/pi-review/index.ts`, so no other extension
+  loads.
+- **The review step enforces the artifact.** A run can finish with exit 0
+  without submitting (the runner writes `incomplete`); the step then fails
+  deliberately so the `if: failure()` step posts the "could not complete"
+  comment. The job timeout is the review timeout + 5 minutes, so a timed-out
+  review still reaches that step.
+- **The branch writer refuses a dirty tree**, branches from the fetched default,
+  commits only the two generated paths, pushes, and restores the original
+  branch even when the push fails. `pi-review/setup` is reused with the first
+  free `-N` suffix so a second install never force-pushes over an open PR.
+- **Provider key paste is intentionally temporary.** Milestone 3 can store
+  `PI_REVIEW_API_KEY` from a pasted key (or skip and set it later); milestone 4
+  replaces the paste for OpenCode Go / OpenRouter with a minted, dedicated key.
+  The settings' `providerEnv` decides which env var the workflow exposes it as.
