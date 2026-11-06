@@ -13,15 +13,17 @@ import {
 const repo = { owner: "AutumnsGrove", repo: "pi-extensions" };
 
 describe("appNameFor", () => {
-	it("builds a lowercase, sanitized, length-capped name", () => {
-		const name = appNameFor(repo);
-		expect(name).toBe("pi-review-autumnsgrove-pi-extensio");
-		expect(name.length).toBeLessThanOrEqual(APP_NAME_MAX_LENGTH);
-		expect(name).toMatch(/^[a-z0-9-]+$/);
+	it("uses owner and repo when the name fits", () => {
+		expect(appNameFor({ owner: "acme", repo: "app" })).toBe("pi-review-acme-app");
 	});
 
-	it("does not leave a trailing dash after truncation", () => {
-		const name = appNameFor({ owner: "abcdefghij-klm", repo: "nopqrstuv" });
+	it("falls back to the repo name instead of chopping a word", () => {
+		expect(appNameFor(repo)).toBe("pi-review-pi-extensions");
+		expect(appNameFor(repo).length).toBeLessThanOrEqual(APP_NAME_MAX_LENGTH);
+	});
+
+	it("truncates only when even the repo name is too long", () => {
+		const name = appNameFor({ owner: "someone", repo: "a".repeat(40) });
 		expect(name.endsWith("-")).toBe(false);
 		expect(name.length).toBeLessThanOrEqual(APP_NAME_MAX_LENGTH);
 	});

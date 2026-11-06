@@ -63,20 +63,26 @@ Not yet: workflow generation, provider auth, and the settings panel (milestones
 4. **Secrets + installation** — the private key goes straight to
    `gh secret set` on stdin (never printed, logged, or written to disk), then
    the App ID, then a `PI_REVIEW_APP_SLUG` repository variable. Finally the
-   install page opens so you can select the repository.
+   install page opens so you can select the repository, and the wizard verifies
+   it with a short-lived App JWT (`GET /repos/{owner}/{repo}/installation`),
+   polling briefly while GitHub catches up.
 
 Notes and limits:
 
-- The App name is `pi-review-<owner>-<repo>` (≤34 characters). GitHub lets you
-  edit the name on the creation page, which is the escape hatch if it collides.
+- The App name is `pi-review-<owner>-<repo>` when it fits in GitHub's 34
+  characters, otherwise `pi-review-<repo>` (a readable short form rather than a
+  truncated word). GitHub lets you edit the name on the creation page, which is
+  the escape hatch if it collides.
 - The manifest flow needs a browser that can reach your localhost. Over SSH or
   in a container, forward the port the wizard prints, or wait for the timeout
   and paste the redirect URL from the address bar.
 - Pressing Escape after something was created prints what already changed and
   how to resume; re-running detects the existing secrets.
-- Reusing an existing App verifies the installation on the repo, not the stored
-  key (GitHub never returns a secret's value). If reviews later fail with 401,
-  generate a new key in the App settings and run the wizard again.
+- Reusing an existing App asks you to confirm the installation: the stored key
+  cannot be read back, and `/user/installations` needs a GitHub App *user* token
+  (a `gh` token is rejected), so there is nothing to verify against. If reviews
+  later fail with 401, generate a new key in the App settings and run the
+  wizard again.
 - The summary ends with the exact commands to revoke each piece: delete the
   secrets, uninstall the App, and delete the App.
 

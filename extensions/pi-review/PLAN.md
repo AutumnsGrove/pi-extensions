@@ -422,8 +422,11 @@ Decisions made while building the runner, where it differs from the design above
 ## Implementation notes (milestone 2)
 
 - **One App per repository.** The suggested name is
-  `pi-review-<owner>-<repo>`, capped at GitHub's 34 characters. A shared App per
-  owner would keep the App list smaller but needs a name-collision story; the
+  `pi-review-<owner>-<repo>` when that fits GitHub's 34 characters, otherwise the
+  shorter `pi-review-<repo>`; the first draft truncated mid-word
+  (`pi-review-autumnsgrove-pi-extensio`), which the real install showed is not a
+  name anyone wants. A shared App per owner would keep the App list smaller but
+  needs a name-collision story and a way to copy the key between repos; the
   per-repo App is the honest v1 because revocation is per repo. GitHub lets the
   user edit the name on the creation page if the suggestion collides.
 - **The key is stored first, the id second.** A re-run uses
@@ -437,9 +440,15 @@ Decisions made while building the runner, where it differs from the design above
   cannot be read back, and a re-run needs the slug to find the App's
   installation. The slug is not sensitive, so a variable is the right store; the
   workflow can read it as `vars.PI_REVIEW_APP_SLUG` for links.
-- **Reuse verifies the installation, not the stored key.** The key is
-  unreadable, so a reuse run checks `/user/installations` for the App and
-  whether the repository is selected. A wrong key can only surface as a 401 at
+- **Installation verification uses an App JWT, not `/user/installations`.**
+  Found on the first real install: `GET /user/installations` returns 403 for a
+  `gh` token ("must authenticate with an access token authorized to a GitHub
+  App"). During creation the PEM is still in memory, so the wizard signs a
+  nine-minute RS256 JWT (`github/jwt.ts`) and asks
+  `GET /repos/{owner}/{repo}/installation`, polling briefly because a fresh
+  installation can take a few seconds to appear. A reuse run has no readable
+  key, so it asks the user to confirm instead; the summary says the installation
+  was confirmed by them, not verified. A wrong key can only surface as a 401 at
   review time; the summary says how to rotate it.
 - **The manifest flow cannot be pre-filled with a GET**, so the local server
   serves one page that auto-POSTs the manifest to GitHub. The `state` nonce is

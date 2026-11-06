@@ -101,69 +101,79 @@ export async function accountKind(
 	return undefined;
 }
 
-export interface InstallationInfo {
+export interface RepoInstallation {
 	id: number;
-	appId: number;
-	appSlug: string;
-	repositories: string[];
 }
 
-export interface InstallationLookup {
-	installation?: InstallationInfo;
-	/** True when the App installation covers this repository. */
-	repoInstalled: boolean;
-}
-
-function numberField(value: unknown): number | undefined {
-	return typeof value === "number" && Number.isInteger(value) ? value : undefined;
+async function installationResponse(
+	fetchImpl: FetchLike,
+	repo: RepoRef,
+	jwt: string
+): Promise<{ ok: boolean; status: number; body: string }> {
+	const response = await fetchImpl(
+		`https://api.github.com/repos/${repo.owner}/${repo.repo}/installation`,
+		{
+			headers: {
+				Accept: "application/vnd.github+json",
+				"X-GitHub-Api-Version": "2026-03-10",
+				"User-Agent": "pi-review",
+				Authorization: `Bearer ${jwt}`,
+			},
+		}
+	);
+	return { ok: response.ok, status: response.status, body: await response.text() };
 }
 
 /**
- * Find an installation of the App (by id or slug) and check whether this repo
- * is in its selected repositories.
+ * Ask GitHub whether the App is installed on the repository. `undefined` means
+ * "not installed" (404); anything else is an error worth surfacing.
  */
-export async function findAppInstallation(
-	exec: Exec,
-	cwd: string,
+export async function getRepoInstallation(
+	fetchImpl: FetchLike,
 	repo: RepoRef,
-	match: { appId?: number; appSlug?: string }
-): Promise<InstallationLookup> {
-	const list = await ghJson(exec, cwd, ["/user/installations?per_page=100"]);
-	const raw = Array.isArray(list?.installations) ? (list.installations as unknown[]) : [];
-	const installations = raw
-		.map((entry) => (typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>) : undefined))
-		.filter((entry): entry is Record<string, unknown> => entry !== undefined);
-
-	const found = installations.find((entry) => {
-		const appId = numberField(entry.app_id);
-		if (match.appId !== undefined && appId === match.appId) return true;
-		if (match.appSlug !== undefined && entry.app_slug === match.appSlug) return true;
-		return false;
-	});
-	if (!found) return { repoInstalled: false };
-
-	const id = numberField(found.id);
-	if (id === undefined) return { repoInstalled: false };
-
-	const repositories: string[] = [];
-	const repos = await ghJson(exec, cwd, [`/user/installations/${id}/repositories?per_page=100`]);
-	if (Array.isArray(repos?.repositories)) {
-		for (const entry of repos.repositories as unknown[]) {
-			if (typeof entry === "object" && entry !== null) {
-				const fullName = (entry as Record<string, unknown>).full_name;
-				if (typeof fullName === "string") repositories.push(fullName);
-			}
-		}
+	jwt: string
+): Promise<RepoInstallation | undefined> {
+	const response = await installationResponse(fetchImpl, repo, jwt);
+	if (response.status === 404) return undefined;
+	if (!response.ok) {
+		throw new Error(
+			`Could not check the App installation (${response.status}): ${response.body.slice(0, 200) || "no response body"}`
+		);
 	}
+	let parsed: { id?: unknown };
+	try {
+		parsed = JSON.parse(response.body);
+	} catch {
+		throw new Error("GitHub returned an installation response that was not JSON.");
+	}
+	const id = typeof parsed.id === "number" ? parsed.id : Number(parsed.id);
+	if (!Number.isInteger(id)) throw new Error("GitHub returned an installation without an id.");
+	return { id };
+}
 
-	const installation: InstallationInfo = {
-		id,
-		appId: numberField(found.app_id) ?? 0,
-		appSlug: typeof found.app_slug === "string" ? found.app_slug : "",
-		repositories,
-	};
-	return {
-		installation,
-		repoInstalled: repositories.includes(`${repo.owner}/${repo.repo}`),
-	};
+export interface WaitOptions {
+	attempts?: number;
+	delayMs?: number;
+	sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Installations can take a few seconds to appear after the user clicks
+ * Install, so poll briefly before declaring failure.
+ */
+export async function waitForRepoInstallation(
+	fetchImpl: FetchLike,
+	repo: RepoRef,
+	jwt: string,
+	options: WaitOptions = {}
+): Promise<RepoInstallation | undefined> {
+	const attempts = options.attempts ?? 6;
+	const delayMs = options.delayMs ?? 2_000;
+	const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+	for (let attempt = 0; attempt < attempts; attempt += 1) {
+		const installation = await getRepoInstallation(fetchImpl, repo, jwt);
+		if (installation) return installation;
+		if (attempt < attempts - 1) await sleep(delayMs);
+	}
+	return undefined;
 }

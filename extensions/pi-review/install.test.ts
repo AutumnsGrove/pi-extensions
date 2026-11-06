@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { Exec } from "./detect.ts";
 import type { CommandRunner } from "./github/exec.ts";
@@ -9,7 +10,9 @@ import { installPiReview, renderInstallOutcome, type WizardUI } from "./install.
 const CREATE = "Create a Pi GitHub App (recommended)";
 const REUSE = "Reuse the existing Pi GitHub App";
 const TOKEN = "Use GITHUB_TOKEN instead (no App)";
-const pem = "-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----";
+// A real key: the create path signs a JWT to verify the installation.
+const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+const pem = privateKey.export({ type: "pkcs1", format: "pem" }).toString();
 const repo = { owner: "owner", repo: "repo" };
 const cwd = "/repo";
 
@@ -141,21 +144,6 @@ function fakeFetch(app: Record<string, unknown> = { id: 1234, slug: "pi-review-x
 	return Object.assign(fetchImpl, { calls });
 }
 
-function installationExec(installed = true): Record<string, { stdout?: string; code?: number }> {
-	return {
-		"gh api /user/installations?per_page=100": {
-			stdout: JSON.stringify({
-				installations: [{ id: 9, app_id: 1234, app_slug: "pi-review-x" }],
-			}),
-		},
-		"gh api /user/installations/9/repositories?per_page=100": {
-			stdout: JSON.stringify({
-				repositories: installed ? [{ full_name: "owner/repo" }] : [],
-			}),
-		},
-	};
-}
-
 describe("installPiReview preflight", () => {
 	const base = {
 		cwd,
@@ -190,7 +178,7 @@ describe("installPiReview choice handling", () => {
 		const outcome = await installPiReview({
 			cwd,
 			ui,
-			deps: { exec: fakeExec(installationExec()), run: fakeRunner() },
+			deps: { exec: fakeExec(), run: fakeRunner() },
 		});
 		expect(outcome).toEqual({ status: "aborted", changed: [] });
 		expect(renderInstallOutcome(outcome)).toContain("Nothing was changed");
@@ -201,7 +189,7 @@ describe("installPiReview choice handling", () => {
 		const outcome = await installPiReview({
 			cwd,
 			ui: scriptedUi({ confirm: [true], select: [TOKEN] }),
-			deps: { exec: fakeExec(installationExec()), run: runner },
+			deps: { exec: fakeExec(), run: runner },
 		});
 		expect(outcome).toEqual({ status: "token", changed: [] });
 		expect(runner.calls.filter((call) => call.args[1] === "delete")).toEqual([]);
@@ -212,7 +200,7 @@ describe("installPiReview choice handling", () => {
 		const outcome = await installPiReview({
 			cwd,
 			ui: scriptedUi({ confirm: [true, true], select: [TOKEN] }),
-			deps: { exec: fakeExec(installationExec()), run: runner },
+			deps: { exec: fakeExec(), run: runner },
 		});
 		expect(outcome).toEqual({
 			status: "token",
@@ -227,7 +215,7 @@ describe("installPiReview choice handling", () => {
 		await installPiReview({
 			cwd,
 			ui,
-			deps: { exec: fakeExec(installationExec()), run: fakeRunner({ secrets: [APP_ID_SECRET] }) },
+			deps: { exec: fakeExec(), run: fakeRunner({ secrets: [APP_ID_SECRET] }) },
 		});
 		expect(ui.notifications.some((entry) => entry.message.includes("Only one of"))).toBe(true);
 	});
@@ -250,7 +238,7 @@ describe("installPiReview create path", () => {
 				overrides.ui ??
 				scriptedUi({ confirm: [true, true], select: [CREATE] }),
 			deps: {
-				exec: overrides.exec ?? fakeExec(installationExec()),
+				exec: overrides.exec ?? fakeExec(),
 				run: runner,
 				startServer: server.factory,
 				openUrl: async (url: string) => {
@@ -258,6 +246,7 @@ describe("installPiReview create path", () => {
 					return true;
 				},
 				fetch: fakeFetch(),
+				waitForInstallation: async () => ({ id: 9 }),
 			},
 			runner,
 			server,
@@ -303,7 +292,6 @@ describe("installPiReview create path", () => {
 	it("offers the organization when the owner is an org", async () => {
 		const exec = fakeExec({
 			"gh api users/owner --jq .type": { stdout: "Organization" },
-			...installationExec(),
 		});
 		const ui = scriptedUi({ confirm: [true, true], select: [CREATE, "owner (organization)"] });
 		const server = fakeServerFactory();
@@ -316,6 +304,7 @@ describe("installPiReview create path", () => {
 				startServer: server.factory,
 				openUrl: async () => true,
 				fetch: fakeFetch(),
+				waitForInstallation: async () => ({ id: 9 }),
 			},
 		});
 		expect(outcome.status).toBe("created");
@@ -324,11 +313,29 @@ describe("installPiReview create path", () => {
 
 	it("finishes with an unconfirmed installation when the user does not confirm", async () => {
 		const options = createOptions({
-			exec: fakeExec(installationExec(false)),
+			exec: fakeExec(),
 			ui: scriptedUi({ confirm: [true, false], select: [CREATE] }),
 		});
 		const outcome = await installPiReview({ cwd, ui: options.ui, deps: options.deps });
 		expect(outcome).toMatchObject({ status: "created", installed: false });
+	});
+
+	it("reports an installation that does not appear yet", async () => {
+		const options = createOptions({
+			exec: fakeExec(),
+			ui: scriptedUi({ confirm: [true, true], select: [CREATE] }),
+		});
+		const outcome = await installPiReview({
+			cwd,
+			ui: options.ui,
+			deps: { ...options.deps, waitForInstallation: async () => undefined },
+		});
+		expect(outcome).toMatchObject({ status: "created", installed: false });
+		expect(
+			(options.ui as WizardUI & { notifications: { message: string }[] }).notifications.some((entry) =>
+				entry.message.includes("Could not confirm the installation")
+			)
+		).toBe(true);
 	});
 
 	it("accepts a pasted redirect URL when the browser timed out", async () => {
@@ -343,11 +350,12 @@ describe("installPiReview create path", () => {
 			cwd,
 			ui,
 			deps: {
-				exec: fakeExec(installationExec()),
+				exec: fakeExec(),
 				run: fakeRunner(),
 				startServer: server.factory,
 				openUrl: async () => true,
 				fetch: fakeFetch(),
+				waitForInstallation: async () => ({ id: 9 }),
 			},
 		});
 		expect(outcome.status).toBe("created");
@@ -364,11 +372,12 @@ describe("installPiReview create path", () => {
 			cwd,
 			ui,
 			deps: {
-				exec: fakeExec(installationExec()),
+				exec: fakeExec(),
 				run: fakeRunner(),
 				startServer: server.factory,
 				openUrl: async () => true,
 				fetch: fakeFetch(),
+				waitForInstallation: async () => ({ id: 9 }),
 			},
 		});
 		expect(outcome).toMatchObject({ status: "aborted", changed: [], reason: "that URL does not belong to this run" });
@@ -386,12 +395,20 @@ describe("installPiReview create path", () => {
 });
 
 describe("installPiReview reuse path", () => {
-	it("reuses the stored App and verifies the installation", async () => {
+	it("reuses the stored App and asks the user to confirm the installation", async () => {
 		const runner = fakeRunner({ secrets: [APP_ID_SECRET, APP_KEY_SECRET], slug: "pi-review-x" });
+		const opened: string[] = [];
 		const outcome = await installPiReview({
 			cwd,
-			ui: scriptedUi({ confirm: [true], select: [REUSE] }),
-			deps: { exec: fakeExec(installationExec()), run: runner },
+			ui: scriptedUi({ confirm: [true, true], select: [REUSE] }),
+			deps: {
+				exec: fakeExec(),
+				run: runner,
+				openUrl: async (url) => {
+					opened.push(url);
+					return true;
+				},
+			},
 		});
 		expect(outcome).toEqual({
 			status: "existing",
@@ -400,19 +417,19 @@ describe("installPiReview reuse path", () => {
 			installed: true,
 			changed: [],
 		});
+		expect(opened).toEqual(["https://github.com/apps/pi-review-x/installations/new"]);
 		// Nothing is rewritten on a reuse.
 		expect(runner.calls.filter((call) => call.args[1] === "set")).toEqual([]);
 	});
 
-	it("opens the install page when the App is not installed on the repo", async () => {
+	it("reports an unconfirmed installation when the user declines", async () => {
 		const runner = fakeRunner({ secrets: [APP_ID_SECRET, APP_KEY_SECRET], slug: "pi-review-x" });
 		const opened: string[] = [];
-		const ui = scriptedUi({ confirm: [true, true], select: [REUSE] });
 		const outcome = await installPiReview({
 			cwd,
-			ui,
+			ui: scriptedUi({ confirm: [true, false], select: [REUSE] }),
 			deps: {
-				exec: fakeExec(installationExec(false)),
+				exec: fakeExec(),
 				run: runner,
 				openUrl: async (url) => {
 					opened.push(url);
@@ -422,24 +439,6 @@ describe("installPiReview reuse path", () => {
 		});
 		expect(outcome).toMatchObject({ status: "existing", installed: false });
 		expect(opened).toEqual(["https://github.com/apps/pi-review-x/installations/new"]);
-		expect(ui.notifications.some((entry) => entry.message.includes("Could not confirm"))).toBe(true);
-	});
-
-	it("warns when no installation is visible", async () => {
-		const runner = fakeRunner({ secrets: [APP_ID_SECRET, APP_KEY_SECRET], slug: "pi-review-x" });
-		const ui = scriptedUi({ confirm: [true], select: [REUSE] });
-		const outcome = await installPiReview({
-			cwd,
-			ui,
-			deps: {
-				exec: fakeExec({
-					"gh api /user/installations?per_page=100": { stdout: JSON.stringify({ installations: [] }) },
-				}),
-				run: runner,
-			},
-		});
-		expect(outcome).toMatchObject({ status: "existing", installed: false });
-		expect(ui.notifications.some((entry) => entry.message.includes("No installation"))).toBe(true);
 	});
 });
 

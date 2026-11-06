@@ -6,7 +6,8 @@ import {
 	accountKind,
 	authenticatedLogin,
 	exchangeManifestCode,
-	findAppInstallation,
+	getRepoInstallation,
+	waitForRepoInstallation,
 } from "./app.ts";
 
 function fakeExec(responses: Record<string, { stdout?: string; code?: number }>): Exec {
@@ -80,62 +81,78 @@ describe("account lookups", () => {
 	});
 });
 
-describe("findAppInstallation", () => {
+describe("getRepoInstallation", () => {
 	const repo = { owner: "owner", repo: "repo" };
-	const list = JSON.stringify({
-		installations: [
-			{ id: 9, app_id: 1234, app_slug: "pi-review-x" },
-			{ id: 10, app_id: 9999, app_slug: "other-app" },
-		],
-	});
-	const repos = JSON.stringify({ repositories: [{ full_name: "owner/repo" }, { full_name: "owner/other" }] });
 
-	it("finds the installation by app id and checks the repository list", async () => {
-		const exec = fakeExec({
-			"gh api /user/installations?per_page=100": { stdout: list },
-			"gh api /user/installations/9/repositories?per_page=100": { stdout: repos },
-		});
-		const lookup = await findAppInstallation(exec, "/repo", repo, { appId: 1234 });
-		expect(lookup.repoInstalled).toBe(true);
-		expect(lookup.installation).toMatchObject({ id: 9, appId: 1234, appSlug: "pi-review-x" });
-		expect(lookup.installation?.repositories).toEqual(["owner/repo", "owner/other"]);
+	function routedFetch(status: number, body = ""): FetchLike & { calls: { url: string; init?: { headers?: Record<string, string> } }[] } {
+		const calls: { url: string; init?: { headers?: Record<string, string> } }[] = [];
+		const fetchImpl = async (url: string, init?: { headers?: Record<string, string> }) => {
+			calls.push({ url, init });
+			return { ok: status >= 200 && status < 300, status, text: async () => body };
+		};
+		return Object.assign(fetchImpl, { calls });
+	}
+
+	it("asks the repository installation endpoint with the App JWT", async () => {
+		const fetchImpl = routedFetch(200, JSON.stringify({ id: 77 }));
+		const installation = await getRepoInstallation(fetchImpl, repo, "JWT");
+		expect(installation).toEqual({ id: 77 });
+		expect(fetchImpl.calls[0]!.url).toBe("https://api.github.com/repos/owner/repo/installation");
+		expect(fetchImpl.calls[0]!.init?.headers?.Authorization).toBe("Bearer JWT");
 	});
 
-	it("finds the installation by slug", async () => {
-		const exec = fakeExec({
-			"gh api /user/installations?per_page=100": { stdout: list },
-			"gh api /user/installations/10/repositories?per_page=100": {
-				stdout: JSON.stringify({ repositories: [] }),
+	it("returns undefined when the App is not installed", async () => {
+		expect(await getRepoInstallation(routedFetch(404), repo, "JWT")).toBeUndefined();
+	});
+
+	it("throws on other failures", async () => {
+		await expect(getRepoInstallation(routedFetch(401, "bad jwt"), repo, "JWT")).rejects.toThrow(
+			"Could not check the App installation (401)"
+		);
+	});
+
+	it("throws on a malformed response", async () => {
+		await expect(getRepoInstallation(routedFetch(200, "not json"), repo, "JWT")).rejects.toThrow(
+			"not JSON"
+		);
+	});
+});
+
+describe("waitForRepoInstallation", () => {
+	const repo = { owner: "owner", repo: "repo" };
+
+	it("retries until the installation appears", async () => {
+		let calls = 0;
+		const fetchImpl = async () => {
+			calls += 1;
+			return calls < 3
+				? { ok: false, status: 404, text: async () => "" }
+				: { ok: true, status: 200, text: async () => JSON.stringify({ id: 9 }) };
+		};
+		const sleeps: number[] = [];
+		const installation = await waitForRepoInstallation(fetchImpl as FetchLike, repo, "JWT", {
+			attempts: 5,
+			delayMs: 10,
+			sleep: async (ms) => {
+				sleeps.push(ms);
 			},
 		});
-		const lookup = await findAppInstallation(exec, "/repo", repo, { appSlug: "other-app" });
-		expect(lookup.installation?.appSlug).toBe("other-app");
-		expect(lookup.repoInstalled).toBe(false);
+		expect(installation).toEqual({ id: 9 });
+		expect(calls).toBe(3);
+		expect(sleeps).toEqual([10, 10]);
 	});
 
-	it("reports false when no installation matches", async () => {
-		const exec = fakeExec({ "gh api /user/installations?per_page=100": { stdout: list } });
-		expect(await findAppInstallation(exec, "/repo", repo, { appId: 5 })).toEqual({
-			repoInstalled: false,
+	it("gives up after the last attempt", async () => {
+		let calls = 0;
+		const fetchImpl = async () => {
+			calls += 1;
+			return { ok: false, status: 404, text: async () => "" };
+		};
+		const installation = await waitForRepoInstallation(fetchImpl as FetchLike, repo, "JWT", {
+			attempts: 3,
+			sleep: async () => {},
 		});
-	});
-
-	it("reports false when the repository is not selected for the installation", async () => {
-		const exec = fakeExec({
-			"gh api /user/installations?per_page=100": { stdout: list },
-			"gh api /user/installations/9/repositories?per_page=100": {
-				stdout: JSON.stringify({ repositories: [{ full_name: "someone/else" }] }),
-			},
-		});
-		const lookup = await findAppInstallation(exec, "/repo", repo, { appId: 1234 });
-		expect(lookup.installation).toBeDefined();
-		expect(lookup.repoInstalled).toBe(false);
-	});
-
-	it("tolerates a malformed list response", async () => {
-		const exec = fakeExec({ "gh api /user/installations?per_page=100": { stdout: "{}" } });
-		expect(await findAppInstallation(exec, "/repo", repo, { appId: 1 })).toEqual({
-			repoInstalled: false,
-		});
+		expect(installation).toBeUndefined();
+		expect(calls).toBe(3);
 	});
 });

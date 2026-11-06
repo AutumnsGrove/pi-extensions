@@ -19,11 +19,13 @@ import { type Exec, type RepoRef, hasGhAuth, resolveRepo, run } from "./detect.t
 import {
 	type FetchLike,
 	type CreatedApp,
+	type RepoInstallation,
 	accountKind,
 	authenticatedLogin,
 	exchangeManifestCode,
-	findAppInstallation,
+	waitForRepoInstallation,
 } from "./github/app.ts";
+import { createAppJwt } from "./github/jwt.ts";
 import { type CommandRunner, spawnRunner } from "./github/exec.ts";
 import {
 	appAdvancedSettingsUrl,
@@ -74,6 +76,8 @@ export interface InstallDeps {
 	startServer?: (options: ManifestServerOptions) => Promise<ManifestServer>;
 	/** How long to wait for the browser redirect. */
 	timeoutMs?: number;
+	/** Verify the installation after the user installs (tests inject this). */
+	waitForInstallation?: (options: { repo: RepoRef; jwt: string }) => Promise<RepoInstallation | undefined>;
 }
 
 export interface InstallOptions {
@@ -135,36 +139,25 @@ async function repoAdmin(exec: Exec, cwd: string, repo: RepoRef): Promise<boolea
 	return value === "true";
 }
 
-async function confirmInstallation(
+/** Open the install page and wait for the user to say they are done. */
+async function promptInstallation(
 	options: InstallOptions,
 	repo: RepoRef,
-	match: { appId?: number; appSlug?: string },
 	displayName: string,
 	installUrl: string
 ): Promise<boolean> {
-	const { exec, openUrl = async (url: string) => openExternalUrl(url) } = options.deps;
-	const { ui, cwd } = options;
-
+	const openUrl = options.deps.openUrl ?? (async (url: string) => openExternalUrl(url));
 	const opened = await openUrl(installUrl);
-	ui.notify(
+	options.ui.notify(
 		opened
 			? `Opened the App installation page for ${displayName}.`
 			: `Open this URL to install ${displayName}: ${installUrl}`,
 		"info"
 	);
-	const confirmed = await ui.confirm(
+	return await options.ui.confirm(
 		"Install the App",
 		`Select ${repo.owner}/${repo.repo} on GitHub, install ${displayName}, then continue.`
 	);
-	if (!confirmed) return false;
-
-	const lookup = await findAppInstallation(exec, cwd, repo, match);
-	if (lookup.repoInstalled) return true;
-	ui.notify(
-		`Could not confirm the installation on ${repo.owner}/${repo.repo} yet. You can finish at ${installUrl}; reviews will fail until it is installed.`,
-		"warning"
-	);
-	return false;
 }
 
 /**
@@ -238,24 +231,10 @@ export async function installPiReview(options: InstallOptions): Promise<InstallO
 	if (choice === REUSE) {
 		const storedSlug = await getRepoVariable({ run: commandRunner, repo, cwd, name: APP_SLUG_VARIABLE });
 		const appSlug = storedSlug ?? appNameFor(repo);
-		const lookup = await findAppInstallation(exec, cwd, repo, { appSlug });
-		if (!lookup.installation) {
-			ui.notify(
-				`No installation of \`${appSlug}\` is visible to your account. If the App was renamed, update ${APP_SLUG_VARIABLE} or create a new App.`,
-				"warning"
-			);
-			return { status: "existing", repo, appSlug, installed: false, changed: [] };
-		}
-		const installed = lookup.repoInstalled
-			? true
-			: await confirmInstallation(
-					options,
-					repo,
-					{ appId: lookup.installation.appId, appSlug: lookup.installation.appSlug },
-					lookup.installation.appSlug,
-					appInstallUrl(lookup.installation.appSlug)
-				);
-		return { status: "existing", repo, appSlug: lookup.installation.appSlug, installed, changed: [] };
+		// The stored private key cannot be read back, so the installation cannot
+		// be verified from here; the user confirms it instead.
+		const installed = await promptInstallation(options, repo, appSlug, appInstallUrl(appSlug));
+		return { status: "existing", repo, appSlug, installed, changed: [] };
 	}
 
 	// --- Create a new App -----------------------------------------------------
@@ -353,13 +332,31 @@ export async function installPiReview(options: InstallOptions): Promise<InstallO
 		);
 	}
 
-	const installed = await confirmInstallation(
-		options,
-		repo,
-		{ appId: app.id, ...(app.slug ? { appSlug: app.slug } : {}) },
-		app.name || app.slug || String(app.id),
-		installUrlFor(app)
-	);
+	const displayName = app.name || app.slug || String(app.id);
+	const installUrl = installUrlFor(app);
+	const confirmed = await promptInstallation(options, repo, displayName, installUrl);
+	let installed = false;
+	if (confirmed) {
+		const jwt = createAppJwt(app.id, app.pem);
+		const wait =
+			options.deps.waitForInstallation ??
+			(async ({ repo: target, jwt: token }: { repo: RepoRef; jwt: string }) => {
+				const doFetch = fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
+				return waitForRepoInstallation(doFetch, target, token);
+			});
+		try {
+			installed = Boolean(await wait({ repo, jwt }));
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			ui.notify(`Could not verify the installation: ${message}`, "warning");
+		}
+		if (!installed) {
+			ui.notify(
+				`Could not confirm the installation on ${repo.owner}/${repo.repo} yet. You can finish at ${installUrl}; reviews will fail until it is installed.`,
+				"warning"
+			);
+		}
+	}
 
 	return {
 		status: "created",
@@ -408,7 +405,7 @@ export function renderInstallOutcome(outcome: InstallOutcome): string {
 			"",
 			`- repository: ${repo}`,
 			`- app slug: \`${outcome.appSlug}\``,
-			`- installation: ${outcome.installed ? "confirmed on this repository" : "**not confirmed yet**"}`,
+			`- installation: ${outcome.installed ? "confirmed by you (automatic verification needs the App key, which cannot be read back)" : "**not confirmed yet**"}`,
 			"",
 			`App settings: ${appSettingsUrl(outcome.appSlug)}`,
 		];

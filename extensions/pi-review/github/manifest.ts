@@ -23,15 +23,26 @@ export interface AppManifest {
 	default_events: string[];
 }
 
-/** A stable, readable App name; GitHub lets the user edit it before creating. */
-export function appNameFor(repo: RepoRef): string {
-	const raw = `pi-review-${repo.owner}-${repo.repo}`
+function sanitizeAppName(value: string): string {
+	return value
 		.toLowerCase()
 		.replace(/[^a-z0-9-]+/g, "-")
 		.replace(/-+/g, "-")
 		.replace(/^-|-$/g, "");
-	const trimmed = raw.slice(0, APP_NAME_MAX_LENGTH).replace(/-+$/, "");
-	return trimmed || "pi-review";
+}
+
+/**
+ * A stable, readable App name; GitHub lets the user edit it before creating.
+ * Prefer `pi-review-<owner>-<repo>`; when that exceeds GitHub's limit (the repo
+ * part is usually what pushes it over), fall back to `pi-review-<repo>` rather
+ * than chopping the end off a word.
+ */
+export function appNameFor(repo: RepoRef): string {
+	const full = sanitizeAppName(`pi-review-${repo.owner}-${repo.repo}`);
+	if (full.length <= APP_NAME_MAX_LENGTH) return full;
+	const short = sanitizeAppName(`pi-review-${repo.repo}`);
+	const candidate = short.length <= APP_NAME_MAX_LENGTH ? short : short.slice(0, APP_NAME_MAX_LENGTH);
+	return candidate.replace(/-+$/, "") || "pi-review";
 }
 
 export interface ManifestOptions {
