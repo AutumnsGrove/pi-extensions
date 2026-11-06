@@ -14,14 +14,15 @@ own job.
 
 ## Status
 
-**Milestone 4 — provider credentials.** The installer now mints the review key
-instead of only accepting a paste: OpenCode Go reuses the Console device grant
-and provisions a dedicated per-repo key, OpenRouter runs the OAuth PKCE flow and
-exchanges the code for a user-controlled key, and any other provider falls back
-to a pasted key. Everything lands in `PI_REVIEW_API_KEY`.
+**Milestones 1–4 done; milestone 5 partially.** The runner, App identity,
+workflow generation, and provider credentials are implemented. `/pi-review
+settings` opens the committed settings in an editor, validates them, regenerates
+the workflow, and commits the result to a branch; `/pi-review uninstall` commits
+the removal to a branch and offers to delete the credentials. The dedicated
+settings panel is the remaining milestone-5 piece.
 
-Milestones 1 (runner), 2 (App identity), and 3 (workflow + settings) are
-implemented and tested:
+Milestones 1 (runner), 2 (App identity), 3 (workflow + settings), and 4
+(provider credentials) are implemented and tested:
 
 - `submit_review` tool: validates every inline comment against the real diff
   (path, side, line, range), folds anything unattachable into the summary
@@ -36,13 +37,15 @@ implemented and tested:
   workflow runs, with the same isolation flags.
 - `/pi-review status`: what a review would use right now.
 
-Not yet: the settings panel and `uninstall` (milestone 5), and polish
-(milestone 6).
+Not yet: the dedicated settings panel (milestone 5's remaining piece) and
+polish such as incremental re-reviews and sticky comments (milestone 6).
 
 ## Commands
 
 ```
 /pi-review install
+/pi-review settings        # edit .github/pi-review.json, regenerate the workflow
+/pi-review uninstall
 /pi-review run [--post] [--pr N] [--base ref] [--model provider/id] [--thinking level] [--bash]
 /pi-review status
 /pi-review help
@@ -117,6 +120,24 @@ one is detected / `--pr` is given) in a **child `pi` process**:
 The review is printed rather than posted unless `--post` is given. `bash` is
 opt-in because a shell on the runner can read the job's environment, including
 the review key.
+
+## Changing settings
+
+`/pi-review settings` opens `.github/pi-review.json` in pi's editor. On save the
+JSON is validated (unknown enums are refused, numbers are clamped), the workflow
+is regenerated from it, and both files are committed to `pi-review/settings` (or
+the next free suffix) with a PR-compare URL. The default branch is untouched.
+
+`/pi-review status` shows the effective settings, whether the workflow file is
+present, and whether `PI_REVIEW_API_KEY` is set.
+
+## Uninstall
+
+`/pi-review uninstall` commits the removal of the settings and workflow to
+`pi-review/remove` and opens the compare page. It then offers to delete
+`PI_REVIEW_API_KEY`, `PI_REVIEW_APP_ID`, `PI_REVIEW_APP_PRIVATE_KEY`, and the
+`PI_REVIEW_APP_SLUG` variable. The GitHub App is **not** deleted over the API;
+the summary links the pages to uninstall it and delete it.
 
 ## The generated workflow
 

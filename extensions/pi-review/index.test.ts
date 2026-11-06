@@ -91,12 +91,24 @@ describe("pi-review command", () => {
 		expect(message.content).toContain("`/pi-review run");
 	});
 
-	it("explains that settings is not implemented yet", async () => {
+	it("points at install when settings has no file yet", async () => {
 		delete process.env.PI_REVIEW;
-		const { command, sendMessage, ctx } = load();
+		const { command, notify, ctx } = load();
 		await command.handler("settings", ctx);
-		const message = sendMessage.mock.calls[0]![0] as { content: string };
-		expect(message.content).toContain("not implemented yet");
+		expect(notify).toHaveBeenCalledWith(
+			expect.stringContaining("not installed here"),
+			"info"
+		);
+	});
+
+	it("reports an uninstall preflight failure instead of throwing", async () => {
+		delete process.env.PI_REVIEW;
+		const { command, notify, ctx } = load();
+		await command.handler("uninstall", ctx);
+		expect(notify).toHaveBeenCalledWith(
+			expect.stringContaining("Not a github.com checkout"),
+			"error"
+		);
 	});
 
 	it("reports an install preflight failure instead of throwing", async () => {

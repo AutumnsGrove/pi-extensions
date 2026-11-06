@@ -54,7 +54,7 @@ function baseResponses(): Record<string, { stdout?: string; stderr?: string; cod
 		"git fetch origin main": { stdout: "" },
 		"git ls-remote --heads origin pi-review/setup": { stdout: "" },
 		"git checkout -B pi-review/setup origin/main": { stdout: "" },
-		"git add -- .github/pi-review.json .github/workflows/pi-review.yml": { stdout: "" },
+		"git add -A -- .github/pi-review.json .github/workflows/pi-review.yml": { stdout: "" },
 		"git status --porcelain -- .github/pi-review.json .github/workflows/pi-review.yml": {
 			stdout: "A  .github/pi-review.json\nA  .github/workflows/pi-review.yml\n",
 		},
@@ -163,6 +163,33 @@ describe("writeWorkflowBranch", () => {
 			writeWorkflowBranch({ exec, cwd, repo, defaultBranch: "main", files, message: "m" })
 		).rejects.toThrow("protected branch");
 		expect(exec.calls.at(-1)?.args.join(" ")).toBe("checkout feature");
+	});
+
+	it("stages deletions when deletePaths are given", async () => {
+		const cwd = await repoDir();
+		const gone = ".github/pi-review.json";
+		await import("node:fs/promises").then((fs) => fs.mkdir(join(cwd, ".github"), { recursive: true }));
+		await writeFile(join(cwd, gone), "{}", "utf8");
+		const responses = baseResponses();
+		responses["git add -A -- .github/pi-review.json .github/workflows/pi-review.yml"] = { stdout: "" };
+		responses["git status --porcelain -- .github/pi-review.json .github/workflows/pi-review.yml"] = {
+			stdout: "D  .github/pi-review.json\n",
+		};
+		const exec = fakeExec(responses);
+		const result = await writeWorkflowBranch({
+			exec,
+			cwd,
+			repo,
+			defaultBranch: "main",
+			files: [],
+			deletePaths: files.map((file) => file.path),
+			message: "Remove pi-review workflow and settings",
+		});
+		expect(result.committed).toBe(true);
+		await expect(readFile(join(cwd, gone), "utf8")).rejects.toThrow();
+		expect(exec.calls.map((call) => call.args.join(" "))).toContain(
+			"add -A -- .github/pi-review.json .github/workflows/pi-review.yml"
+		);
 	});
 
 	it("fails clearly when the checkout cannot be created", async () => {

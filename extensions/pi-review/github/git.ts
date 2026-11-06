@@ -6,7 +6,7 @@
  * restores the branch the user was on. The caller opens the compare URL.
  */
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { type Exec, type RepoRef, run } from "../detect.ts";
 
@@ -24,6 +24,10 @@ export interface BranchOptions {
 	repo: RepoRef;
 	defaultBranch: string;
 	files: GeneratedFile[];
+	/** Files to remove in the same commit (uninstall). */
+	deletePaths?: string[];
+	/** Branch base name; defaults to `pi-review/setup`. */
+	branch?: string;
 	message: string;
 }
 
@@ -65,15 +69,19 @@ async function remoteBranchExists(exec: Exec, cwd: string, branch: string): Prom
 	return Boolean(value?.trim());
 }
 
-/** `pi-review/setup`, or the first free `pi-review/setup-N`. */
-export async function chooseBranchName(exec: Exec, cwd: string): Promise<string> {
-	if (!(await remoteBranchExists(exec, cwd, SETUP_BRANCH))) return SETUP_BRANCH;
+/** The requested branch, or the first free `<branch>-N`. */
+export async function chooseBranchName(
+	exec: Exec,
+	cwd: string,
+	base: string = SETUP_BRANCH
+): Promise<string> {
+	if (!(await remoteBranchExists(exec, cwd, base))) return base;
 	for (let suffix = 2; suffix <= 9; suffix += 1) {
-		const candidate = `${SETUP_BRANCH}-${suffix}`;
+		const candidate = `${base}-${suffix}`;
 		if (!(await remoteBranchExists(exec, cwd, candidate))) return candidate;
 	}
 	throw new Error(
-		`${SETUP_BRANCH} and its first eight suffixes all exist on the remote. Delete one or merge the open setup PR first.`
+		`${base} and its first eight suffixes all exist on the remote. Delete one or merge the open PR first.`
 	);
 }
 
@@ -108,19 +116,25 @@ export async function writeWorkflowBranch(options: BranchOptions): Promise<Branc
 	const fetched = await exec("git", ["fetch", "origin", defaultBranch], { cwd, timeout: 120_000 });
 	if ((fetched.code ?? 0) !== 0) throw failure(`git fetch origin ${defaultBranch}`, fetched);
 
-	const branch = await chooseBranchName(exec, cwd);
+	const branch = await chooseBranchName(exec, cwd, options.branch);
 	const checkout = await exec("git", ["checkout", "-B", branch, `origin/${defaultBranch}`], { cwd });
 	if ((checkout.code ?? 0) !== 0) throw failure(`git checkout -B ${branch}`, checkout);
 
-	const paths = files.map((file) => file.path);
+	const deletePaths = options.deletePaths ?? [];
+	const paths = [...files.map((file) => file.path), ...deletePaths];
+	if (paths.length === 0) throw new Error("Nothing to write or delete.");
 	try {
 		for (const file of files) {
 			const full = join(cwd, file.path);
 			await mkdir(dirname(full), { recursive: true });
 			await writeFile(full, file.content, "utf8");
 		}
+		for (const path of deletePaths) {
+			await rm(join(cwd, path), { force: true });
+		}
 
-		const added = await exec("git", ["add", "--", ...paths], { cwd });
+		// `-A` records deletions as well as additions.
+		const added = await exec("git", ["add", "-A", "--", ...paths], { cwd });
 		if ((added.code ?? 0) !== 0) throw failure("git add", added);
 
 		const staged = await git(exec, cwd, ["status", "--porcelain", "--", ...paths]);

@@ -38,7 +38,10 @@ import { parseRunArgs, reviewChildEnv, reviewPromptFor, reviewTools, runLocalRev
 import { renderReviewMarkdown, type ReviewMeta } from "./review.ts";
 import { loadReviewTarget } from "./context.ts";
 import { isReviewRunner, registerReviewRunner } from "./runner.ts";
-import { SETTINGS_PATH, WORKFLOW_PATH, type ReviewSettings, parseSettings } from "./settings.ts";
+import { SETTINGS_PATH, WORKFLOW_PATH, type ReviewSettings, parseSettings, renderSettings } from "./settings.ts";
+import { resolveDefaultBranch, writeWorkflowBranch } from "./github/git.ts";
+import { renderWorkflow } from "./workflow.ts";
+import { renderUninstallOutcome, uninstallPiReview } from "./uninstall.ts";
 
 const COMMAND_NAME = "pi-review";
 const STATUS_KEY = "pi-review";
@@ -78,9 +81,9 @@ function helpText(): string {
 		"  run the review agent locally against the current branch or a PR. Dry run by default;",
 		"  prints the review instead of posting it. `--post` publishes it to the pull request.",
 		"- `/pi-review status` — show the repository, pull request, base, diff size, and model a review would use.",
-		"- `/pi-review install` — create the Pi GitHub App, store its secrets, then commit the settings and the generated workflow to a branch for review.",
-		"",
-		"Not implemented yet (next milestones): `settings` and `uninstall`.",
+		"- `/pi-review install` — create the Pi GitHub App, mint the review key, then commit the settings and the generated workflow to a branch for review.",
+		"- `/pi-review settings` — edit `.github/pi-review.json` in an editor; the workflow is regenerated and committed to a settings branch.",
+		"- `/pi-review uninstall` — commit the removal to a branch and offer to delete the credentials.",
 		"See `extensions/pi-review/PLAN.md` and the tracking issue.",
 	].join("\n");
 }
@@ -211,6 +214,100 @@ async function warnOnCheckoutMismatch(
 	);
 }
 
+async function settingsCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+	const path = join(ctx.cwd, SETTINGS_PATH);
+	let raw: string;
+	try {
+		raw = await readFile(path, "utf8");
+	} catch {
+		ctx.ui.notify("pi-review is not installed here (no .github/pi-review.json). Run `/pi-review install` first.", "info");
+		return;
+	}
+
+	const edited = await ctx.ui.editor("pi-review settings (JSON)", raw);
+	if (edited === undefined || edited === raw) {
+		ctx.ui.notify("Settings unchanged.", "info");
+		return;
+	}
+
+	let settings: ReviewSettings;
+	try {
+		settings = parseSettings(JSON.parse(edited));
+	} catch (error) {
+		ctx.ui.notify(
+			`Invalid settings: ${error instanceof Error ? error.message : String(error)}`,
+			"error"
+		);
+		return;
+	}
+	if (!settings.model) {
+		ctx.ui.notify("Settings need a model id before they can be saved.", "error");
+		return;
+	}
+	if (!settings.providerEnv) {
+		ctx.ui.notify(
+			`No env var is known for provider \`${settings.provider}\`; set "providerEnv" in the file.`,
+			"warning"
+		);
+	}
+
+	const exec = execFor(pi);
+	const repo = await resolveRepo(exec, ctx.cwd);
+	if (!repo) {
+		ctx.ui.notify("Not a github.com checkout; cannot commit the settings.", "error");
+		return;
+	}
+
+	ctx.ui.setStatus(STATUS_KEY, "writing settings…");
+	try {
+		const defaultBranch = (await resolveDefaultBranch(exec, ctx.cwd, repo)) ?? "main";
+		const result = await writeWorkflowBranch({
+			exec,
+			cwd: ctx.cwd,
+			repo,
+			defaultBranch,
+			branch: "pi-review/settings",
+			files: [
+				{ path: SETTINGS_PATH, content: renderSettings(settings) },
+				{ path: WORKFLOW_PATH, content: renderWorkflow(settings) },
+			],
+			message: "Update pi-review settings",
+		});
+		await openExternalUrl(result.compareUrl);
+		await showMessage(
+			pi,
+			ctx,
+			[
+				"## pi-review settings updated",
+				"",
+				`- branch: \`${result.branch}\`${result.committed ? "" : " (already up to date)"}`,
+				`- files: \`${SETTINGS_PATH}\`, \`${WORKFLOW_PATH}\``,
+				`- open the PR: ${result.compareUrl}`,
+			].join("\n")
+		);
+	} finally {
+		ctx.ui.setStatus(STATUS_KEY, undefined);
+	}
+}
+
+async function uninstallCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+	ctx.ui.setStatus(STATUS_KEY, "uninstall: checking the repository…");
+	try {
+		const outcome = await uninstallPiReview({
+			cwd: ctx.cwd,
+			ui: wizardUi(ctx),
+			deps: {
+				exec: execFor(pi),
+				run: spawnRunner,
+				openUrl: async (url) => openExternalUrl(url),
+			},
+		});
+		await showMessage(pi, ctx, renderUninstallOutcome(outcome), { uninstall: outcome.status });
+	} finally {
+		ctx.ui.setStatus(STATUS_KEY, undefined);
+	}
+}
+
 async function showStatus(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
 	const exec = execFor(pi);
 	const repo = await resolveRepo(exec, ctx.cwd);
@@ -241,21 +338,15 @@ async function showStatus(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promi
 	await showMessage(pi, ctx, lines.join("\n"));
 }
 
-function pendingText(subcommand: string): string {
-	return [
-		`### \`/pi-review ${subcommand}\` is not implemented yet`,
-		"",
-		"This build ships the runner, `submit_review` validation, `/pi-review run`, `/pi-review status`, and `/pi-review install`.",
-		`The ${subcommand} step belongs to the next milestones (workflow + provider auth + settings panel).`,
-		"See `extensions/pi-review/PLAN.md` for the design and the open issue for progress.",
-	].join("\n");
-}
-
 function commandRunnerFor(pi: ExtensionAPI): CommandRunner {
 	return (command, args, options) => pi.exec(command, args, { cwd: options.cwd, timeout: options.timeoutMs });
 }
 
-async function describeReviewSetup(pi: ExtensionAPI, ctx: ExtensionCommandContext, repo: RepoRef | undefined): Promise<string[]> {
+async function describeReviewSetup(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	repo: RepoRef | undefined
+): Promise<string[]> {
 	const settingsPath = join(ctx.cwd, SETTINGS_PATH);
 	let raw: string | undefined;
 	try {
@@ -293,11 +384,7 @@ async function describeReviewSetup(pi: ExtensionAPI, ctx: ExtensionCommandContex
 
 	if (repo) {
 		try {
-			const secrets = await listRepoSecretNames({
-				run: commandRunnerFor(pi),
-				repo,
-				cwd: ctx.cwd,
-			});
+			const secrets = await listRepoSecretNames({ run: commandRunnerFor(pi), repo, cwd: ctx.cwd });
 			lines.push(`- ${API_KEY_SECRET}: ${secrets.includes(API_KEY_SECRET) ? "set" : "**missing**"}`);
 		} catch {
 			lines.push("- secrets: cannot read (admin required)");
@@ -366,8 +453,10 @@ export default function piReview(pi: ExtensionAPI): void {
 						await installCommand(pi, ctx);
 						return;
 					case "settings":
+						await settingsCommand(pi, ctx);
+						return;
 					case "uninstall":
-						await showMessage(pi, ctx, pendingText(subcommand));
+						await uninstallCommand(pi, ctx);
 						return;
 					default:
 						ctx.ui.notify(`pi-review: unknown subcommand "${subcommand}" (try /pi-review help)`, "error");

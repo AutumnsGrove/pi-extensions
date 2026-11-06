@@ -6,8 +6,9 @@ request — the same experience as Claude Code's `/install-github-app`, but with
 whatever provider pi is logged into (OpenCode Go, OpenRouter, …), with the
 model configurable from a panel.
 
-Status: **milestones 1–4 implemented:** runner, App identity, workflow +
-settings, and provider credentials. Researched 2026-11-05; scope
+Status: **milestones 1–4 implemented, milestone 5 partly:** runner, App
+identity, workflow + settings, provider credentials, plus a settings editor and
+uninstall. The dedicated settings panel is the remaining milestone-5 piece. Researched 2026-11-05; scope
 updated after owner review (name `pi-review`, no turn budget, OpenCode Go in CI is
 explicitly permitted). Tracked in the GitHub issue "Add `pi-review` extension".
 
@@ -16,8 +17,8 @@ Implemented in milestone 1: `diff.ts`, `detect.ts`, `context.ts`, `review.ts`,
 `/pi-review status` commands, milestone 2 added the manifest flow, secret
 storage, installation check, and `/pi-review install`, and milestone 3 added the
 settings schema, the workflow generator, and the branch writer, and milestone 4
-added OpenCode Go and OpenRouter credential minting, with 209 tests in the
-extension. See [`README.md`](./README.md) for the current usage and the
+added OpenCode Go and OpenRouter credential minting, and milestone 5 added the
+settings editor and uninstall, with 217 tests in the extension. See [`README.md`](./README.md) for the current usage and the
 deviations recorded at the end of this file.
 
 ## Why agentic (and not "diff in, comments out")
@@ -224,6 +225,7 @@ extensions/pi-review/
 │   ├── secrets.ts  repo secrets and variables via gh
 │   └── server.ts   localhost redirect server for the manifest flow
 ├── auth/           provider credential strategies (device grant, PKCE, paste)
+├── uninstall.ts    removal branch + credential deletion + App links
 ├── workflow.ts     render .github/workflows/pi-review.yml from settings
 ├── settings.ts     .github/pi-review.json schema, defaults, validation
 ├── panel.ts        (milestone 5) TUI panel: provider, model, thinking, triggers, tools
@@ -359,7 +361,9 @@ fixed (opt-in). Read `REVIEW.md` from the **base** branch, never the PR branch.
 4. **Provider auth**: OpenCode Go (CI token pathway or `provisionApiKey`), then
    OpenRouter PKCE incl. headless code-paste. ✅ Done using the device grant +
    `provisionApiKey`; no separate CI-token API surfaced.
-5. **Panel**: model/thinking/tools UI, status, uninstall.
+5. **Panel**: model/thinking/tools UI, status, uninstall. Partly done: `status`,
+   a JSON settings editor, and `uninstall`. The dedicated panel is the remaining
+   piece.
 6. Polish: incremental re-review, stale-thread resolution, `@pi` mention
    trigger, scheduled sweep, `REVIEW.md`.
 
@@ -521,3 +525,21 @@ Decisions made while building the runner, where it differs from the design above
 - **One secret, many providers.** `PI_REVIEW_API_KEY` is mapped to the
   provider's env var by the generated workflow (`providerEnv`), so revoking is a
   single secret delete.
+
+## Implementation notes (milestone 5, partial)
+
+- **Settings uses the editor, not a panel.** `/pi-review settings` opens the
+  committed JSON, validates it with the same function the workflow uses, refuses
+  an empty model or an unknown enum, regenerates the YAML, and commits to
+  `pi-review/settings`. The panel with pickers is still open; the JSON file is
+  the source of truth either way, so the panel is presentation work.
+- **Uninstall is two confirmations.** The first approves the removal branch; the
+  second approves deleting the credentials, with the warning that the workflow
+  still on the default branch will fail until the removal PR merges. The App is
+  deliberately left alone: the API can delete App private keys but not the App,
+  and deleting it would also drop installations the user may still want.
+- **Branch names are per action** (`pi-review/setup`, `pi-review/settings`,
+  `pi-review/remove`), each with the same first-free-suffix rule, so re-running
+  one never force-pushes over another's open PR.
+- **The branch writer handles deletions** with `git add -A`, so uninstall is the
+  same code path as install and settings.
