@@ -4,6 +4,16 @@ A growing collection of [pi](https://github.com/earendil-works/pi) extensions an
 themes, packaged as a single installable
 [pi package](https://github.com/earendil-works/pi/blob/main/docs/packages.md).
 
+## Pull request reviews
+
+Pull requests in this repository are reviewed by a [pi](https://github.com/earendil-works/pi)
+agent running in GitHub Actions. It reads the diff and the surrounding code,
+may run tests, and posts a review with inline comments.
+
+The review policy — model, triggers, tools, verdict — is committed in
+[`.github/pi-review.json`](.github/pi-review.json), and the workflow is
+generated from it: edit the settings file rather than the YAML.
+
 ## Extensions
 
 | Extension | What it does | Status |
