@@ -6,6 +6,7 @@ import {
 	accountKind,
 	authenticatedLogin,
 	exchangeManifestCode,
+	fetchAppInfo,
 	getRepoInstallation,
 	waitForRepoInstallation,
 } from "./app.ts";
@@ -78,6 +79,37 @@ describe("account lookups", () => {
 			await accountKind(fakeExec({ "gh api users/me --jq .type": { stdout: "User" } }), "/repo", "me")
 		).toBe("user");
 		expect(await accountKind(fakeExec({}), "/repo", "nobody")).toBeUndefined();
+	});
+});
+
+describe("fetchAppInfo", () => {
+	it("reads the App with the JWT", async () => {
+		const fetchImpl = fakeFetch({
+			body: JSON.stringify({
+				id: 1234,
+				slug: "pi-review-x",
+				name: "Pi Review",
+				owner: { login: "owner" },
+			}),
+		});
+		const info = await fetchAppInfo("JWT", { fetch: fetchImpl });
+		expect(info).toEqual({ id: 1234, slug: "pi-review-x", name: "Pi Review", owner: "owner" });
+		expect(fetchImpl.calls[0]!.url).toBe("https://api.github.com/app");
+		expect((fetchImpl.calls[0]!.init as { headers?: Record<string, string> }).headers?.Authorization).toBe(
+			"Bearer JWT"
+		);
+	});
+
+	it("treats a 401 as bad credentials", async () => {
+		const fetchImpl = fakeFetch({ status: 401, body: "Bad credentials" });
+		await expect(fetchAppInfo("JWT", { fetch: fetchImpl })).rejects.toThrow(
+			"GitHub rejected the App credentials (401)"
+		);
+	});
+
+	it("rejects a response without an id and slug", async () => {
+		const fetchImpl = fakeFetch({ body: JSON.stringify({ name: "x" }) });
+		await expect(fetchAppInfo("JWT", { fetch: fetchImpl })).rejects.toThrow("without an id and slug");
 	});
 });
 

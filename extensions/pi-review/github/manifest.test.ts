@@ -13,23 +13,19 @@ import {
 const repo = { owner: "AutumnsGrove", repo: "pi-extensions" };
 
 describe("appNameFor", () => {
-	it("uses owner and repo when the name fits", () => {
-		expect(appNameFor({ owner: "acme", repo: "app" })).toBe("pi-review-acme-app");
+	it("uses the owner only, so repos share one App", () => {
+		expect(appNameFor({ owner: "acme", repo: "app" })).toBe("pi-review-acme");
+		expect(appNameFor(repo)).toBe("pi-review-autumnsgrove");
 	});
 
-	it("falls back to the repo name instead of chopping a word", () => {
-		expect(appNameFor(repo)).toBe("pi-review-pi-extensions");
-		expect(appNameFor(repo).length).toBeLessThanOrEqual(APP_NAME_MAX_LENGTH);
-	});
-
-	it("truncates only when even the repo name is too long", () => {
-		const name = appNameFor({ owner: "someone", repo: "a".repeat(40) });
+	it("truncates a long owner without a trailing dash", () => {
+		const name = appNameFor({ owner: "a".repeat(40), repo: "x" });
 		expect(name.endsWith("-")).toBe(false);
 		expect(name.length).toBeLessThanOrEqual(APP_NAME_MAX_LENGTH);
 	});
 
 	it("collapses repeated separators", () => {
-		expect(appNameFor({ owner: "a  b", repo: "c__d" })).toBe("pi-review-a-b-c-d");
+		expect(appNameFor({ owner: "a  b", repo: "x" })).toBe("pi-review-a-b");
 	});
 });
 

@@ -101,6 +101,50 @@ export async function accountKind(
 	return undefined;
 }
 
+export interface AppInfo {
+	id: number;
+	slug: string;
+	name: string;
+	owner?: string;
+}
+
+/**
+ * GET /app with an App JWT. This both fetches the slug/name and proves that the
+ * id/key pair is valid (a bad key is a 401).
+ */
+export async function fetchAppInfo(jwt: string, deps: { fetch?: FetchLike } = {}): Promise<AppInfo> {
+	const doFetch = deps.fetch ?? (globalThis.fetch as unknown as FetchLike);
+	const response = await doFetch("https://api.github.com/app", {
+		headers: {
+			Accept: "application/vnd.github+json",
+			"X-GitHub-Api-Version": "2026-03-10",
+			"User-Agent": "pi-review",
+			Authorization: `Bearer ${jwt}`,
+		},
+	});
+	const body = await response.text();
+	if (!response.ok) {
+		throw new Error(
+			`GitHub rejected the App credentials (${response.status}): ${body.slice(0, 200) || "no response body"}`
+		);
+	}
+	let parsed: { id?: unknown; slug?: unknown; name?: unknown; owner?: { login?: unknown } };
+	try {
+		parsed = JSON.parse(body);
+	} catch {
+		throw new Error("GitHub returned an App response that was not JSON.");
+	}
+	if (typeof parsed.id !== "number" || typeof parsed.slug !== "string" || !parsed.slug) {
+		throw new Error("GitHub returned an App without an id and slug.");
+	}
+	return {
+		id: parsed.id,
+		slug: parsed.slug,
+		name: typeof parsed.name === "string" ? parsed.name : "",
+		...(typeof parsed.owner?.login === "string" ? { owner: parsed.owner.login } : {}),
+	};
+}
+
 export interface RepoInstallation {
 	id: number;
 }
