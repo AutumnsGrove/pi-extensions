@@ -16,6 +16,8 @@
  */
 
 import { randomBytes } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { providerFlow, reviewKeyName } from "./auth/index.ts";
 import { authorizeOpenCodeGo } from "./auth/opencode.ts";
@@ -28,6 +30,7 @@ import {
 	accountKind,
 	authenticatedLogin,
 	exchangeManifestCode,
+	fetchAppInfo,
 	waitForRepoInstallation,
 } from "./github/app.ts";
 import { type CommandRunner, spawnRunner } from "./github/exec.ts";
@@ -138,14 +141,15 @@ export type InstallOutcome = OutcomeBase &
 	(
 		| { status: "aborted"; reason?: string }
 		| { status: "token"; repo: RepoRef }
-		| { status: "existing"; repo: RepoRef; appSlug: string; installed: boolean }
+		| { status: "existing"; repo: RepoRef; appSlug: string; installed: boolean; verified: boolean }
 		| { status: "created"; repo: RepoRef; app: AppIdentity; installed: boolean }
 	);
 
 const APP_ARG_HINT = `${APP_ID_SECRET} and ${APP_KEY_SECRET} as repository secrets`;
 
-const CREATE = "Create a Pi GitHub App (recommended)";
-const REUSE = "Reuse the existing Pi GitHub App";
+const CREATE = "Create a Pi GitHub App (one per owner, recommended)";
+const REUSE = "Reuse the Pi GitHub App on this repository";
+const EXISTING = "Use an existing Pi GitHub App (App ID + key file)";
 const TOKEN = "Use GITHUB_TOKEN instead (no App)";
 
 interface Preflight {
@@ -171,7 +175,7 @@ export function renderInstallPlan(
 		"pi-review uses a GitHub App so reviews post as the App, not as you and not as `github-actions[bot]`.",
 		"",
 		"This will set up the review:",
-		`- create (or reuse) the App \`${name}\` on github.com; you approve it in the browser`,
+		`- create (or reuse) the App \`${name}\` on github.com; one App per owner, installed on each repo`,
 		"- request only: contents read, pull requests write, issues write",
 		`- store ${APP_KEY_SECRET} and ${APP_ID_SECRET} as repository secrets`,
 		"- open GitHub so you can install the App on this repository",
@@ -256,7 +260,14 @@ type IdentityOutcome = OutcomeBase &
 	(
 		| { status: "aborted"; reason?: string }
 		| { status: "token"; identity: "token"; repo: RepoRef }
-		| { status: "existing"; repo: RepoRef; appSlug: string; installed: boolean; identity: "app" }
+		| {
+				status: "existing";
+				repo: RepoRef;
+				appSlug: string;
+				installed: boolean;
+				verified: boolean;
+				identity: "app";
+		  }
 		| { status: "created"; repo: RepoRef; app: AppIdentity; installed: boolean; identity: "app" }
 	);
 
@@ -269,7 +280,9 @@ async function resolveIdentity(options: InstallOptions, state: Preflight): Promi
 	const openUrl = options.deps.openUrl ?? (async (url: string) => openExternalUrl(url));
 	const { repo } = state;
 
-	const identityOptions = state.hasIdentity ? [REUSE, CREATE, TOKEN] : [CREATE, TOKEN];
+	const identityOptions = state.hasIdentity
+		? [REUSE, CREATE, EXISTING, TOKEN]
+		: [CREATE, EXISTING, TOKEN];
 	const choice = await ui.select("Identity for reviews", identityOptions);
 	if (choice === undefined) return { status: "aborted", changed: [] };
 
@@ -302,7 +315,96 @@ async function resolveIdentity(options: InstallOptions, state: Preflight): Promi
 		// The stored private key cannot be read back, so the installation cannot
 		// be verified from here; the user confirms it instead.
 		const installed = await promptInstallation(options, repo, appSlug, appInstallUrl(appSlug));
-		return { status: "existing", identity: "app", repo, appSlug, installed, changed: [] };
+		return {
+			status: "existing",
+			identity: "app",
+			repo,
+			appSlug,
+			installed,
+			verified: false,
+			changed: [],
+		};
+	}
+
+	if (choice === EXISTING) {
+		const changed: string[] = [];
+		const idRaw = await ui.input("App ID (GitHub App settings, near the top)");
+		const appId = Number(idRaw);
+		if (!idRaw?.trim() || !Number.isInteger(appId) || appId <= 0) {
+			return { status: "aborted", changed, reason: "a numeric App ID is required" };
+		}
+		const keyPath = await ui.input("Path to the App private key (.pem; App settings → Generate a private key)");
+		if (!keyPath?.trim()) return { status: "aborted", changed, reason: "cancelled" };
+		const resolvedPath = keyPath.trim().replace(/^~(?=$|\/)/, homedir());
+		let pem: string;
+		try {
+			pem = await readFile(resolvedPath, "utf8");
+		} catch {
+			throw new Error(`Could not read the private key at ${resolvedPath}.`);
+		}
+		if (!pem.includes("PRIVATE KEY")) {
+			throw new Error("That file does not look like a PEM private key.");
+		}
+
+		let info: Awaited<ReturnType<typeof fetchAppInfo>>;
+		try {
+			info = await fetchAppInfo(createAppJwt(appId, pem), {
+				...(fetchImpl ? { fetch: fetchImpl } : {}),
+			});
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			throw new Error(
+				`Could not use that App: ${message}. Check the App ID and that the key is a current private key for that App.`
+			);
+		}
+
+		try {
+			await setRepoSecret({ run: commandRunner, repo, cwd, name: APP_KEY_SECRET, value: pem });
+			changed.push(APP_KEY_SECRET);
+			await setRepoSecret({ run: commandRunner, repo, cwd, name: APP_ID_SECRET, value: String(appId) });
+			changed.push(APP_ID_SECRET);
+			await setRepoVariable({ run: commandRunner, repo, cwd, name: APP_SLUG_VARIABLE, value: info.slug });
+			changed.push(APP_SLUG_VARIABLE);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			throw new Error(
+				`That App is valid (${info.slug}) but storing its secrets failed: ${message}. The key is not stored; fix the cause and run install again.`
+			);
+		}
+
+		const confirmed = await promptInstallation(
+			options,
+			repo,
+			info.name || info.slug,
+			appInstallUrl(info.slug)
+		);
+		let installed = false;
+		if (confirmed) {
+			const jwt = createAppJwt(appId, pem);
+			const wait =
+				options.deps.waitForInstallation ??
+				(async ({ repo: target, jwt: token }: { repo: RepoRef; jwt: string }) => {
+					const doFetch = fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
+					return waitForRepoInstallation(doFetch, target, token);
+				});
+			try {
+				installed = Boolean(await wait({ repo, jwt }));
+			} catch (error) {
+				ui.notify(
+					`Could not verify the installation: ${error instanceof Error ? error.message : String(error)}`,
+					"warning"
+				);
+			}
+		}
+		return {
+			status: "existing",
+			identity: "app",
+			repo,
+			appSlug: info.slug,
+			installed,
+			verified: installed,
+			changed,
+		};
 	}
 
 	// --- Create a new App -----------------------------------------------------

@@ -33,16 +33,12 @@ function sanitizeAppName(value: string): string {
 
 /**
  * A stable, readable App name; GitHub lets the user edit it before creating.
- * Prefer `pi-review-<owner>-<repo>`; when that exceeds GitHub's limit (the repo
- * part is usually what pushes it over), fall back to `pi-review-<repo>` rather
- * than chopping the end off a word.
+ * One App per owner, installed on each repository: `pi-review-<owner>`, capped
+ * at GitHub's 34-character limit.
  */
 export function appNameFor(repo: RepoRef): string {
-	const full = sanitizeAppName(`pi-review-${repo.owner}-${repo.repo}`);
-	if (full.length <= APP_NAME_MAX_LENGTH) return full;
-	const short = sanitizeAppName(`pi-review-${repo.repo}`);
-	const candidate = short.length <= APP_NAME_MAX_LENGTH ? short : short.slice(0, APP_NAME_MAX_LENGTH);
-	return candidate.replace(/-+$/, "") || "pi-review";
+	const name = sanitizeAppName(`pi-review-${repo.owner}`);
+	return (name.slice(0, APP_NAME_MAX_LENGTH).replace(/-+$/, "") || "pi-review") as string;
 }
 
 export interface ManifestOptions {

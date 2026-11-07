@@ -109,10 +109,9 @@ one.
 
 Notes and limits:
 
-- The App name is `pi-review-<owner>-<repo>` when it fits in GitHub's 34
-  characters, otherwise `pi-review-<repo>` (a readable short form rather than a
-  truncated word). GitHub lets you edit the name on the creation page, which is
-  the escape hatch if it collides.
+- The App name is `pi-review-<owner>`: **one App per owner**, installed on as
+  many repositories as you like. GitHub lets you edit the name on the creation
+  page if it collides.
 - The manifest flow needs a browser that can reach your localhost. Over SSH or
   in a container, forward the port the wizard prints, or wait for the timeout
   and paste the redirect URL from the address bar.
@@ -255,6 +254,24 @@ on the first run and updated in place afterwards:
 
 That keeps a stable status line on the PR instead of one status comment per
 push. The review itself still carries the findings.
+
+## One App, many repositories
+
+Create the App once. For each additional repository:
+
+1. Run `/pi-review install` there and choose **Use an existing Pi GitHub App**.
+2. Enter the App ID (its settings page, near the top) and the path to a private
+   key: open the App settings → **Generate a private key**, download the `.pem`,
+   and point the wizard at it. The wizard verifies the ID/key pair with a
+   short-lived App JWT, stores the secrets, and opens the install page for that
+   repository.
+3. Install the App on the repository.
+
+Personal accounts have no shared secrets, so each repository gets its own copy
+of the key (the wizard never prints it). Organizations can put the same key in
+an **organization secret** instead; the wizard still writes repo secrets, so
+either is fine. Deleting the App disables every repository; deleting one
+repository's secrets disables only that repository.
 
 ## Changing settings
 

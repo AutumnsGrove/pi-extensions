@@ -394,8 +394,9 @@ fixed (opt-in). Read `REVIEW.md` from the **base** branch, never the PR branch.
 - **OpenRouter spend cap**: PKCE keys have no documented `limit`; a hard cap
   needs the provisioning API and a management key.
 - **App ownership**: personal vs org account for the manifest flow (the
-  wizard should ask; Polaris may be under a user or an org). Should one App be
-  reused across all of the owner's repos? (Likely yes: one App, installed per repo.)
+  wizard should ask; Polaris may be under a user or an org). Resolved: **one App
+  per owner** (`pi-review-<owner>`), installed per repo, with the wizard's
+  "use an existing App" path for additional repos.
 - `auth.json`-style refreshing credentials in CI: out of scope for v1.
 
 ## Implementation notes (milestone 1)
@@ -432,14 +433,12 @@ Decisions made while building the runner, where it differs from the design above
 
 ## Implementation notes (milestone 2)
 
-- **One App per repository.** The suggested name is
-  `pi-review-<owner>-<repo>` when that fits GitHub's 34 characters, otherwise the
-  shorter `pi-review-<repo>`; the first draft truncated mid-word
-  (`pi-review-autumnsgrove-pi-extensio`), which the real install showed is not a
-  name anyone wants. A shared App per owner would keep the App list smaller but
-  needs a name-collision story and a way to copy the key between repos; the
-  per-repo App is the honest v1 because revocation is per repo. GitHub lets the
-  user edit the name on the creation page if the suggestion collides.
+- **One App per owner.** The name is `pi-review-<owner>`; adding a repository
+  reuses it instead of creating another App. Personal accounts have no shared
+  secrets, so the wizard accepts the App ID plus a private-key file, verifies
+  the pair with an App JWT (`GET /app`), stores the secrets, and installs the
+  App on that repo. Organizations can share one key through an organization
+  secret. Revocation is per App (all repos) or per repo (its secrets).
 - **The key is stored first, the id second.** A re-run uses
   `PI_REVIEW_APP_ID` as the "identity exists" marker, so it must never be
   written before the key it belongs to. The key goes through `gh secret set`
@@ -639,3 +638,15 @@ Decisions made while building the runner, where it differs from the design above
 - The comment body is passed as `PI_REVIEW_REQUEST` and becomes the
   maintainer's request in the prompt (fenced, capped). It focuses the review;
   the security and output rules still apply.
+
+## Implementation notes (milestone 7): one App per owner
+
+- `appNameFor` returns `pi-review-<owner>` and no longer includes the repo, so
+  the manifest flow creates one App per owner. For additional repositories the
+  wizard offers **Use an existing Pi GitHub App**: it reads the App ID and a
+  `.pem` from disk, signs a JWT, and calls `GET /app` — which both fetches the
+  slug/name and proves the credentials. The key is written to the repo secret on
+  stdin, never printed, and the installation is verified with the same JWT.
+- The "reuse the App on this repository" path stays for repos that already have
+  the secrets. Its summary is explicit that the installation is user-confirmed,
+  because the stored key cannot be read back; the new path *can* verify.

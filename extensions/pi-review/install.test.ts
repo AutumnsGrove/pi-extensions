@@ -1,4 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Exec } from "./detect.ts";
 import type { CommandRunner } from "./github/exec.ts";
@@ -10,7 +13,8 @@ import { API_KEY_SECRET, installPiReview, renderInstallOutcome, type WizardUI } 
 import { defaultSettings, parseSettings } from "./settings.ts";
 
 const CREATE = "Create a Pi GitHub App (recommended)";
-const REUSE = "Reuse the existing Pi GitHub App";
+const REUSE = "Reuse the Pi GitHub App on this repository";
+const EXISTING = "Use an existing Pi GitHub App (App ID + key file)";
 const TOKEN = "Use GITHUB_TOKEN instead (no App)";
 
 // A real key: the create path signs a JWT to verify the installation.
@@ -463,6 +467,44 @@ describe("installPiReview reuse path", () => {
 		expect(writer.calls).toHaveLength(1);
 	});
 
+	it("attaches an existing App from its ID and key file", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "pi-review-key-"));
+		const keyPath = join(dir, "app.pem");
+		await writeFile(keyPath, pem, "utf8");
+		try {
+			const runner = fakeRunner({ secrets: [] });
+			const writer = fakeBranchWriter();
+			const ui = scriptedUi({
+				confirm: [true, true],
+				select: [EXISTING, "medium", "Read-only", "Comment only"],
+				input: ["1234", keyPath],
+			});
+			const outcome = await harness({ runner, ui, writeBranch: writer }).run();
+			expect(outcome).toMatchObject({
+				status: "existing",
+				appSlug: "pi-review-x",
+				installed: true,
+				verified: true,
+				changed: [APP_KEY_SECRET, APP_ID_SECRET, APP_SLUG_VARIABLE],
+			});
+			const key = runner.calls.find((call) => call.args[2] === APP_KEY_SECRET);
+			expect(key?.stdin).toBe(pem);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects an existing-App key file that does not exist", async () => {
+		const ui = scriptedUi({
+			confirm: [true],
+			select: [EXISTING],
+			input: ["1234", "/definitely/missing.pem"],
+		});
+		await expect(harness({ runner: fakeRunner({ secrets: [] }), ui }).run()).rejects.toThrow(
+			"Could not read the private key"
+		);
+	});
+
 	it("reports an unconfirmed installation when the user declines", async () => {
 		const runner = fakeRunner({ secrets: [APP_ID_SECRET, APP_KEY_SECRET], slug: "pi-review-x" });
 		const ui = scriptedUi({
@@ -657,6 +699,7 @@ describe("renderInstallOutcome", () => {
 			repo,
 			appSlug: "pi-review-x",
 			installed: true,
+			verified: false,
 			changed: [],
 			workflowSkipped: true,
 		});
