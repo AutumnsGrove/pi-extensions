@@ -490,6 +490,18 @@ async function collectReviewSettings(
 	]);
 	if (tools === undefined) return undefined;
 	settings.tools.bash = tools.startsWith("Allow");
+	if (settings.tools.bash) {
+		settings.verify.installDependencies = await ui.confirm(
+			"Install dependencies for tests?",
+			[
+				"The workflow will install the project's dependencies (pnpm/npm/yarn, from the lockfile) before the review, so the agent can run tests instead of only reading code.",
+				"",
+				"That runs package install scripts from the checkout and adds a few minutes to each review. If it fails, the reviewer is told the dependencies are unavailable.",
+			].join("\n")
+		);
+	} else {
+		settings.verify.installDependencies = false;
+	}
 
 	const verdict = await ui.select("Review verdict", [
 		"Comment only (recommended)",

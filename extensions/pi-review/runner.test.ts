@@ -202,6 +202,91 @@ describe("registerReviewRunner", () => {
 		expect(result.details.review?.dropped).toHaveLength(1);
 	});
 
+	it("passes the configured strictness into the prompt", async () => {
+		const { pi, events } = fakePi(fakeExec());
+		registerReviewRunner(pi, { env: { PI_REVIEW: "1", PR_NUMBER: "5", PI_REVIEW_STRICTNESS: "thorough" } });
+		const result = (await events.get("before_agent_start")!(
+			{ messageType: "user", prompt: "x", systemPrompt: "BASE" },
+			{ cwd: "/repo" }
+		)) as { systemPrompt: string };
+		expect(result.systemPrompt).toContain("then minor suggestions marked as non-blocking");
+	});
+
+	it("passes the dependency install outcome into the prompt", async () => {
+		const { pi, events } = fakePi(fakeExec());
+		registerReviewRunner(pi, {
+			env: { PI_REVIEW: "1", PR_NUMBER: "5", PI_REVIEW_DEPS: "unavailable" },
+		});
+		const result = (await events.get("before_agent_start")!(
+			{ messageType: "user", prompt: "x", systemPrompt: "BASE" },
+			{ cwd: "/repo" }
+		)) as { systemPrompt: string };
+		expect(result.systemPrompt).toContain("Dependency installation did not succeed");
+	});
+
+	it("validates comments against the full PR diff, not the increment", async () => {
+		const fullDiff = `diff --git a/src/app.ts b/src/app.ts
+index 1111111..2222222 100644
+--- a/src/app.ts
++++ b/src/app.ts
+@@ -1,2 +1,3 @@
+ import { setup } from "./setup";
++console.log("ready");
+ export default setup;
+`;
+		const incremental = `diff --git a/src/other.ts b/src/other.ts
+new file mode 100644
+--- /dev/null
++++ b/src/other.ts
+@@ -0,0 +1 @@
++export const other = 1;
+`;
+		const exec: Exec = async (command, args) => {
+			const key = `${command} ${args.join(" ")}`;
+			const table: Record<string, { stdout?: string; code?: number }> = {
+				"git remote get-url origin": { stdout: "git@github.com:owner/repo.git" },
+				"gh pr view 5 --json number,title,body,author,baseRefName,baseRefOid,headRefOid": {
+					stdout: JSON.stringify(view),
+				},
+				"gh pr diff 5": { stdout: fullDiff },
+				"gh api repos/owner/repo/pulls/5/reviews?per_page=100": {
+					stdout: JSON.stringify([
+						{
+							body: "old <!-- pi-review:review -->",
+							commit_id: "prev-sha",
+							submitted_at: "2026-01-01T00:00:00Z",
+						},
+					]),
+				},
+				"git merge-base --is-ancestor prev-sha head-sha": { code: 0 },
+				"git diff --no-color --no-ext-diff prev-sha...head-sha": { stdout: incremental },
+			};
+			const hit = table[key] ?? { code: 1 };
+			return { stdout: hit.stdout ?? "", stderr: "", code: hit.code ?? 0 };
+		};
+		const path = await outputPath();
+		const { pi, tools, events } = fakePi(exec);
+		registerReviewRunner(pi, {
+			env: { PI_REVIEW: "1", PI_REVIEW_DRY_RUN: "1", PI_REVIEW_OUTPUT: path, PR_NUMBER: "5" },
+		});
+		await events.get("before_agent_start")!(
+			{ messageType: "user", prompt: "x", systemPrompt: "BASE" },
+			{ cwd: "/repo" }
+		);
+		const result = (await executeTool(tools[0]!, {
+			summary: "Summary.",
+			comments: [
+				{ path: "src/app.ts", line: 2, body: "In the PR." },
+				{ path: "src/other.ts", line: 1, body: "Only in the increment." },
+			],
+		})) as {
+			details: { review?: { comments: { path: string }[]; dropped: { path: string }[] } };
+		};
+		// The PR diff accepts src/app.ts; the incremental-only file is folded away.
+		expect(result.details.review?.comments.map((comment) => comment.path)).toEqual(["src/app.ts"]);
+		expect(result.details.review?.dropped.map((comment) => comment.path)).toEqual(["src/other.ts"]);
+	});
+
 	it("marks a run that never submitted a review as incomplete", async () => {
 		const path = await outputPath();
 		const { pi, events } = fakePi(fakeExec());

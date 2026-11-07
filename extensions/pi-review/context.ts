@@ -18,6 +18,7 @@ import {
 	resolveRepo,
 	run,
 } from "./detect.ts";
+import { REVIEW_MARKER } from "./markers.ts";
 
 export interface ReviewTarget {
 	source: "pull-request" | "local";
@@ -33,6 +34,16 @@ export interface ReviewTarget {
 	diff: string;
 	/** Non-fatal problems worth showing to the model and the operator. */
 	notes: string[];
+	/** When set, the diff only covers commits after this one (last review). */
+	incrementalFrom?: string;
+	/** Summary of the previous pi-review on this PR (for follow-up reviews). */
+	previousReviewSummary?: string;
+	/**
+	 * The full PR diff. When `diff` is incremental, this is what inline
+	 * positions must validate against, because the incremental diff is a tree
+	 * comparison and can contain content outside the PR.
+	 */
+	validationDiff?: string;
 }
 
 export interface GuidanceFile {
@@ -50,6 +61,8 @@ export interface LoadTargetOptions {
 	baseRef?: string;
 	/** Per-command timeout. Defaults to 30s; diffs can be large. */
 	timeoutMs?: number;
+	/** Diff only since the last pi-review on this PR. Default true. */
+	incremental?: boolean;
 }
 
 const MAX_GUIDANCE_CHARS = 32_000;
@@ -89,6 +102,70 @@ async function gitDiff(exec: Exec, cwd: string, args: string[], timeout: number)
 	} catch {
 		return undefined;
 	}
+}
+
+interface PullReview {
+	body?: unknown;
+	commit_id?: unknown;
+	submitted_at?: unknown;
+}
+
+/**
+ * The commit of the most recent pi-review on this PR, if it is an ancestor of
+ * `headSha`. A previous review from a force-pushed branch is ignored so the
+ * follow-up falls back to a full diff.
+ */
+export interface PreviousReview {
+	sha: string;
+	/** The previous review body, without the hidden marker. */
+	summary: string;
+}
+
+export async function findLastReview(
+	exec: Exec,
+	cwd: string,
+	repo: RepoRef,
+	number: number,
+	headSha: string | undefined,
+	timeoutMs = 30_000
+): Promise<PreviousReview | undefined> {
+	if (!headSha) return undefined;
+	let reviews: unknown;
+	try {
+		const result = await exec(
+			"gh",
+			["api", `repos/${repo.owner}/${repo.repo}/pulls/${number}/reviews?per_page=100`],
+			{ cwd, timeout: timeoutMs }
+		);
+		if ((result.code ?? 0) !== 0) return undefined;
+		reviews = JSON.parse(result.stdout);
+	} catch {
+		return undefined;
+	}
+	if (!Array.isArray(reviews)) return undefined;
+
+	const ours = (reviews as PullReview[])
+		.filter(
+			(review) =>
+				typeof review.body === "string" &&
+				review.body.includes(REVIEW_MARKER) &&
+				typeof review.commit_id === "string" &&
+				review.commit_id.length > 0
+		)
+		.sort((a, b) => String(a.submitted_at ?? "").localeCompare(String(b.submitted_at ?? "")));
+	const latest = ours.at(-1);
+	if (!latest) return undefined;
+	const sha = latest.commit_id;
+	if (typeof sha !== "string" || sha === headSha) return undefined;
+
+	const ancestor = await exec("git", ["merge-base", "--is-ancestor", sha, headSha], {
+		cwd,
+		timeout: timeoutMs,
+	});
+	if ((ancestor.code ?? 1) !== 0) return undefined;
+
+	const summary = String(latest.body).replace(REVIEW_MARKER, "").trim();
+	return { sha, summary };
 }
 
 /**
@@ -134,6 +211,35 @@ export async function loadReviewTarget(options: LoadTargetOptions): Promise<Revi
 					diff = (await gitDiff(exec, cwd, [`${baseRef}...HEAD`], timeoutMs)) ?? "";
 				}
 			}
+			const fullDiff = diff;
+			let incrementalFrom: string | undefined;
+			let previousReviewSummary: string | undefined;
+			if (repo && options.incremental !== false) {
+				const previous = await findLastReview(
+					exec,
+					cwd,
+					repo,
+					view.number ?? number,
+					view.headRefOid,
+					timeoutMs
+				);
+				if (previous) {
+					const incremental = await gitDiff(
+						exec,
+						cwd,
+						[`${previous.sha}...${view.headRefOid ?? "HEAD"}`],
+						timeoutMs
+					);
+					if (incremental?.trim()) {
+						diff = incremental;
+						incrementalFrom = previous.sha;
+						previousReviewSummary = previous.summary;
+						notes.push(
+							`Follow-up review: showing only the changes since the last review (${previous.sha.slice(0, 12)}).`
+						);
+					}
+				}
+			}
 			return {
 				source: "pull-request",
 				repo,
@@ -146,6 +252,9 @@ export async function loadReviewTarget(options: LoadTargetOptions): Promise<Revi
 				headSha: view.headRefOid,
 				diff,
 				notes,
+				...(incrementalFrom ? { incrementalFrom } : {}),
+				...(previousReviewSummary ? { previousReviewSummary } : {}),
+				...(incrementalFrom ? { validationDiff: fullDiff } : {}),
 			};
 		}
 		notes.push(

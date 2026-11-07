@@ -355,15 +355,16 @@ describe("installPiReview create path", () => {
 		expect(writer.calls[0]!.message).toBe("Add pi-review workflow and settings");
 	});
 
-	it("records bash and REQUEST_CHANGES from the settings prompts", async () => {
+	it("records bash, dependency install, and REQUEST_CHANGES from the settings prompts", async () => {
 		const writer = fakeBranchWriter();
 		const ui = scriptedUi({
-			confirm: [true, true],
+			confirm: [true, true, true],
 			select: [CREATE, "high", "Allow running tests (+ bash)", "Request changes on problems"],
 		});
 		const outcome = await harness({ ui, writeBranch: writer }).run();
 		const settings = parseSettings(JSON.parse(writer.calls[0]!.files[0]!.content));
 		expect(settings.tools.bash).toBe(true);
+		expect(settings.verify.installDependencies).toBe(true);
 		expect(settings.review.event).toBe("REQUEST_CHANGES");
 		expect(settings.thinking).toBe("high");
 		expect(writer.calls[0]!.files[1]!.content).toContain("--tools read,grep,find,ls,bash,submit_review");

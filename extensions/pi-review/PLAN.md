@@ -365,7 +365,8 @@ fixed (opt-in). Read `REVIEW.md` from the **base** branch, never the PR branch.
    a JSON settings editor, and `uninstall`. The dedicated panel is the remaining
    piece.
 6. Polish: incremental re-review, stale-thread resolution, `@pi` mention
-   trigger, scheduled sweep, `REVIEW.md`.
+   trigger, scheduled sweep, `REVIEW.md`. Incremental re-review and the sticky
+   summary comment are done; stale threads and the `@pi` mention remain.
 
 ## Decisions (owner)
 
@@ -543,3 +544,55 @@ Decisions made while building the runner, where it differs from the design above
   one never force-pushes over another's open PR.
 - **The branch writer handles deletions** with `git add -A`, so uninstall is the
   same code path as install and settings.
+
+## Implementation notes (milestone 6, part 1)
+
+- **Incremental reviews need no extra workflow input.** Every posted review body
+  ends with an invisible `<!-- pi-review:review -->` marker. The runner lists the
+  PR's reviews, takes the newest marked one, checks that its commit is an
+  ancestor of the new head (`git merge-base --is-ancestor`), and diffs
+  `last-reviewed...head` instead of the whole PR. The prompt switches to
+  follow-up mode: do not repeat findings, verify they were addressed, focus on
+  the new changes. A force push (not an ancestor) falls back to a full review.
+  Inline validation runs against the **full PR diff**, not the increment: the
+  incremental diff is a tree comparison and can contain content outside the PR
+  (a base-branch merge after the last review, or a revert of a reviewed line),
+  where GitHub would reject the comment and fail the whole review. The full PR
+  diff is parsed for `submit_review`; the incremental diff only shapes the
+  prompt. The previous review's summary is folded into the context so
+  "check whether they were addressed" is actionable.
+- **The sticky comment is a status line, not a second review.** A separate
+  `<!-- pi-review:summary -->` marker identifies one issue comment that is
+  patched on every push with the reviewed commit, verdict, inline count, and a
+  link to the review. Creating it first, updating it later.
+- **Tests must never open a browser.** The real `openExternalUrl` is the default
+  in the installer, and one uninstall test reached it, so every `npm test` run
+  opened a GitHub compare tab. Tests now inject the opener; `openExternalUrl`
+  also refuses to spawn when `VITEST` is set unless a `spawn` is injected, so a
+  missed fake cannot leak a tab again.
+
+## Implementation notes (milestone 6, part 2): verify with tests
+
+- **Dependency install is a workflow step, not a model turn.** `verify.installDependencies`
+  (only meaningful with `tools.bash`) adds an `actions/cache` restore keyed by
+  the lockfile hash and an `Install dependencies` step that picks pnpm/npm/yarn
+  from the lockfile, with an eight-minute timeout and `continue-on-error`. The
+  step writes `PI_REVIEW_DEPS=installed|unavailable|none` to `GITHUB_ENV`; the
+  runner reads it and the prompt says either "run the tests", "do not claim you
+  ran them", or nothing. Installation cost and failure stay out of the agent's
+  turn budget, and a failed install produces an honest note rather than an
+  unverified claim.
+- **The fallback prompt still exists** for repos without the step, but it is no
+  longer the mechanism: the workflow does the install, the agent verifies.
+- **Security is unchanged and explicit:** installing runs lifecycle scripts from
+  the PR checkout, on top of the already opt-in `bash`; same-repo PRs only.
+
+## Implementation notes (milestone 6, part 3): strictness
+
+- The review prompt ends with a strictness section driven by
+  `review.strictness` (workflow env `PI_REVIEW_STRICTNESS`). The default is
+  `significant`: merge-blocking findings only, no nits and no "minor" section.
+  `balanced` adds design/test gaps; `thorough` adds non-blocking suggestions.
+- It is deliberately not a wizard prompt: the quiet default applies everywhere,
+  and per-repo tuning is a one-line settings edit. `REVIEW.md` on the base
+  branch remains the free-form channel for repo-specific rules.

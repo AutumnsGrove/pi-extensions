@@ -30,6 +30,7 @@ interface Workflow {
 				if?: string;
 				with?: Record<string, string>;
 				"timeout-minutes"?: number;
+				"continue-on-error"?: boolean;
 			}[];
 		};
 	};
@@ -85,7 +86,10 @@ describe("renderWorkflow", () => {
 	});
 
 	it("runs the review with the configured model, tools, and env", () => {
-		const workflow = render({ tools: { bash: true }, review: { event: "REQUEST_CHANGES", maxInlineComments: 40 } });
+		const workflow = render({
+			tools: { bash: true },
+			review: { ...settings().review, event: "REQUEST_CHANGES", maxInlineComments: 40 },
+		});
 		const review = workflow.jobs.review.steps.find((step) => step.name === "Review")!;
 		expect(review["timeout-minutes"]).toBe(20);
 		expect(review.run).toContain('--tools read,grep,find,ls,bash,submit_review');
@@ -102,7 +106,47 @@ describe("renderWorkflow", () => {
 			OPENCODE_API_KEY: "${{ secrets.PI_REVIEW_API_KEY }}",
 			PI_REVIEW_MAX_COMMENTS: "40",
 			PI_REVIEW_REQUEST_CHANGES: "1",
+			PI_REVIEW_STRICTNESS: "significant",
 		});
+	});
+
+	it("installs dependencies and exports the outcome when verify is on", () => {
+		const workflow = render({
+			tools: { bash: true },
+			verify: { installDependencies: true },
+		});
+		const names = workflow.jobs.review.steps.map((step) => step.name ?? step.uses);
+		expect(names).toContain("Restore the dependency cache");
+		expect(names).toContain("Install dependencies");
+		const cache = workflow.jobs.review.steps.find((step) => step.uses === "actions/cache@v4")!;
+		expect(cache.with?.key).toContain("hashFiles");
+		const install = workflow.jobs.review.steps.find((step) => step.name === "Install dependencies")!;
+		expect(install["continue-on-error"]).toBe(true);
+		expect(install.run).toContain("PI_REVIEW_DEPS=unavailable");
+		expect(install.run).toContain("PI_REVIEW_DEPS=installed");
+		expect(install.run).toContain("corepack pnpm install --frozen-lockfile");
+		expect(install.run).toContain("npm ci");
+		// Classic Yarn ignores --immutable; branch on the major version.
+		expect(install.run).toContain("corepack yarn --version");
+		expect(install.run).toContain("corepack yarn install --frozen-lockfile");
+		expect(install.run).toContain("corepack yarn install --immutable");
+		// The job budget covers the install step on top of the review.
+		expect(workflow.jobs.review["timeout-minutes"]).toBe(33);
+	});
+
+	it("skips the dependency steps when verify is off or bash is disabled", () => {
+		const off = render().jobs.review.steps.map((step) => step.name ?? step.uses);
+		expect(off).not.toContain("Install dependencies");
+		const noBash = render({ tools: { bash: false }, verify: { installDependencies: true } });
+		expect(noBash.jobs.review.steps.map((step) => step.name ?? step.uses)).not.toContain(
+			"Install dependencies"
+		);
+	});
+
+	it("passes the configured strictness", () => {
+		const workflow = render({ review: { ...settings().review, strictness: "thorough" } });
+		const review = workflow.jobs.review.steps.find((step) => step.name === "Review")!;
+		expect(review.env?.PI_REVIEW_STRICTNESS).toBe("thorough");
 	});
 
 	it("uses the GITHUB_TOKEN fallback without the App step", () => {

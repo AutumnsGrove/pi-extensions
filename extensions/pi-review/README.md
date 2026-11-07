@@ -138,6 +138,74 @@ The review is printed rather than posted unless `--post` is given. `bash` is
 opt-in because a shell on the runner can read the job's environment, including
 the review key.
 
+## Review strictness
+
+The default is **significant issues only**: the reviewer reports things that
+should block the change (correctness, security, data loss, races, tests that
+hide a real bug) and skips naming, formatting, wording, optional refactors, and
+"nits". If there is nothing significant, it says so without inline comments.
+
+Set it per repository in `.github/pi-review.json`:
+
+```json
+{ "review": { "strictness": "significant" } }
+```
+
+- `significant` (default) — only merge-blocking findings.
+- `balanced` — real defects and meaningful design/test gaps; still no pure style.
+- `thorough` — adds minor suggestions, marked non-blocking.
+
+For free-form repo rules ("we care about X", "never comment on Y"), put them in
+`REVIEW.md` on the base branch; it is loaded into every review and cannot be
+rewritten by a PR.
+
+## Verifying with tests
+
+Reviews are much better when the agent can run the suite. Two settings cooperate:
+
+```json
+{ "tools": { "bash": true }, "verify": { "installDependencies": true } }
+```
+
+With both on, the generated workflow adds:
+
+- `actions/cache` for the npm/pnpm store, keyed by the lockfile hash;
+- an `Install dependencies` step that detects `pnpm-lock.yaml` (corepack pnpm),
+  `package-lock.json` (`npm ci`), or `yarn.lock` (corepack yarn), with an
+  8-minute limit and `continue-on-error: true`;
+- `PI_REVIEW_DEPS=installed|unavailable|none` in the job environment, which the
+  runner turns into a prompt note: run the tests, do not claim you ran them, or
+  no guidance.
+
+Installation failures never fail the review: the agent is told the dependencies
+are unavailable and reviews by reading instead. The installer asks whether to
+install dependencies whenever you allow `bash`, and `verify` is forced off when
+`bash` is off. Running install scripts from the checkout is code execution from
+the PR, which is why `bash` stays an explicit opt-in and only same-repo PRs run.
+
+## Follow-up reviews
+
+Every posted review carries a hidden marker. On the next push, the runner looks
+up the last pi-review on the PR, and when its commit is an ancestor of the new
+head it diffs only `last-reviewed...head`. The prompt then gets that review's
+summary and asks for a follow-up: avoid repeating findings, check whether they
+were addressed, and focus on the new changes. A force-pushed branch falls back
+to a full review.
+
+That incremental diff is a tree comparison, not a subset of the PR diff (a base
+merge or a revert can put unrelated content in it), so the prompt sees the
+increment while **inline positions validate against the full PR diff**. A
+comment on something outside the PR is folded into the summary instead of
+failing the review.
+
+A second hidden marker identifies one **sticky summary comment** that is created
+on the first run and updated in place afterwards:
+
+> **pi-review** reviewed `abcdef123456` — commented · 3 inline comments · [details](…)
+
+That keeps a stable status line on the PR instead of one status comment per
+push. The review itself still carries the findings.
+
 ## Changing settings
 
 `/pi-review settings` opens `.github/pi-review.json` in pi's editor. On save the

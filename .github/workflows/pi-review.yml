@@ -35,7 +35,7 @@ jobs:
           set -euo pipefail
           git init "$RUNNER_TEMP/pi-review-src"
           git -C "$RUNNER_TEMP/pi-review-src" remote add origin https://github.com/AutumnsGrove/pi-extensions.git
-          git -C "$RUNNER_TEMP/pi-review-src" fetch --depth 1 origin '52a76c8cd164fae7d3630739ed75cc8325066f50'
+          git -C "$RUNNER_TEMP/pi-review-src" fetch --depth 1 origin '04ffc22de7bf9d37239752ad9c6e649c0c824ad1'
           git -C "$RUNNER_TEMP/pi-review-src" checkout --detach FETCH_HEAD
       - name: Mint the App token
         id: app-token
@@ -53,6 +53,7 @@ jobs:
           PI_REVIEW_OUTPUT: ${{ runner.temp }}/pi-review/review.json
           PI_REVIEW_MAX_COMMENTS: "25"
           PI_REVIEW_REQUEST_CHANGES: "0"
+          PI_REVIEW_STRICTNESS: "significant"
         run: |
           set -euo pipefail
           mkdir -p "$(dirname "$PI_REVIEW_OUTPUT")"

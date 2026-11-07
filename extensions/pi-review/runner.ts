@@ -15,7 +15,7 @@ import type { Exec } from "./detect.ts";
 import { type ParsedDiff, parseDiff } from "./diff.ts";
 import { buildReviewPrompt } from "./prompt.ts";
 import type { ValidatedReview } from "./review.ts";
-import { createSubmitReviewTool, postReview } from "./submit.ts";
+import { createSubmitReviewTool, postReview, upsertStickyComment } from "./submit.ts";
 
 export const REVIEW_ENV = "PI_REVIEW";
 
@@ -69,7 +69,10 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 					baseRef: env.PI_REVIEW_BASE_REF,
 				});
 				const guidance = await loadGuidance(exec, cwd, target.baseSha);
-				return { target, guidance, diff: parseDiff(target.diff) };
+				// Positions must validate against the full PR diff: an incremental
+				// diff is a tree comparison and can contain content GitHub does not
+				// consider part of the PR.
+				return { target, guidance, diff: parseDiff(target.validationDiff ?? target.diff) };
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return {
@@ -99,12 +102,17 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 						"No pull request to post to: set PR_NUMBER and run from a github.com checkout with `gh` available."
 					);
 				}
-				return postReview(
-					exec,
-					{ repo: target.repo, number: target.number, commitId: target.headSha },
-					review,
-					{ cwd }
-				);
+				const postTarget = { repo: target.repo, number: target.number, commitId: target.headSha };
+				const result = await postReview(exec, postTarget, review, { cwd });
+				try {
+					await upsertStickyComment(exec, postTarget, review, result.url, { cwd });
+				} catch (error) {
+					// The review posted; a stale status line is not worth failing the run.
+					console.error(
+						`pi-review: could not update the sticky summary: ${error instanceof Error ? error.message : String(error)}`
+					);
+				}
+				return result;
 			};
 
 	pi.registerTool(
@@ -149,7 +157,16 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 					: {}),
 			};
 		}
-		const prompt = buildReviewPrompt(state.target, state.guidance);
+		const deps = env.PI_REVIEW_DEPS;
+		const dependencies = deps === "installed" || deps === "unavailable" ? deps : undefined;
+		const strictness =
+			env.PI_REVIEW_STRICTNESS === "balanced" || env.PI_REVIEW_STRICTNESS === "thorough"
+				? env.PI_REVIEW_STRICTNESS
+				: "significant";
+		const prompt = buildReviewPrompt(state.target, state.guidance, {
+			...(dependencies ? { dependencies } : {}),
+			strictness,
+		});
 		return {
 			systemPrompt: `${event.systemPrompt}\n\n${prompt.system}`,
 			...(inject

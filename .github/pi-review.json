@@ -8,6 +8,9 @@
   "tools": {
     "bash": true
   },
+  "verify": {
+    "installDependencies": false
+  },
   "triggers": {
     "types": [
       "opened",
@@ -20,6 +23,7 @@
   },
   "review": {
     "event": "COMMENT",
+    "strictness": "significant",
     "maxInlineComments": 25
   },
   "paths": {
@@ -28,7 +32,7 @@
   },
   "pi": {
     "version": "1.5.0",
-    "packageRef": "52a76c8cd164fae7d3630739ed75cc8325066f50"
+    "packageRef": "04ffc22de7bf9d37239752ad9c6e649c0c824ad1"
   },
   "timeoutMinutes": 20
 }

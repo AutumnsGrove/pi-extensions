@@ -1,20 +1,33 @@
-import { describe, expect, it } from "vitest";
+import type { spawn } from "node:child_process";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { openExternalUrl } from "./open.ts";
 
+afterEach(() => {
+	vi.unstubAllEnvs();
+});
+
 describe("openExternalUrl", () => {
-	it("does not crash the process when the opener binary is missing", async () => {
-		const original = process.env.PATH;
-		process.env.PATH = "/nonexistent";
-		const errors: unknown[] = [];
-		const onError = (error: unknown) => errors.push(error);
-		process.on("uncaughtException", onError);
-		try {
-			expect(() => openExternalUrl("https://example.com")).not.toThrow();
-			await new Promise((resolve) => setTimeout(resolve, 100));
-			expect(errors).toEqual([]);
-		} finally {
-			process.off("uncaughtException", onError);
-			process.env.PATH = original;
-		}
+	it("never opens a real browser during tests", () => {
+		vi.stubEnv("VITEST", "true");
+		expect(openExternalUrl("https://example.com")).toBe(false);
+	});
+
+	it("does not crash the process when the opener emits an async error", async () => {
+		const spawned: string[] = [];
+		const fakeSpawn = ((command: string) => {
+			spawned.push(command);
+			const child = {
+				on(event: string, handler: (error: unknown) => void) {
+					if (event === "error") setTimeout(() => handler(new Error("spawn ENOENT")), 0);
+					return child;
+				},
+				unref() {},
+			};
+			return child;
+		}) as unknown as typeof spawn;
+
+		expect(() => openExternalUrl("https://example.com", { spawn: fakeSpawn })).not.toThrow();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(spawned).toHaveLength(1);
 	});
 });
