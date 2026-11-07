@@ -131,6 +131,29 @@ the next free suffix) with a PR-compare URL. The default branch is untouched.
 `/pi-review status` shows the effective settings, whether the workflow file is
 present, and whether `PI_REVIEW_API_KEY` is set.
 
+## Updating the pinned version
+
+CI does not run whatever is on `main`: the workflow fetches this package at the
+exact commit in `.github/pi-review.json` → `pi.packageRef`, and installs the pi
+version in `pi.version`. Changes to the extension therefore do **not** reach PR
+reviews until you re-pin.
+
+```sh
+git push                      # the ref must exist on GitHub first
+pnpm pi-review:pin            # pin to the current HEAD (or: pnpm pi-review:pin <sha|tag>)
+pnpm pi-review:pin --check    # verify the workflow matches the settings (exit 1 if stale)
+git commit -am "Re-pin pi-review"
+```
+
+`pin` rewrites only `pi.packageRef` and regenerates `.github/workflows/pi-review.yml`
+from the settings. To change anything else, edit `.github/pi-review.json` (or
+`/pi-review settings`) and run `pnpm pi-review:pin <current ref>` to regenerate.
+To change the pi version, edit `pi.version` the same way.
+
+Use a **merge commit** (not squash/rebase) when merging a branch you pinned to,
+or the pinned SHA becomes unreachable and the workflow cannot fetch it. A tag is
+the most durable ref.
+
 ## Uninstall
 
 `/pi-review uninstall` commits the removal of the settings and workflow to

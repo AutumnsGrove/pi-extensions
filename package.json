@@ -41,6 +41,7 @@
     "check": "tsc --noEmit",
     "test": "vitest run",
     "cost": "node extensions/cost-tracker/cli.ts",
+    "pi-review:pin": "node extensions/pi-review/pin.ts",
     "themes": "node themes/generate.ts",
     "themes:check": "node themes/generate.ts --check"
   },
