@@ -31,11 +31,19 @@ import {
 	authenticatedLogin,
 	exchangeManifestCode,
 	fetchAppInfo,
+	getRepoInstallation,
 	waitForRepoInstallation,
 } from "./github/app.ts";
 import { type CommandRunner, spawnRunner } from "./github/exec.ts";
 import { resolveDefaultBranch, writeWorkflowBranch, type BranchResult } from "./github/git.ts";
 import { createAppJwt } from "./github/jwt.ts";
+import {
+	type CachePaths,
+	cachedAppFor,
+	loadAppCache,
+	saveAppKey,
+	saveCachedApp,
+} from "./global.ts";
 import {
 	appAdvancedSettingsUrl,
 	appInstallUrl,
@@ -106,6 +114,11 @@ export interface InstallDeps {
 	/** Provider credential flows (tests inject these). */
 	authorizeOpenCode?: typeof authorizeOpenCodeGo;
 	authorizeOpenRouter?: typeof authorizeOpenRouter;
+	/** Override the machine-wide App cache (tests). */
+	cachePath?: string;
+	keyDir?: string;
+	/** Tests set false so a run never writes a real key to disk. */
+	saveAppKeyLocally?: boolean;
 }
 
 export interface InstallOptions {
@@ -271,6 +284,95 @@ type IdentityOutcome = OutcomeBase &
 		| { status: "created"; repo: RepoRef; app: AppIdentity; installed: boolean; identity: "app" }
 	);
 
+/**
+ * Attach the machine-wide cached App for this owner, if its key file still
+ * exists and verifies. Returns undefined (after a warning) so the normal
+ * choices run when anything is off.
+ */
+async function tryCachedApp(
+	options: InstallOptions,
+	repo: RepoRef,
+	cachePaths: CachePaths
+): Promise<IdentityOutcome | undefined> {
+	const { ui, cwd } = options;
+	const fetchImpl = options.deps.fetch;
+	const commandRunner = options.deps.run ?? spawnRunner;
+
+	const cache = await loadAppCache(cachePaths);
+	const entry = cachedAppFor(cache, repo.owner);
+	if (!entry) return undefined;
+
+	let pem: string;
+	try {
+		pem = await readFile(entry.keyPath, "utf8");
+	} catch {
+		ui.notify(
+			`Cached App \`${entry.slug}\` key is missing at ${entry.keyPath}; falling back to the App choices.`,
+			"warning"
+		);
+		return undefined;
+	}
+	if (!pem.includes("PRIVATE KEY")) {
+		ui.notify(`Cached key at ${entry.keyPath} is not a PEM private key; falling back.`, "warning");
+		return undefined;
+	}
+
+	let info: Awaited<ReturnType<typeof fetchAppInfo>>;
+	try {
+		info = await fetchAppInfo(createAppJwt(entry.appId, pem), {
+			...(fetchImpl ? { fetch: fetchImpl } : {}),
+		});
+	} catch (error) {
+		ui.notify(
+			`Cached App could not be verified (${error instanceof Error ? error.message : String(error)}); falling back to the App choices.`,
+			"warning"
+		);
+		return undefined;
+	}
+
+	const changed: string[] = [];
+	try {
+		await setRepoSecret({ run: commandRunner, repo, cwd, name: APP_KEY_SECRET, value: pem });
+		changed.push(APP_KEY_SECRET);
+		await setRepoSecret({ run: commandRunner, repo, cwd, name: APP_ID_SECRET, value: String(entry.appId) });
+		changed.push(APP_ID_SECRET);
+		await setRepoVariable({ run: commandRunner, repo, cwd, name: APP_SLUG_VARIABLE, value: info.slug });
+		changed.push(APP_SLUG_VARIABLE);
+	} catch (error) {
+		ui.notify(
+			`Could not store the cached App secrets (${error instanceof Error ? error.message : String(error)}); falling back.`,
+			"warning"
+		);
+		return undefined;
+	}
+
+	ui.notify(`Using the cached Pi GitHub App \`${info.slug}\` (id ${entry.appId}).`, "info");
+
+	const jwt = createAppJwt(entry.appId, pem);
+	let verified = false;
+	try {
+		verified = Boolean(
+			await getRepoInstallation(fetchImpl ?? (globalThis.fetch as unknown as FetchLike), repo, jwt)
+		);
+	} catch {
+		verified = false;
+	}
+	let installed = verified;
+	if (!installed) {
+		installed = await promptInstallation(options, repo, info.name || info.slug, appInstallUrl(info.slug));
+	}
+
+	return {
+		status: "existing",
+		identity: "app",
+		repo,
+		appSlug: info.slug,
+		installed,
+		verified,
+		changed,
+	};
+}
+
 async function resolveIdentity(options: InstallOptions, state: Preflight): Promise<IdentityOutcome> {
 	const { ui, cwd } = options;
 	const exec = options.deps.exec;
@@ -279,6 +381,15 @@ async function resolveIdentity(options: InstallOptions, state: Preflight): Promi
 	const startServer = options.deps.startServer ?? startManifestServer;
 	const openUrl = options.deps.openUrl ?? (async (url: string) => openExternalUrl(url));
 	const { repo } = state;
+	const cachePaths: CachePaths = {
+		...(options.deps.cachePath ? { cachePath: options.deps.cachePath } : {}),
+		...(options.deps.keyDir ? { keyDir: options.deps.keyDir } : {}),
+	};
+
+	if (!state.hasIdentity) {
+		const cached = await tryCachedApp(options, repo, cachePaths);
+		if (cached) return cached;
+	}
 
 	const identityOptions = state.hasIdentity
 		? [REUSE, CREATE, EXISTING, TOKEN]
@@ -369,6 +480,15 @@ async function resolveIdentity(options: InstallOptions, state: Preflight): Promi
 			const message = error instanceof Error ? error.message : String(error);
 			throw new Error(
 				`That App is valid (${info.slug}) but storing its secrets failed: ${message}. The key is not stored; fix the cause and run install again.`
+			);
+		}
+
+		try {
+			await saveCachedApp(repo.owner, { appId, slug: info.slug, keyPath: resolvedPath }, cachePaths);
+		} catch (error) {
+			ui.notify(
+				`Could not cache the App for other repositories: ${error instanceof Error ? error.message : String(error)}`,
+				"warning"
 			);
 		}
 
@@ -500,6 +620,26 @@ async function resolveIdentity(options: InstallOptions, state: Preflight): Promi
 		throw new Error(
 			`The App was created (id ${app.id}${app.slug ? `, slug ${app.slug}` : ""}) but storing it in the repository failed: ${message}\n\nThat App cannot be recovered without a new key: open ${appAdvancedSettingsUrl(app.slug || String(app.id))}, generate a private key, and set ${APP_ARG_HINT}.`
 		);
+	}
+
+	if (options.deps.saveAppKeyLocally !== false) {
+		try {
+			const keyPath = await saveAppKey(repo.owner, app.pem, cachePaths);
+			await saveCachedApp(
+				repo.owner,
+				{ appId: app.id, slug: app.slug, keyPath },
+				cachePaths
+			);
+			ui.notify(
+				`Saved the App key at ${keyPath} so other repositories can reuse this App without asking.`,
+				"info"
+			);
+		} catch (error) {
+			ui.notify(
+				`Could not save the App key locally: ${error instanceof Error ? error.message : String(error)}`,
+				"warning"
+			);
+		}
 	}
 
 	const displayName = app.name || app.slug || String(app.id);

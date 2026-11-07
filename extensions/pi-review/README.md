@@ -81,7 +81,7 @@ one.
    to localhost. The App requests only `contents: read`, `pull_requests: write`,
    and `issues: write`; it is private, has no webhooks, and no OAuth.
 4. **Secrets + installation** — the private key goes straight to
-   `gh secret set` on stdin (never printed, logged, or written to disk), then
+   `gh secret set` on stdin (never printed or logged), then
    the App ID, then a `PI_REVIEW_APP_SLUG` repository variable. Finally the
    install page opens so you can select the repository, and the wizard verifies
    it with a short-lived App JWT (`GET /repos/{owner}/{repo}/installation`),
@@ -257,21 +257,25 @@ push. The review itself still carries the findings.
 
 ## One App, many repositories
 
-Create the App once. For each additional repository:
+Create the App once; the wizard then remembers it on this machine:
 
-1. Run `/pi-review install` there and choose **Use an existing Pi GitHub App**.
-2. Enter the App ID (its settings page, near the top) and the path to a private
-   key: open the App settings → **Generate a private key**, download the `.pem`,
-   and point the wizard at it. The wizard verifies the ID/key pair with a
-   short-lived App JWT, stores the secrets, and opens the install page for that
-   repository.
-3. Install the App on the repository.
+- when it creates an App it saves the key to
+  `~/.pi/agent/pi-review/<owner>.pem` (`0600`) and records the App id, slug, and
+  key path in `~/.pi/agent/pi-review.json` (`0600`);
+- in another repository under the same owner, `/pi-review install` finds that
+  entry, verifies the id/key with a short-lived App JWT, writes the secrets
+  automatically, and **asks no App questions**. If the App is already installed
+  on the repository (install it with **All repositories**), it does not even
+  open the browser.
+- if the key file moved or was deleted, it warns and falls back to the normal
+  choices, including **Use an existing Pi GitHub App** (App ID + `.pem` path).
 
-Personal accounts have no shared secrets, so each repository gets its own copy
-of the key (the wizard never prints it). Organizations can put the same key in
-an **organization secret** instead; the wizard still writes repo secrets, so
-either is fine. Deleting the App disables every repository; deleting one
-repository's secrets disables only that repository.
+Personal accounts have no shared secrets, so each repository still receives a
+copy of the key as a repo secret; the local copy makes that automatic.
+Organizations can put the same key in an **organization secret** instead.
+Deleting the App disables every repository; deleting one repository's secrets
+disables only that repository. To stop reusing the App on this machine, delete
+`~/.pi/agent/pi-review.json` and `~/.pi/agent/pi-review/`.
 
 ## Changing settings
 

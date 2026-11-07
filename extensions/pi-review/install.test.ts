@@ -1,10 +1,12 @@
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtempSync } from "node:fs";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { Exec } from "./detect.ts";
 import type { CommandRunner } from "./github/exec.ts";
+import type { FetchLike } from "./github/app.ts";
 import type { BranchOptions, BranchResult } from "./github/git.ts";
 import type { ManifestServer, ManifestServerOptions } from "./github/server.ts";
 import { ManifestTimeoutError } from "./github/server.ts";
@@ -22,6 +24,18 @@ const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const pem = privateKey.export({ type: "pkcs1", format: "pem" }).toString();
 
 const repo = { owner: "owner", repo: "repo" };
+const harnessDirs: string[] = [];
+
+afterEach(async () => {
+	await Promise.all(harnessDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
+/** Per-test cache/key dirs so no test touches the real pi agent directory. */
+function harnessDirsFor(): { dir: string; cachePath: string; keyDir: string } {
+	const dir = mkdtempSync(join(tmpdir(), "pi-review-harness-"));
+	harnessDirs.push(dir);
+	return { dir, cachePath: join(dir, "pi-review.json"), keyDir: join(dir, "keys") };
+}
 const cwd = "/repo";
 const defaults = { provider: "opencode-go", model: "deepseek-v4.1-flash" as const };
 const env = { PI_REVIEW_PACKAGE_REF: "abc123" };
@@ -194,6 +208,10 @@ interface HarnessOptions {
 	defaults?: { provider?: string; model?: string };
 	authorizeOpenCode?: () => Promise<string>;
 	authorizeOpenRouter?: (options: { keyLabel: string }) => Promise<string>;
+	fetch?: ReturnType<typeof fakeFetch>;
+	cachePath?: string;
+	keyDir?: string;
+	saveAppKeyLocally?: boolean;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -202,6 +220,7 @@ function harness(options: HarnessOptions = {}) {
 	const writer = options.writeBranch ?? fakeBranchWriter();
 	const opened = options.opened ?? [];
 	const ui = options.ui ?? scriptedUi({ confirm: [true, true], select: [CREATE, "medium", "Read-only (read, grep, find, ls)", "Comment only (recommended)"] });
+	const safe = harnessDirsFor();
 	return {
 		runner,
 		server,
@@ -222,8 +241,11 @@ function harness(options: HarnessOptions = {}) {
 						opened.push(url);
 						return true;
 					},
-					fetch: fakeFetch(),
+					fetch: options.fetch ?? fakeFetch(),
 					waitForInstallation: options.waitForInstallation ?? (async () => ({ id: 9 })),
+					saveAppKeyLocally: options.saveAppKeyLocally ?? false,
+					cachePath: options.cachePath ?? safe.cachePath,
+					keyDir: options.keyDir ?? safe.keyDir,
 					writeBranch: writer.writeBranch,
 					...(options.authorizeOpenCode ? { authorizeOpenCode: options.authorizeOpenCode as never } : {}),
 					...(options.authorizeOpenRouter
@@ -513,6 +535,109 @@ describe("installPiReview reuse path", () => {
 		});
 		const outcome = await harness({ runner, ui }).run();
 		expect(outcome).toMatchObject({ status: "existing", installed: false });
+	});
+});
+
+describe("installPiReview cached App", () => {
+	function routedFetch(): FetchLike & { calls: string[] } {
+		const calls: string[] = [];
+		const impl = async (url: string) => {
+			calls.push(url);
+			if (url.endsWith("/app")) {
+				return {
+					ok: true,
+					status: 200,
+					text: async () => JSON.stringify({ id: 1234, slug: "pi-review-x", name: "Pi Review" }),
+				};
+			}
+			if (url.includes("/installation")) {
+				return { ok: true, status: 200, text: async () => JSON.stringify({ id: 9 }) };
+			}
+			return { ok: true, status: 200, text: async () => JSON.stringify({ id: 1234, slug: "pi-review-x", name: "Pi Review", pem }) };
+		};
+		return Object.assign(impl, { calls });
+	}
+
+	it("auto-attaches the cached App without asking for anything", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "pi-review-cached-"));
+		const keyPath = join(dir, "key.pem");
+		const cachePath = join(dir, "pi-review.json");
+		await writeFile(keyPath, pem, "utf8");
+		await writeFile(
+			cachePath,
+			JSON.stringify({ owner: { appId: 1234, slug: "pi-review-x", keyPath } }),
+			"utf8"
+		);
+		try {
+			const runner = fakeRunner({ secrets: [] });
+			const ui = scriptedUi({
+				confirm: [true],
+				select: ["medium", "Read-only", "Comment only"],
+			});
+			const outcome = await harness({
+				runner,
+				ui,
+				cachePath,
+				keyDir: dir,
+				fetch: routedFetch(),
+			}).run();
+			expect(outcome).toMatchObject({
+				status: "existing",
+				appSlug: "pi-review-x",
+				installed: true,
+				verified: true,
+			});
+			expect(ui.prompts).not.toContain("Identity for reviews");
+			expect(runner.calls.find((call) => call.args[2] === APP_KEY_SECRET)?.stdin).toBe(pem);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("falls back to the App choices when the cached key file is gone", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "pi-review-cached-"));
+		const cachePath = join(dir, "pi-review.json");
+		await writeFile(
+			cachePath,
+			JSON.stringify({ owner: { appId: 1234, slug: "pi-review-x", keyPath: join(dir, "missing.pem") } }),
+			"utf8"
+		);
+		try {
+			const ui = scriptedUi({
+				confirm: [true],
+				select: [TOKEN, "medium", "Read-only", "Comment only"],
+			});
+			await harness({ runner: fakeRunner({ secrets: [] }), ui, cachePath, keyDir: dir }).run();
+			expect(ui.prompts).toContain("Identity for reviews");
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("saves a created App key for other repositories", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "pi-review-save-"));
+		const cachePath = join(dir, "pi-review.json");
+		const keyDir = join(dir, "keys");
+		try {
+			const ui = scriptedUi({
+				confirm: [true, true],
+				select: [CREATE, "medium", "Read-only", "Comment only"],
+			});
+			const outcome = await harness({
+				ui,
+				cachePath,
+				keyDir,
+				saveAppKeyLocally: true,
+			}).run();
+			expect(outcome.status).toBe("created");
+			const cache = JSON.parse(await readFile(cachePath, "utf8"));
+			expect(cache.owner).toMatchObject({ appId: 1234, slug: "pi-review-x" });
+			const savedKey = await readFile(cache.owner.keyPath, "utf8");
+			expect(savedKey).toBe(pem);
+			expect((await stat(cache.owner.keyPath)).mode & 0o777).toBe(0o600);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
 	});
 });
 

@@ -650,3 +650,18 @@ Decisions made while building the runner, where it differs from the design above
 - The "reuse the App on this repository" path stays for repos that already have
   the secrets. Its summary is explicit that the installation is user-confirmed,
   because the stored key cannot be read back; the new path *can* verify.
+
+## Implementation notes (milestone 8): no-prompt reuse
+
+- The machine-wide cache (`global.ts`) stores `{ appId, slug, keyPath }` per
+  owner in `~/.pi/agent/pi-review.json` (0600); a created App's key is saved to
+  `~/.pi/agent/pi-review/<owner>.pem` (0600). No secrets go into the cache.
+- In a new repo, `tryCachedApp` reads the key, verifies the pair with
+  `GET /app`, writes the repo secrets/slug silently, and checks
+  `GET /repos/{owner}/{repo}/installation`. When the App already covers the
+  repo (installed on All repositories), onboarding needs no prompts and no
+  browser. Missing/moved key files, bad keys, or failed secret writes fall back
+  to the normal identity choices with a warning.
+- The "use an existing App" path caches the provided key path; creating an App
+  caches the saved key automatically. Tests inject cache/key dirs so a run never
+  writes into the real agent directory.
