@@ -378,7 +378,13 @@ async function describeReviewSetup(
 		`- identity: ${settings.identity === "app" ? "GitHub App" : "GITHUB_TOKEN"}`,
 		`- review model: ${settings.provider ? `${settings.provider}/` : ""}${settings.model || "(not set)"} · thinking ${settings.thinking}`,
 		`- tools: ${settings.tools.bash ? "read, grep, find, ls, bash" : "read, grep, find, ls"}`,
-		`- verify: ${settings.tools.bash && settings.verify.installDependencies ? "dependencies installed before the review (tests can run)" : "read-only; tests are not run"}`,
+		`- verify: ${
+			settings.tools.bash && settings.verify.installDependencies
+				? settings.verify.installCommand
+					? "custom install command before the review"
+					: "dependencies installed from lockfiles before the review"
+				: "read-only; tests are not run"
+		}`,
 		`- verdict: ${settings.review.event} · max ${settings.review.maxInlineComments} inline comments`,
 		`- strictness: ${settings.review.strictness}`,
 		`- package ref: \`${settings.pi.packageRef}\` · pi ${settings.pi.version}`,

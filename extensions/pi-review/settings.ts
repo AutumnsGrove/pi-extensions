@@ -36,8 +36,11 @@ export interface ReviewSettings {
 	model: string;
 	thinking: ThinkingLevel;
 	tools: { bash: boolean };
-	/** Pre-install dependencies in the workflow so the reviewer can run tests. */
-	verify: { installDependencies: boolean };
+	/**
+	 * Pre-install dependencies in the workflow so the reviewer can run tests.
+	 * `installCommand` overrides the lockfile detection entirely.
+	 */
+	verify: { installDependencies: boolean; installCommand: string };
 	triggers: { types: TriggerType[]; skipDrafts: boolean; skipBots: boolean };
 	review: {
 		event: ReviewEvent;
@@ -74,7 +77,7 @@ export function defaultSettings(overrides: SettingsDefaults = {}): ReviewSetting
 		model: overrides.model ?? "",
 		thinking: overrides.thinking ?? "medium",
 		tools: { bash: false },
-		verify: { installDependencies: false },
+		verify: { installDependencies: false, installCommand: "" },
 		triggers: {
 			types: [...TRIGGER_TYPES],
 			skipDrafts: true,
@@ -159,6 +162,7 @@ export function parseSettings(value: unknown, defaults = defaultSettings()): Rev
 				verify.installDependencies,
 				defaults.verify.installDependencies
 			),
+			installCommand: stringValue(verify.installCommand, defaults.verify.installCommand),
 		},
 		triggers: {
 			types,

@@ -596,3 +596,17 @@ Decisions made while building the runner, where it differs from the design above
 - It is deliberately not a wizard prompt: the quiet default applies everywhere,
   and per-repo tuning is a one-line settings edit. `REVIEW.md` on the base
   branch remains the free-form channel for repo-specific rules.
+
+## Implementation notes (milestone 6, part 4): polyglot dependency install
+
+- The install step is ecosystem-agnostic and installs **every** detected
+  manager: pnpm/npm/yarn/bun, uv/poetry/pipenv/pip/pyproject, `go mod download`,
+  `cargo fetch`, `bundle install`, `composer install`, `dotnet restore`. One
+  failing ecosystem does not stop the others; the step fails at the end so
+  `PI_REVIEW_DEPS` stays `unavailable` and the prompt tells the reviewer not to
+  claim it ran tests.
+- `verify.installCommand` replaces detection for repos the heuristic cannot
+  handle (monorepos with unusual layouts, private registries, a specific make
+  target). It is a committed setting, reviewed like any other.
+- The cache covers the package stores for all supported ecosystems and is keyed
+  by their lockfiles.

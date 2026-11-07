@@ -53,9 +53,13 @@ describe("parseSettings", () => {
 		expect(() => parseSettings({ review: { strictness: "picky" } })).toThrow("Invalid review strictness");
 	});
 
-	it("parses the verify setting", () => {
+	it("parses the verify setting and its command override", () => {
 		expect(parseSettings({ verify: { installDependencies: true } }).verify.installDependencies).toBe(true);
 		expect(parseSettings({ verify: { installDependencies: "yes" } }).verify.installDependencies).toBe(false);
+		expect(parseSettings({ verify: { installCommand: "make deps" } }).verify.installCommand).toBe(
+			"make deps"
+		);
+		expect(parseSettings({}).verify.installCommand).toBe("");
 	});
 
 	it("keeps a committed file's provider env or derives it", () => {

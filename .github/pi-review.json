@@ -9,7 +9,8 @@
     "bash": true
   },
   "verify": {
-    "installDependencies": true
+    "installDependencies": true,
+    "installCommand": ""
   },
   "triggers": {
     "types": [
@@ -23,8 +24,8 @@
   },
   "review": {
     "event": "COMMENT",
-    "maxInlineComments": 25,
-    "strictness": "significant"
+    "strictness": "significant",
+    "maxInlineComments": 25
   },
   "paths": {
     "include": [],
@@ -32,7 +33,7 @@
   },
   "pi": {
     "version": "1.5.0",
-    "packageRef": "3e2aff25b88b63cc103ba2e172e0c5c41affb0fe"
+    "packageRef": "1f7978c71ca9459def45f4a15bd7ae02e0699e82"
   },
   "timeoutMinutes": 20
 }
