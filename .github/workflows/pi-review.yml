@@ -19,7 +19,7 @@ jobs:
   review:
     if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 33
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,6 +28,38 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      - name: Restore the dependency cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.npm
+            ~/.local/share/pnpm/store
+          key: pi-review-deps-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'package-lock.json', 'yarn.lock') }}
+          restore-keys: |
+            pi-review-deps-${{ runner.os }}-
+      - name: Install dependencies
+        id: deps
+        continue-on-error: true
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          echo "PI_REVIEW_DEPS=unavailable" >> "$GITHUB_ENV"
+          if [ -f pnpm-lock.yaml ]; then
+            corepack pnpm install --frozen-lockfile --prefer-offline
+          elif [ -f package-lock.json ]; then
+            npm ci --prefer-offline --no-audit --no-fund
+          elif [ -f yarn.lock ]; then
+            if corepack yarn --version | grep -q '^1\.'; then
+              corepack yarn install --frozen-lockfile
+            else
+              corepack yarn install --immutable
+            fi
+          else
+            echo "No lockfile found; skipping dependency installation."
+            echo "PI_REVIEW_DEPS=none" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          echo "PI_REVIEW_DEPS=installed" >> "$GITHUB_ENV"
       - name: Install pi
         run: npm install -g @earendil-works/pi-coding-agent@1.5.0
       - name: Check out pi-review
@@ -35,7 +67,7 @@ jobs:
           set -euo pipefail
           git init "$RUNNER_TEMP/pi-review-src"
           git -C "$RUNNER_TEMP/pi-review-src" remote add origin https://github.com/AutumnsGrove/pi-extensions.git
-          git -C "$RUNNER_TEMP/pi-review-src" fetch --depth 1 origin '04ffc22de7bf9d37239752ad9c6e649c0c824ad1'
+          git -C "$RUNNER_TEMP/pi-review-src" fetch --depth 1 origin '3e2aff25b88b63cc103ba2e172e0c5c41affb0fe'
           git -C "$RUNNER_TEMP/pi-review-src" checkout --detach FETCH_HEAD
       - name: Mint the App token
         id: app-token
