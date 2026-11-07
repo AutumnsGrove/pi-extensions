@@ -115,37 +115,53 @@ export async function upsertStickyComment(
 	let existingId: number | undefined;
 	// `sort`/`direction` are not supported on the per-issue endpoint, so read
 	// every page with `--slurp` (an array of pages) and take the newest marker.
-	let list = await exec("gh", ["api", "--paginate", "--slurp", `${base}?per_page=100`], {
+	const collect = (entries: { id?: unknown; body?: unknown }[]): void => {
+		for (const entry of entries) {
+			if (typeof entry?.body === "string" && entry.body.includes(STICKY_MARKER)) {
+				if (typeof entry.id === "number") existingId = entry.id;
+			}
+		}
+	};
+
+	const list = await exec("gh", ["api", "--paginate", "--slurp", `${base}?per_page=100`], {
 		cwd: options.cwd,
 		timeout,
 	});
-	if ((list.code ?? 0) !== 0) {
-		// `--slurp` needs gh >= 2.47; fall back to one page rather than piling up
-		// a duplicate comment without a trace.
-		console.error(
-			`pi-review: could not list comments with --slurp (${(list.stderr || "").trim() || "unknown error"}); trying a single page.`
-		);
-		list = await exec("gh", ["api", `${base}?per_page=100`], { cwd: options.cwd, timeout });
-	}
 	if ((list.code ?? 0) === 0) {
 		try {
 			const parsed = JSON.parse(list.stdout) as unknown;
-			const entries: { id?: unknown; body?: unknown }[] = [];
 			if (Array.isArray(parsed)) {
 				for (const page of parsed) {
-					if (Array.isArray(page)) entries.push(...(page as { id?: unknown; body?: unknown }[]));
-					else if (page && typeof page === "object") entries.push(page as { id?: unknown; body?: unknown });
-				}
-			}
-			for (const entry of entries) {
-				if (typeof entry?.body === "string" && entry.body.includes(STICKY_MARKER)) {
-					if (typeof entry.id === "number") existingId = entry.id;
+					if (Array.isArray(page)) collect(page as { id?: unknown; body?: unknown }[]);
+					else if (page && typeof page === "object") collect([page as { id?: unknown; body?: unknown }]);
 				}
 			}
 		} catch (error) {
 			console.error(
 				`pi-review: could not parse the comment list (${error instanceof Error ? error.message : String(error)}); a new sticky comment may be created.`
 			);
+		}
+	} else {
+		// `--slurp` needs gh >= 2.47. Page explicitly so a long PR still finds
+		// its marker instead of creating a duplicate.
+		console.error(
+			`pi-review: could not list comments with --slurp (${(list.stderr || "").trim() || "unknown error"}); paging without it.`
+		);
+		for (let page = 1; page <= 50; page += 1) {
+			const result = await exec("gh", ["api", `${base}?per_page=100&page=${page}`], {
+				cwd: options.cwd,
+				timeout,
+			});
+			if ((result.code ?? 0) !== 0) break;
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(result.stdout);
+			} catch {
+				break;
+			}
+			if (!Array.isArray(parsed)) break;
+			collect(parsed as { id?: unknown; body?: unknown }[]);
+			if (parsed.length < 100) break;
 		}
 	}
 
