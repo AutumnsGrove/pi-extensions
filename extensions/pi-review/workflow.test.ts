@@ -113,7 +113,7 @@ describe("renderWorkflow", () => {
 	it("installs dependencies and exports the outcome when verify is on", () => {
 		const workflow = render({
 			tools: { bash: true },
-			verify: { installDependencies: true },
+			verify: { installDependencies: true, installCommand: "" },
 		});
 		const names = workflow.jobs.review.steps.map((step) => step.name ?? step.uses);
 		expect(names).toContain("Restore the dependency cache");
@@ -130,14 +130,39 @@ describe("renderWorkflow", () => {
 		expect(install.run).toContain("corepack yarn --version");
 		expect(install.run).toContain("corepack yarn install --frozen-lockfile");
 		expect(install.run).toContain("corepack yarn install --immutable");
+		// Non-Node ecosystems are detected too.
+		expect(install.run).toContain("uv sync --frozen");
+		expect(install.run).toContain("python3 -m pip install -r requirements.txt");
+		expect(install.run).toContain("go mod download");
+		expect(install.run).toContain("cargo fetch");
+		expect(install.run).toContain("bundle install");
+		expect(install.run).toContain("dotnet restore");
+		// The cache covers their stores as well.
+		expect(cache.with?.path).toContain("~/go/pkg/mod");
+		expect(cache.with?.path).toContain("~/.cargo/registry");
+		expect(cache.with?.key).toContain("go.sum");
 		// The job budget covers the install step on top of the review.
 		expect(workflow.jobs.review["timeout-minutes"]).toBe(33);
+	});
+
+	it("runs a custom install command instead of detection", () => {
+		const workflow = render({
+			tools: { bash: true },
+			verify: { installDependencies: true, installCommand: "make deps\nmake fixtures" },
+		});
+		const install = workflow.jobs.review.steps.find((step) => step.name === "Install dependencies")!;
+		expect(install.run).toContain("make deps\nmake fixtures");
+		expect(install.run).not.toContain("pnpm-lock.yaml");
+		expect(install.run).toContain("PI_REVIEW_DEPS=installed");
 	});
 
 	it("skips the dependency steps when verify is off or bash is disabled", () => {
 		const off = render().jobs.review.steps.map((step) => step.name ?? step.uses);
 		expect(off).not.toContain("Install dependencies");
-		const noBash = render({ tools: { bash: false }, verify: { installDependencies: true } });
+		const noBash = render({
+			tools: { bash: false },
+			verify: { installDependencies: true, installCommand: "" },
+		});
 		expect(noBash.jobs.review.steps.map((step) => step.name ?? step.uses)).not.toContain(
 			"Install dependencies"
 		);

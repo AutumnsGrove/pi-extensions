@@ -37,6 +37,64 @@ function jobCondition(settings: ReviewSettings): string {
 	return parts.join(" && ");
 }
 
+/**
+ * Shell for the dependency step. Without an override, install every ecosystem
+ * a lockfile/manifest says is present; a repo can be polyglot. One failure does
+ * not stop the others, but the step fails so `PI_REVIEW_DEPS` stays
+ * `unavailable` and the prompt tells the reviewer not to claim it ran tests.
+ */
+export function installRunLines(settings: ReviewSettings): string[] {
+	if (settings.verify.installCommand) {
+		return [
+			"set -euo pipefail",
+			'echo "PI_REVIEW_DEPS=unavailable" >> "$GITHUB_ENV"',
+			...settings.verify.installCommand.split("\n"),
+			'echo "PI_REVIEW_DEPS=installed" >> "$GITHUB_ENV"',
+		];
+	}
+	return [
+		"set -uo pipefail",
+		'echo "PI_REVIEW_DEPS=unavailable" >> "$GITHUB_ENV"',
+		"failed=0",
+		"found=0",
+		'run() { if ! "$@"; then failed=1; fi; }',
+		'if [ -f pnpm-lock.yaml ]; then found=1; run corepack pnpm install --frozen-lockfile --prefer-offline; fi',
+		'if [ -f package-lock.json ]; then found=1; run npm ci --prefer-offline --no-audit --no-fund; fi',
+		"if [ -f yarn.lock ]; then",
+		"  found=1",
+		"  if corepack yarn --version | grep -q '^1\\.'; then",
+		"    run corepack yarn install --frozen-lockfile",
+		"  else",
+		"    run corepack yarn install --immutable",
+		"  fi",
+		"fi",
+		'if [ -f bun.lock ] || [ -f bun.lockb ]; then found=1; run npm install -g bun; run bun install --frozen-lockfile; fi',
+		"if [ -f uv.lock ]; then",
+		"  found=1",
+		'  if ! command -v uv >/dev/null 2>&1; then curl -LsSf https://astral.sh/uv/install.sh | sh; export PATH="$HOME/.local/bin:$PATH"; fi',
+		"  run uv sync --frozen",
+		"fi",
+		"if [ -f poetry.lock ]; then found=1; run python3 -m pip install --user --quiet poetry; run poetry install --no-interaction; fi",
+		"if [ -f Pipfile.lock ]; then found=1; run python3 -m pip install --user --quiet pipenv; run pipenv sync; fi",
+		'if [ -f requirements.txt ]; then found=1; run python3 -m pip install -r requirements.txt; fi',
+		'if [ -f pyproject.toml ] && [ ! -f uv.lock ] && [ ! -f poetry.lock ]; then found=1; run python3 -m pip install -e .; fi',
+		'if [ -f go.mod ]; then found=1; run go mod download; fi',
+		'if [ -f Cargo.toml ]; then found=1; run cargo fetch; fi',
+		'if [ -f Gemfile.lock ]; then found=1; run bundle install; fi',
+		'if [ -f composer.lock ]; then found=1; run composer install --no-interaction; fi',
+		'if ls *.sln >/dev/null 2>&1; then found=1; run dotnet restore; fi',
+		'if [ "$failed" -ne 0 ]; then',
+		'  echo "::warning::Some dependency installs failed; the reviewer will be told tests may not run."',
+		"  exit 1",
+		"fi",
+		'if [ "$found" -eq 0 ]; then',
+		'  echo "PI_REVIEW_DEPS=none" >> "$GITHUB_ENV"',
+		"  exit 0",
+		"fi",
+		'echo "PI_REVIEW_DEPS=installed" >> "$GITHUB_ENV"',
+	];
+}
+
 /** Render the workflow YAML. Deterministic: same settings, same bytes. */
 export function renderWorkflow(settings: ReviewSettings): string {
 	const trigger = settings.triggers.types.join(", ");
@@ -110,7 +168,15 @@ export function renderWorkflow(settings: ReviewSettings): string {
 				"          path: |",
 				"            ~/.npm",
 				"            ~/.local/share/pnpm/store",
-				`          key: ${EXTENSION_NAME}-deps-\${{ runner.os }}-\${{ hashFiles('pnpm-lock.yaml', 'package-lock.json', 'yarn.lock') }}`,
+				"            ~/.cache/pip",
+				"            ~/.cache/uv",
+				"            ~/go/pkg/mod",
+				"            ~/.cargo/registry",
+				"            ~/.cargo/git",
+				"            ~/.bundle",
+				"            ~/.nuget/packages",
+				"            ~/.composer/cache",
+				`          key: ${EXTENSION_NAME}-deps-\${{ runner.os }}-\${{ hashFiles('pnpm-lock.yaml', 'package-lock.json', 'yarn.lock', 'bun.lock', 'bun.lockb', 'uv.lock', 'poetry.lock', 'Pipfile.lock', 'requirements.txt', 'go.sum', 'Cargo.lock', 'Gemfile.lock', 'composer.lock') }}`,
 				"          restore-keys: |",
 				`            ${EXTENSION_NAME}-deps-\${{ runner.os }}-`,
 				"      - name: Install dependencies",
@@ -118,24 +184,7 @@ export function renderWorkflow(settings: ReviewSettings): string {
 				"        continue-on-error: true",
 				`        timeout-minutes: ${installBudgetMinutes}`,
 				"        run: |",
-				"          set -euo pipefail",
-				'          echo "PI_REVIEW_DEPS=unavailable" >> "$GITHUB_ENV"',
-				"          if [ -f pnpm-lock.yaml ]; then",
-				"            corepack pnpm install --frozen-lockfile --prefer-offline",
-				"          elif [ -f package-lock.json ]; then",
-				"            npm ci --prefer-offline --no-audit --no-fund",
-				"          elif [ -f yarn.lock ]; then",
-				"            if corepack yarn --version | grep -q '^1\\.'; then",
-				"              corepack yarn install --frozen-lockfile",
-				"            else",
-				"              corepack yarn install --immutable",
-				"            fi",
-				"          else",
-				'            echo "No lockfile found; skipping dependency installation."',
-				'            echo "PI_REVIEW_DEPS=none" >> "$GITHUB_ENV"',
-				"            exit 0",
-				"          fi",
-				'          echo "PI_REVIEW_DEPS=installed" >> "$GITHUB_ENV"',
+				...installRunLines(settings).map((line) => `          ${line}`),
 			]
 		: [];
 
