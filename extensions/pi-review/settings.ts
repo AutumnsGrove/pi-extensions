@@ -41,13 +41,7 @@ export interface ReviewSettings {
 	 * `installCommand` overrides the lockfile detection entirely.
 	 */
 	verify: { installDependencies: boolean; installCommand: string };
-	triggers: {
-		types: TriggerType[];
-		skipDrafts: boolean;
-		skipBots: boolean;
-		/** `@pi` comments from owners/members/collaborators trigger a review. */
-		mention: boolean;
-	};
+	triggers: { types: TriggerType[]; skipDrafts: boolean; skipBots: boolean };
 	review: {
 		event: ReviewEvent;
 		maxInlineComments: number;
@@ -90,7 +84,6 @@ export function defaultSettings(overrides: SettingsDefaults = {}): ReviewSetting
 			types: [...TRIGGER_TYPES],
 			skipDrafts: true,
 			skipBots: false,
-			mention: true,
 		},
 		review: {
 			event: "COMMENT",
@@ -178,7 +171,6 @@ export function parseSettings(value: unknown, defaults = defaultSettings()): Rev
 			types,
 			skipDrafts: booleanValue(triggers.skipDrafts, defaults.triggers.skipDrafts),
 			skipBots: booleanValue(triggers.skipBots, defaults.triggers.skipBots),
-			mention: booleanValue(triggers.mention, defaults.triggers.mention),
 		},
 		review: {
 			event: oneOf(review.event, REVIEW_EVENTS, defaults.review.event, "review event"),

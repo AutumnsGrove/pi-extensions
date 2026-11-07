@@ -138,24 +138,6 @@ The review is printed rather than posted unless `--post` is given. `bash` is
 opt-in because a shell on the runner can read the job's environment, including
 the review key.
 
-## Asking for a review
-
-Comment `@pi` on any pull request to run a review on demand. The comment body is
-the maintainer's request, so `@pi focus on the migration` narrows the review
-instead of restating the whole diff. It is still treated as untrusted text and
-fenced.
-
-The mention path only runs when:
-
-- the comment is on a pull request (not a plain issue);
-- the author is an owner, member, or collaborator (not a random commenter);
-- the author is not a bot;
-- the check-out is a same-repo PR; a fork's merge ref is refused before the job
-  can execute its code with secrets.
-
-The workflow listens to `issue_comment` for this (default on); set
-`triggers.mention: false` to disable it. Auto-reviews on push are unchanged.
-
 ## Resolving stale threads
 
 On follow-ups, the reviewer can close the threads it already opened once it

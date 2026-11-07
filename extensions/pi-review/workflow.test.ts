@@ -14,10 +14,7 @@ function settings(overrides: Partial<ReviewSettings> = {}): ReviewSettings {
 }
 
 interface Workflow {
-	on: {
-		pull_request: { types: string[]; paths?: string[] };
-		issue_comment?: { types: string[] };
-	};
+	on: { pull_request: { types: string[]; paths?: string[] } };
 	concurrency: { group: string; "cancel-in-progress": boolean };
 	permissions: Record<string, string>;
 	jobs: {
@@ -53,7 +50,7 @@ describe("renderWorkflow", () => {
 			"reopened",
 		]);
 		expect(workflow.concurrency).toEqual({
-			group: "pi-review-${{ github.event.pull_request.number || github.event.issue.number }}",
+			group: "pi-review-${{ github.event.pull_request.number }}",
 			"cancel-in-progress": true,
 		});
 		expect(workflow.permissions).toEqual({
@@ -68,7 +65,6 @@ describe("renderWorkflow", () => {
 			"actions/setup-node@v4",
 			"Install pi",
 			"Check out pi-review",
-			"Require a same-repo pull request",
 			"Mint the App token",
 			"Review",
 			"Step summary",
@@ -106,13 +102,12 @@ describe("renderWorkflow", () => {
 		expect(review.run).toContain("finished without submitting a review");
 		expect(review.env).toMatchObject({
 			PI_REVIEW: "1",
-			PR_NUMBER: "${{ github.event.pull_request.number || github.event.issue.number }}",
+			PR_NUMBER: "${{ github.event.pull_request.number }}",
 			OPENCODE_API_KEY: "${{ secrets.PI_REVIEW_API_KEY }}",
 			PI_REVIEW_MAX_COMMENTS: "40",
 			PI_REVIEW_REQUEST_CHANGES: "1",
 			PI_REVIEW_STRICTNESS: "significant",
 			PI_REVIEW_RESOLVE_THREADS: "0",
-			PI_REVIEW_REQUEST: "${{ github.event.comment.body }}",
 		});
 	});
 
@@ -218,40 +213,13 @@ describe("renderWorkflow", () => {
 
 	it("adds skip conditions for drafts and bots", () => {
 		expect(render().jobs.review.if).toContain("github.event.pull_request.draft == false");
-		expect(render().jobs.review.if).not.toContain("github.event.pull_request.user.type != 'Bot'");
+		expect(render().jobs.review.if).not.toContain("Bot");
 		expect(render({ triggers: { ...settings().triggers, skipBots: true } }).jobs.review.if).toContain(
 			"github.event.pull_request.user.type != 'Bot'"
 		);
 		expect(render({ triggers: { ...settings().triggers, skipDrafts: false } }).jobs.review.if).not.toContain(
 			"draft"
 		);
-	});
-
-	it("adds an @pi mention trigger and its guards", () => {
-		const workflow = render();
-		expect(workflow.on.issue_comment?.types).toEqual(["created"]);
-		expect(workflow.jobs.review.if).toContain("contains(github.event.comment.body, '@pi')");
-		expect(workflow.jobs.review.if).toContain("author_association");
-		expect(workflow.jobs.review.if).toContain("github.event.issue.pull_request != null");
-		const checkout = workflow.jobs.review.steps[0]!;
-		expect(checkout.with?.ref).toBe(
-			"refs/pull/${{ github.event.pull_request.number || github.event.issue.number }}/merge"
-		);
-		const review = workflow.jobs.review.steps.find((step) => step.name === "Review")!;
-		expect(review.env?.PI_REVIEW_REQUEST).toBe("${{ github.event.comment.body }}");
-		expect(
-			workflow.jobs.review.steps.some((step) => step.name === "Require a same-repo pull request")
-		).toBe(true);
-	});
-
-	it("omits the mention trigger when disabled", () => {
-		const workflow = render({ triggers: { ...settings().triggers, mention: false } });
-		expect(workflow.on.issue_comment).toBeUndefined();
-		expect(workflow.jobs.review.if).not.toContain("@pi");
-		expect(workflow.jobs.review.if).not.toContain("issue_comment");
-		expect(
-			workflow.jobs.review.steps.some((step) => step.name === "Require a same-repo pull request")
-		).toBe(false);
 	});
 
 	it("always skips fork pull requests", () => {

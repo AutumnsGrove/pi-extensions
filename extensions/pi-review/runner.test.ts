@@ -272,19 +272,6 @@ describe("registerReviewRunner", () => {
 		expect(tools.map((tool) => tool.name)).not.toContain("resolve_review_threads");
 	});
 
-	it("passes a maintainer request into the prompt", async () => {
-		const { pi, events } = fakePi(fakeExec());
-		registerReviewRunner(pi, {
-			env: { PI_REVIEW: "1", PR_NUMBER: "5", PI_REVIEW_REQUEST: "Focus on the migration." },
-		});
-		const result = (await events.get("before_agent_start")!(
-			{ messageType: "user", prompt: "x", systemPrompt: "BASE" },
-			{ cwd: "/repo" }
-		)) as { systemPrompt: string; message: { content: string } };
-		expect(result.message.content).toContain("<maintainer-request>");
-		expect(result.message.content).toContain("Focus on the migration.");
-	});
-
 	it("does not register the resolve tool when disabled", () => {
 		const { pi, tools } = fakePi(fakeExec());
 		registerReviewRunner(pi, { env: { PI_REVIEW: "1", PR_NUMBER: "5" } });

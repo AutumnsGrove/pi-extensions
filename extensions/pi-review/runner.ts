@@ -198,12 +198,10 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 			env.PI_REVIEW_STRICTNESS === "balanced" || env.PI_REVIEW_STRICTNESS === "thorough"
 				? env.PI_REVIEW_STRICTNESS
 				: "significant";
-		const request = env.PI_REVIEW_REQUEST?.trim();
 		const prompt = buildReviewPrompt(state.target, state.guidance, {
 			...(dependencies ? { dependencies } : {}),
 			strictness,
 			...(resolveStaleThreads && state.threads.length > 0 ? { openThreads: state.threads } : {}),
-			...(request ? { request } : {}),
 		});
 		return {
 			systemPrompt: `${event.systemPrompt}\n\n${prompt.system}`,
