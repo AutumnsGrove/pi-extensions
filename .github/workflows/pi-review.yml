@@ -55,17 +55,20 @@ jobs:
           failed=0
           found=0
           run() { if ! "$@"; then failed=1; fi; }
-          if [ -f pnpm-lock.yaml ]; then found=1; run corepack pnpm install --frozen-lockfile --prefer-offline; fi
-          if [ -f package-lock.json ]; then found=1; run npm ci --prefer-offline --no-audit --no-fund; fi
-          if [ -f yarn.lock ]; then
+          if [ -f pnpm-lock.yaml ]; then
+            found=1; run corepack pnpm install --frozen-lockfile --prefer-offline
+          elif [ -f package-lock.json ]; then
+            found=1; run npm ci --prefer-offline --no-audit --no-fund
+          elif [ -f yarn.lock ]; then
             found=1
             if corepack yarn --version | grep -q '^1\.'; then
               run corepack yarn install --frozen-lockfile
             else
               run corepack yarn install --immutable
             fi
+          elif [ -f bun.lock ] || [ -f bun.lockb ]; then
+            found=1; run npm install -g bun; run bun install --frozen-lockfile
           fi
-          if [ -f bun.lock ] || [ -f bun.lockb ]; then found=1; run npm install -g bun; run bun install --frozen-lockfile; fi
           if [ -f uv.lock ]; then
             found=1
             if ! command -v uv >/dev/null 2>&1; then curl -LsSf https://astral.sh/uv/install.sh | sh; export PATH="$HOME/.local/bin:$PATH"; fi
@@ -96,7 +99,7 @@ jobs:
           set -euo pipefail
           git init "$RUNNER_TEMP/pi-review-src"
           git -C "$RUNNER_TEMP/pi-review-src" remote add origin https://github.com/AutumnsGrove/pi-extensions.git
-          git -C "$RUNNER_TEMP/pi-review-src" fetch --depth 1 origin '1725e195733d5c535c184d9562bc6c6beda713dc'
+          git -C "$RUNNER_TEMP/pi-review-src" fetch --depth 1 origin '1f7978c71ca9459def45f4a15bd7ae02e0699e82'
           git -C "$RUNNER_TEMP/pi-review-src" checkout --detach FETCH_HEAD
       - name: Mint the App token
         id: app-token
