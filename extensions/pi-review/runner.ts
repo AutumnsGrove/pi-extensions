@@ -157,7 +157,11 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 					: {}),
 			};
 		}
-		const prompt = buildReviewPrompt(state.target, state.guidance);
+		const deps = env.PI_REVIEW_DEPS;
+		const dependencies = deps === "installed" || deps === "unavailable" ? deps : undefined;
+		const prompt = buildReviewPrompt(state.target, state.guidance, {
+			...(dependencies ? { dependencies } : {}),
+		});
 		return {
 			systemPrompt: `${event.systemPrompt}\n\n${prompt.system}`,
 			...(inject

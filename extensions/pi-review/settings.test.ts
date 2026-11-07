@@ -47,6 +47,11 @@ describe("parseSettings", () => {
 		expect(settings.triggers.skipDrafts).toBe(true);
 	});
 
+	it("parses the verify setting", () => {
+		expect(parseSettings({ verify: { installDependencies: true } }).verify.installDependencies).toBe(true);
+		expect(parseSettings({ verify: { installDependencies: "yes" } }).verify.installDependencies).toBe(false);
+	});
+
 	it("keeps a committed file's provider env or derives it", () => {
 		expect(parseSettings({ provider: "openrouter" }).providerEnv).toBe("OPENROUTER_API_KEY");
 		expect(parseSettings({ provider: "x", providerEnv: "X_KEY" }).providerEnv).toBe("X_KEY");

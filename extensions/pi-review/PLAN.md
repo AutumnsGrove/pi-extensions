@@ -570,3 +570,19 @@ Decisions made while building the runner, where it differs from the design above
   opened a GitHub compare tab. Tests now inject the opener; `openExternalUrl`
   also refuses to spawn when `VITEST` is set unless a `spawn` is injected, so a
   missed fake cannot leak a tab again.
+
+## Implementation notes (milestone 6, part 2): verify with tests
+
+- **Dependency install is a workflow step, not a model turn.** `verify.installDependencies`
+  (only meaningful with `tools.bash`) adds an `actions/cache` restore keyed by
+  the lockfile hash and an `Install dependencies` step that picks pnpm/npm/yarn
+  from the lockfile, with an eight-minute timeout and `continue-on-error`. The
+  step writes `PI_REVIEW_DEPS=installed|unavailable|none` to `GITHUB_ENV`; the
+  runner reads it and the prompt says either "run the tests", "do not claim you
+  ran them", or nothing. Installation cost and failure stay out of the agent's
+  turn budget, and a failed install produces an honest note rather than an
+  unverified claim.
+- **The fallback prompt still exists** for repos without the step, but it is no
+  longer the mechanism: the workflow does the install, the agent verifies.
+- **Security is unchanged and explicit:** installing runs lifecycle scripts from
+  the PR checkout, on top of the already opt-in `bash`; same-repo PRs only.

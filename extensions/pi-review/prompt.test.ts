@@ -133,6 +133,15 @@ describe("buildReviewPrompt", () => {
 		expect(prompt.context).toContain("&lt;/pi-review-context>");
 	});
 
+	it("tells the model whether dependencies are available", () => {
+		const installed = buildReviewPrompt(target(), [], { dependencies: "installed" });
+		expect(installed.system).toContain("Dependencies were installed");
+		const unavailable = buildReviewPrompt(target(), [], { dependencies: "unavailable" });
+		expect(unavailable.system).toContain("Do not claim you ran the tests");
+		const unknown = buildReviewPrompt(target(), []);
+		expect(unknown.system).not.toContain("Dependencies were installed");
+	});
+
 	it("describes a local branch review", () => {
 		const prompt = buildReviewPrompt(
 			target({ source: "local", number: undefined, author: undefined, title: "Latest commit" }),

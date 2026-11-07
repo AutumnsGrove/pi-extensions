@@ -34,6 +34,8 @@ export interface ReviewSettings {
 	model: string;
 	thinking: ThinkingLevel;
 	tools: { bash: boolean };
+	/** Pre-install dependencies in the workflow so the reviewer can run tests. */
+	verify: { installDependencies: boolean };
 	triggers: { types: TriggerType[]; skipDrafts: boolean; skipBots: boolean };
 	review: { event: ReviewEvent; maxInlineComments: number };
 	paths: { include: string[]; exclude: string[] };
@@ -65,6 +67,7 @@ export function defaultSettings(overrides: SettingsDefaults = {}): ReviewSetting
 		model: overrides.model ?? "",
 		thinking: overrides.thinking ?? "medium",
 		tools: { bash: false },
+		verify: { installDependencies: false },
 		triggers: {
 			types: [...TRIGGER_TYPES],
 			skipDrafts: true,
@@ -114,6 +117,7 @@ function oneOf<T extends string>(value: unknown, allowed: readonly T[], fallback
 export function parseSettings(value: unknown, defaults = defaultSettings()): ReviewSettings {
 	if (!isRecord(value)) throw new Error("`.github/pi-review.json` must contain a JSON object.");
 	const tools = isRecord(value.tools) ? value.tools : {};
+	const verify = isRecord(value.verify) ? value.verify : {};
 	const triggers = isRecord(value.triggers) ? value.triggers : {};
 	const review = isRecord(value.review) ? value.review : {};
 	const paths = isRecord(value.paths) ? value.paths : {};
@@ -139,6 +143,12 @@ export function parseSettings(value: unknown, defaults = defaultSettings()): Rev
 		model: stringValue(value.model, defaults.model),
 		thinking: oneOf(value.thinking, THINKING_LEVELS, defaults.thinking, "thinking level"),
 		tools: { bash: booleanValue(tools.bash, defaults.tools.bash) },
+		verify: {
+			installDependencies: booleanValue(
+				verify.installDependencies,
+				defaults.verify.installDependencies
+			),
+		},
 		triggers: {
 			types,
 			skipDrafts: booleanValue(triggers.skipDrafts, defaults.triggers.skipDrafts),

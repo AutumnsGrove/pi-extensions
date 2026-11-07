@@ -121,6 +121,30 @@ The review is printed rather than posted unless `--post` is given. `bash` is
 opt-in because a shell on the runner can read the job's environment, including
 the review key.
 
+## Verifying with tests
+
+Reviews are much better when the agent can run the suite. Two settings cooperate:
+
+```json
+{ "tools": { "bash": true }, "verify": { "installDependencies": true } }
+```
+
+With both on, the generated workflow adds:
+
+- `actions/cache` for the npm/pnpm store, keyed by the lockfile hash;
+- an `Install dependencies` step that detects `pnpm-lock.yaml` (corepack pnpm),
+  `package-lock.json` (`npm ci`), or `yarn.lock` (corepack yarn), with an
+  8-minute limit and `continue-on-error: true`;
+- `PI_REVIEW_DEPS=installed|unavailable|none` in the job environment, which the
+  runner turns into a prompt note: run the tests, do not claim you ran them, or
+  no guidance.
+
+Installation failures never fail the review: the agent is told the dependencies
+are unavailable and reviews by reading instead. The installer asks whether to
+install dependencies whenever you allow `bash`, and `verify` is forced off when
+`bash` is off. Running install scripts from the checkout is code execution from
+the PR, which is why `bash` stays an explicit opt-in and only same-repo PRs run.
+
 ## Follow-up reviews
 
 Every posted review carries a hidden marker. On the next push, the runner looks
