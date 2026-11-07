@@ -165,12 +165,13 @@ describe("postReview", () => {
 });
 
 describe("upsertStickyComment", () => {
-	function fakeExec(list: unknown, options: { failWrite?: boolean } = {}) {
+	/** `pages` is the slurped list response: one array per page. */
+	function fakeExec(pages: unknown, options: { failWrite?: boolean } = {}) {
 		const calls: string[][] = [];
 		const exec: Exec = async (_command, args) => {
 			calls.push(args);
-			if (args[1]?.includes("/comments?per_page=100")) {
-				return { stdout: JSON.stringify(list), stderr: "", code: 0 };
+			if (args.includes("--paginate")) {
+				return { stdout: JSON.stringify(pages), stderr: "", code: 0 };
 			}
 			if (options.failWrite) return { stdout: "", stderr: "HTTP 403", code: 1 };
 			return { stdout: JSON.stringify({ html_url: "https://example.test/comment" }), stderr: "", code: 0 };
@@ -187,7 +188,7 @@ describe("upsertStickyComment", () => {
 	const target = { repo: { owner: "o", repo: "r" }, number: 3, commitId: "abcdef1234567890" };
 
 	it("creates the sticky comment when none exists", async () => {
-		const exec = fakeExec([]);
+		const exec = fakeExec([[]]);
 		const result = await upsertStickyComment(exec, target, review, "https://example.test/review", {
 			cwd: "/repo",
 		});
@@ -195,16 +196,12 @@ describe("upsertStickyComment", () => {
 		const write = exec.calls.find((args) => args[1] === "--method" && args[2] === "POST")!;
 		expect(write[3]).toBe("repos/o/r/issues/3/comments");
 		expect(write.join(" ")).toContain(STICKY_MARKER);
-		const list = exec.calls.find((args) => args[1]?.includes("?per_page=100"))!;
-		expect(list[1]).toContain("sort=created");
-		expect(list[1]).toContain("direction=desc");
+		const list = exec.calls.find((args) => args.includes("--paginate"))!;
+		expect(list).toContain("--slurp");
 	});
 
 	it("updates the existing marker comment in place", async () => {
-		const exec = fakeExec([
-			{ id: 5, body: "unrelated" },
-			{ id: 7, body: `${STICKY_MARKER}\nold` },
-		]);
+		const exec = fakeExec([[{ id: 5, body: "unrelated" }], [{ id: 7, body: `${STICKY_MARKER}\nold` }]]);
 		await upsertStickyComment(exec, target, review, "https://example.test/review", { cwd: "/repo" });
 		const write = exec.calls.find((args) => args[1] === "--method" && args[2] === "PATCH")!;
 		expect(write[3]).toBe("repos/o/r/issues/comments/7");
@@ -213,7 +210,7 @@ describe("upsertStickyComment", () => {
 
 	it("throws when the write fails", async () => {
 		await expect(
-			upsertStickyComment(fakeExec([], { failWrite: true }), target, review, undefined, { cwd: "/repo" })
+			upsertStickyComment(fakeExec([[]], { failWrite: true }), target, review, undefined, { cwd: "/repo" })
 		).rejects.toThrow("HTTP 403");
 	});
 

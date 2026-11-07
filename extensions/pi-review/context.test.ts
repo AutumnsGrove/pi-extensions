@@ -153,6 +153,9 @@ describe("loadReviewTarget", () => {
 		const target = await loadReviewTarget({ exec, cwd: "/repo", prNumber: 12, env: {} });
 		expect(target.incrementalFrom).toBe("prev-sha");
 		expect(target.diff).toBe("INCREMENTAL DIFF");
+		// The full PR diff stays the validation source.
+		expect(target.validationDiff).toBe("FULL DIFF");
+		expect(target.previousReviewSummary).toBe("old");
 		expect(target.notes.join("\n")).toContain("Follow-up review");
 	});
 
@@ -173,6 +176,7 @@ describe("loadReviewTarget", () => {
 		const target = await loadReviewTarget({ exec, cwd: "/repo", prNumber: 12, env: {} });
 		expect(target.incrementalFrom).toBeUndefined();
 		expect(target.diff).toBe("FULL DIFF");
+		expect(target.validationDiff).toBeUndefined();
 	});
 
 	it("can be told to skip the incremental lookup", async () => {

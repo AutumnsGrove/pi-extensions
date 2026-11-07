@@ -113,17 +113,25 @@ export async function upsertStickyComment(
 	const timeout = options.timeout ?? 60_000;
 
 	let existingId: number | undefined;
-	// Newest first: the sticky comment is the most recent marker comment, and a
-	// long PR can have more than one page of comments.
-	const list = await exec("gh", ["api", `${base}?per_page=100&sort=created&direction=desc`], { cwd: options.cwd, timeout });
+	// `sort`/`direction` are not supported on the per-issue endpoint, so read
+	// every page with `--slurp` (an array of pages) and take the newest marker.
+	const list = await exec("gh", ["api", "--paginate", "--slurp", `${base}?per_page=100`], {
+		cwd: options.cwd,
+		timeout,
+	});
 	if ((list.code ?? 0) === 0) {
 		try {
 			const parsed = JSON.parse(list.stdout) as unknown;
+			const entries: { id?: unknown; body?: unknown }[] = [];
 			if (Array.isArray(parsed)) {
-				for (const entry of parsed as { id?: unknown; body?: unknown }[]) {
-					if (typeof entry?.body === "string" && entry.body.includes(STICKY_MARKER)) {
-						if (typeof entry.id === "number") existingId = entry.id;
-					}
+				for (const page of parsed) {
+					if (Array.isArray(page)) entries.push(...(page as { id?: unknown; body?: unknown }[]));
+					else if (page && typeof page === "object") entries.push(page as { id?: unknown; body?: unknown });
+				}
+			}
+			for (const entry of entries) {
+				if (typeof entry?.body === "string" && entry.body.includes(STICKY_MARKER)) {
+					if (typeof entry.id === "number") existingId = entry.id;
 				}
 			}
 		} catch {

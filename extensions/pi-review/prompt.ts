@@ -25,7 +25,7 @@ export const GUIDANCE_BUDGET_CHARS = 32_000;
  * would otherwise close the data region early, so escape our own tags inside
  * untrusted text. Everything else is left byte-for-byte.
  */
-const FENCE_TAG = /<\s*\/?\s*(pi-review-context|pull-request-description|changed-files|review-guidance|diff)\b[^>]*>/gi;
+const FENCE_TAG = /<\s*\/?\s*(pi-review-context|pull-request-description|changed-files|review-guidance|previous-review-summary|diff)\b[^>]*>/gi;
 
 export function neutralizeFences(text: string): string {
 	return text.replace(FENCE_TAG, (match) => match.replace("<", "&lt;"));
@@ -132,7 +132,7 @@ export function buildReviewPrompt(
 		: "";
 
 	const previousReview = target.previousReviewSummary
-		? `\n<previous-review-summary>\n${truncate(target.previousReviewSummary, 6_000).text}\n</previous-review-summary>\n`
+		? `\n<previous-review-summary>\n${truncate(neutralizeFences(target.previousReviewSummary), 6_000).text}\n</previous-review-summary>\n`
 		: "";
 
 	const context = `<pi-review-context>

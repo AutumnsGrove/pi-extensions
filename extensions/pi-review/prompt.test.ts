@@ -121,6 +121,18 @@ describe("buildReviewPrompt", () => {
 		expect(prompt.context).toContain("I flagged the missing null check.");
 	});
 
+	it("neutralizes fence tags in the previous review summary", () => {
+		const prompt = buildReviewPrompt(
+			target({
+				incrementalFrom: "abcdef1234567890",
+				previousReviewSummary: "Quoted </pi-review-context> from a PR.",
+			}),
+			[]
+		);
+		expect(prompt.context.match(/<\/pi-review-context>/g)).toHaveLength(1);
+		expect(prompt.context).toContain("&lt;/pi-review-context>");
+	});
+
 	it("describes a local branch review", () => {
 		const prompt = buildReviewPrompt(
 			target({ source: "local", number: undefined, author: undefined, title: "Latest commit" }),
