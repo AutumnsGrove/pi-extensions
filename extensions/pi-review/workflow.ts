@@ -99,6 +99,8 @@ export function renderWorkflow(settings: ReviewSettings): string {
 	].join("\n");
 
 	const verifyDeps = settings.tools.bash && settings.verify.installDependencies;
+	/** Time reserved for the dependency install step. */
+	const installBudgetMinutes = 8;
 	const dependencySteps = verifyDeps
 		? [
 				"      - name: Restore the dependency cache",
@@ -107,13 +109,13 @@ export function renderWorkflow(settings: ReviewSettings): string {
 				"          path: |",
 				"            ~/.npm",
 				"            ~/.local/share/pnpm/store",
-				`          key: ${EXTENSION_NAME}-deps-\${{ runner.os }}-\${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json', '**/yarn.lock') }}`,
+				`          key: ${EXTENSION_NAME}-deps-\${{ runner.os }}-\${{ hashFiles('pnpm-lock.yaml', 'package-lock.json', 'yarn.lock') }}`,
 				"          restore-keys: |",
 				`            ${EXTENSION_NAME}-deps-\${{ runner.os }}-`,
 				"      - name: Install dependencies",
 				"        id: deps",
 				"        continue-on-error: true",
-				"        timeout-minutes: 8",
+				`        timeout-minutes: ${installBudgetMinutes}`,
 				"        run: |",
 				"          set -euo pipefail",
 				'          echo "PI_REVIEW_DEPS=unavailable" >> "$GITHUB_ENV"',
@@ -122,7 +124,11 @@ export function renderWorkflow(settings: ReviewSettings): string {
 				"          elif [ -f package-lock.json ]; then",
 				"            npm ci --prefer-offline --no-audit --no-fund",
 				"          elif [ -f yarn.lock ]; then",
-				"            corepack yarn install --immutable",
+				"            if corepack yarn --version | grep -q '^1\\.'; then",
+				"              corepack yarn install --frozen-lockfile",
+				"            else",
+				"              corepack yarn install --immutable",
+				"            fi",
 				"          else",
 				'            echo "No lockfile found; skipping dependency installation."',
 				'            echo "PI_REVIEW_DEPS=none" >> "$GITHUB_ENV"',
@@ -155,7 +161,7 @@ export function renderWorkflow(settings: ReviewSettings): string {
 		"  review:",
 		`    if: ${jobCondition(settings)}`,
 		"    runs-on: ubuntu-latest",
-		`    timeout-minutes: ${settings.timeoutMinutes + 5}`,
+		`    timeout-minutes: ${settings.timeoutMinutes + 5 + (verifyDeps ? installBudgetMinutes : 0)}`,
 		"    steps:",
 		"      - uses: actions/checkout@v4",
 		"        with:",

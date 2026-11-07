@@ -122,6 +122,12 @@ describe("renderWorkflow", () => {
 		expect(install.run).toContain("PI_REVIEW_DEPS=installed");
 		expect(install.run).toContain("corepack pnpm install --frozen-lockfile");
 		expect(install.run).toContain("npm ci");
+		// Classic Yarn ignores --immutable; branch on the major version.
+		expect(install.run).toContain("corepack yarn --version");
+		expect(install.run).toContain("corepack yarn install --frozen-lockfile");
+		expect(install.run).toContain("corepack yarn install --immutable");
+		// The job budget covers the install step on top of the review.
+		expect(workflow.jobs.review["timeout-minutes"]).toBe(33);
 	});
 
 	it("skips the dependency steps when verify is off or bash is disabled", () => {

@@ -115,10 +115,18 @@ export async function upsertStickyComment(
 	let existingId: number | undefined;
 	// `sort`/`direction` are not supported on the per-issue endpoint, so read
 	// every page with `--slurp` (an array of pages) and take the newest marker.
-	const list = await exec("gh", ["api", "--paginate", "--slurp", `${base}?per_page=100`], {
+	let list = await exec("gh", ["api", "--paginate", "--slurp", `${base}?per_page=100`], {
 		cwd: options.cwd,
 		timeout,
 	});
+	if ((list.code ?? 0) !== 0) {
+		// `--slurp` needs gh >= 2.47; fall back to one page rather than piling up
+		// a duplicate comment without a trace.
+		console.error(
+			`pi-review: could not list comments with --slurp (${(list.stderr || "").trim() || "unknown error"}); trying a single page.`
+		);
+		list = await exec("gh", ["api", `${base}?per_page=100`], { cwd: options.cwd, timeout });
+	}
 	if ((list.code ?? 0) === 0) {
 		try {
 			const parsed = JSON.parse(list.stdout) as unknown;
@@ -134,8 +142,10 @@ export async function upsertStickyComment(
 					if (typeof entry.id === "number") existingId = entry.id;
 				}
 			}
-		} catch {
-			// A malformed list only means we cannot update; creating is safe.
+		} catch (error) {
+			console.error(
+				`pi-review: could not parse the comment list (${error instanceof Error ? error.message : String(error)}); a new sticky comment may be created.`
+			);
 		}
 	}
 

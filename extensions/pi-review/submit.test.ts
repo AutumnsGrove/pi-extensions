@@ -208,6 +208,27 @@ describe("upsertStickyComment", () => {
 		expect(exec.calls.some((args) => args[2] === "POST")).toBe(false);
 	});
 
+	it("falls back to one page when --slurp is unavailable", async () => {
+		const calls: string[][] = [];
+		const exec: Exec = async (_command, args) => {
+			calls.push(args);
+			if (args.includes("--slurp")) {
+				return { stdout: "", stderr: "unknown flag: --slurp", code: 1 };
+			}
+			if (args[1]?.includes("?per_page=100")) {
+				return {
+					stdout: JSON.stringify([{ id: 7, body: `${STICKY_MARKER}\nold` }]),
+					stderr: "",
+					code: 0,
+				};
+			}
+			return { stdout: JSON.stringify({ html_url: "https://example.test/comment" }), stderr: "", code: 0 };
+		};
+		await upsertStickyComment(exec, target, review, undefined, { cwd: "/repo" });
+		const patch = calls.find((args) => args[1] === "--method" && args[2] === "PATCH")!;
+		expect(patch[3]).toBe("repos/o/r/issues/comments/7");
+	});
+
 	it("throws when the write fails", async () => {
 		await expect(
 			upsertStickyComment(fakeExec([[]], { failWrite: true }), target, review, undefined, { cwd: "/repo" })
