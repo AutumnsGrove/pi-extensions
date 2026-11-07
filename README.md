@@ -226,6 +226,7 @@ pnpm cost report                  # print the ledger without changing anything
 <!-- COST:START -->
 | Extension | Cost | Runs |
 | --- | --- | --- |
+| pi-review | $1.335 | 1 |
 | semantic-search | $0.590 | 3 |
 | provider-pinning | $0.417 | 1 |
 | hooks + permissions + sounds | $0.379 | 1 |
@@ -241,7 +242,7 @@ pnpm cost report                  # print the ledger without changing anything
 | cost-tracker | $0.099 | 2 |
 | git-status | $0.078 | 1 |
 | cooking | $0.068 | 1 |
-| **Total** | **$3.466** | **18** |
+| **Total** | **$4.801** | **19** |
 <!-- COST:END -->
 
 ## License
