@@ -51,6 +51,19 @@ polish such as incremental re-reviews and sticky comments (milestone 6).
 /pi-review help
 ```
 
+## App avatar
+
+GitHub gives a new App the owner's avatar by default, and the installer cannot
+set a different one: GitHub only accepts a logo upload from the App settings UI.
+
+To use the pi icon, open the App's settings (**Edit** → **Display information**)
+and upload [`logo.png`](./logo.png), then **Set new avatar**. The image is the
+official pi icon (512×512 PNG, from `earendil-works/pi`); GitHub recommends
+200×200 and accepts PNG, JPG, or GIF under 1 MB.
+
+GitHub caches avatars, so comments posted before the change can keep the old
+one.
+
 ## Install
 
 `/pi-review install` sets up the App identity in four steps:
