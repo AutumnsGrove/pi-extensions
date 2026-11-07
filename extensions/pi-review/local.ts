@@ -120,9 +120,10 @@ export function reviewChildEnv(options: {
 }
 
 /** Tools the review agent gets. `bash` is opt-in because it can read the env. */
-export function reviewTools(includeBash: boolean): string[] {
+export function reviewTools(includeBash: boolean, resolveThreads = false): string[] {
 	const tools = ["read", "grep", "find", "ls", "submit_review"];
 	if (includeBash) tools.splice(4, 0, "bash");
+	if (resolveThreads) tools.push("resolve_review_threads");
 	return tools;
 }
 

@@ -138,6 +138,27 @@ The review is printed rather than posted unless `--post` is given. `bash` is
 opt-in because a shell on the runner can read the job's environment, including
 the review key.
 
+## Resolving stale threads
+
+On follow-ups, the reviewer can close the threads it already opened once it
+verifies the new changes fixed them. Opt in per repository:
+
+```json
+{ "review": { "resolveStaleThreads": true } }
+```
+
+When enabled, the runner fetches the PR's unresolved review threads that were
+started by a bot and lists them (id, path:line, body) in the review context. If
+the diff verifies one is fixed, the agent calls `resolve_review_threads` with
+the id and a one-line reason. The tool only accepts ids from that fetched set,
+so it cannot resolve a human's thread or invent one, and the prompt tells it to
+leave anything it cannot verify open. Threads that are already resolved or
+written by people are never offered.
+
+Resolving is a mutation, so it only happens on a real run: `/pi-review run`
+needs `--post`, and the runner refuses to register the tool when
+`PI_REVIEW_DRY_RUN=1`, even if the setting is on.
+
 ## Review strictness
 
 The default is **significant issues only**: the reviewer reports things that

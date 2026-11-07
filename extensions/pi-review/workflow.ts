@@ -25,6 +25,9 @@ function toolList(settings: ReviewSettings): string {
 	const tools = ["read", "grep", "find", "ls"];
 	if (settings.tools.bash) tools.push("bash");
 	tools.push("submit_review");
+	// `--tools` is an allowlist: an extension tool not named here is not
+	// declared to the model, even though the runner registered it.
+	if (settings.review.resolveStaleThreads) tools.push("resolve_review_threads");
 	return tools.join(",");
 }
 
@@ -143,7 +146,8 @@ export function renderWorkflow(settings: ReviewSettings): string {
 		"          PI_REVIEW_OUTPUT: ${{ runner.temp }}/pi-review/review.json",
 		`          PI_REVIEW_MAX_COMMENTS: "${settings.review.maxInlineComments}"`,
 		`          PI_REVIEW_REQUEST_CHANGES: "${settings.review.event === "REQUEST_CHANGES" ? "1" : "0"}"`,
-		`          PI_REVIEW_STRICTNESS: "${settings.review.strictness}"`
+		`          PI_REVIEW_STRICTNESS: "${settings.review.strictness}"`,
+		`          PI_REVIEW_RESOLVE_THREADS: "${settings.review.resolveStaleThreads ? "1" : "0"}"`
 	);
 
 	const tokenStep =

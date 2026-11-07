@@ -161,6 +161,16 @@ async function runCommand(
 	const model = options.model ?? modelLabel(ctx);
 	const thinking = options.thinking ?? ctx.thinkingLevel;
 
+	// The local dry run mirrors the committed settings when they exist.
+	let resolveThreads = false;
+	try {
+		const raw = await readFile(join(ctx.cwd, SETTINGS_PATH), "utf8");
+		// Never resolve threads from a dry run; only `--post` may mutate the PR.
+		resolveThreads = options.post && parseSettings(JSON.parse(raw)).review.resolveStaleThreads;
+	} catch {
+		resolveThreads = false;
+	}
+
 	ctx.ui.setStatus(STATUS_KEY, "reviewing…");
 	ctx.ui.setWorkingMessage("pi-review: reviewing the change…");
 	try {
@@ -170,9 +180,12 @@ async function runCommand(
 			prompt: reviewPromptFor({ number: pr, repo, baseRef }),
 			model,
 			thinking,
-			tools: reviewTools(options.bash),
+			tools: reviewTools(options.bash, resolveThreads),
 			dryRun: !options.post,
-			env: reviewChildEnv({ prNumber: pr, baseRef }),
+			env: {
+				...reviewChildEnv({ prNumber: pr, baseRef }),
+				...(resolveThreads ? { PI_REVIEW_RESOLVE_THREADS: "1" } : {}),
+			},
 			onProgress: (line) => ctx.ui.setStatus(STATUS_KEY, `reviewing · ${line}`),
 		});
 		await showRunResult(

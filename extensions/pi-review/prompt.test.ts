@@ -154,6 +154,22 @@ describe("buildReviewPrompt", () => {
 		expect(unknown.system).not.toContain("Dependencies were installed");
 	});
 
+	it("lists open review threads and asks the model to resolve only verified ones", () => {
+		const prompt = buildReviewPrompt(target(), [], {
+			openThreads: [
+				{ id: "T1", path: "src/app.ts", line: 42, body: "The null check is missing." },
+				{ id: "T2", path: "lib/x.ts", body: "Dead code." },
+			],
+		});
+		expect(prompt.context).toContain("<open-review-threads>");
+		expect(prompt.context).toContain("id: `T1` · `src/app.ts:42`");
+		expect(prompt.context).toContain("The null check is missing.");
+		expect(prompt.system).toContain("resolve_review_threads");
+		expect(prompt.system).toContain("Only resolve what you can verify");
+		const none = buildReviewPrompt(target(), [], { openThreads: [] });
+		expect(none.context).not.toContain("<open-review-threads>");
+	});
+
 	it("describes a local branch review", () => {
 		const prompt = buildReviewPrompt(
 			target({ source: "local", number: undefined, author: undefined, title: "Latest commit" }),

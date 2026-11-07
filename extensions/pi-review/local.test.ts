@@ -79,6 +79,26 @@ describe("reviewTools", () => {
 		expect(reviewTools(false)).toEqual(["read", "grep", "find", "ls", "submit_review"]);
 		expect(reviewTools(true)).toEqual(["read", "grep", "find", "ls", "bash", "submit_review"]);
 	});
+
+	it("includes the thread tool only when enabled", () => {
+		expect(reviewTools(false, true)).toEqual([
+			"read",
+			"grep",
+			"find",
+			"ls",
+			"submit_review",
+			"resolve_review_threads",
+		]);
+		expect(reviewTools(true, true)).toEqual([
+			"read",
+			"grep",
+			"find",
+			"ls",
+			"bash",
+			"submit_review",
+			"resolve_review_threads",
+		]);
+	});
 });
 
 describe("buildPiArgs", () => {

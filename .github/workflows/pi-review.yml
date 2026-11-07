@@ -99,7 +99,7 @@ jobs:
           set -euo pipefail
           git init "$RUNNER_TEMP/pi-review-src"
           git -C "$RUNNER_TEMP/pi-review-src" remote add origin https://github.com/AutumnsGrove/pi-extensions.git
-          git -C "$RUNNER_TEMP/pi-review-src" fetch --depth 1 origin '1f7978c71ca9459def45f4a15bd7ae02e0699e82'
+          git -C "$RUNNER_TEMP/pi-review-src" fetch --depth 1 origin '00b7841e75293703dd7f548d679077568ba6dee8'
           git -C "$RUNNER_TEMP/pi-review-src" checkout --detach FETCH_HEAD
       - name: Mint the App token
         id: app-token
@@ -118,6 +118,7 @@ jobs:
           PI_REVIEW_MAX_COMMENTS: "25"
           PI_REVIEW_REQUEST_CHANGES: "0"
           PI_REVIEW_STRICTNESS: "significant"
+          PI_REVIEW_RESOLVE_THREADS: "1"
         run: |
           set -euo pipefail
           mkdir -p "$(dirname "$PI_REVIEW_OUTPUT")"
@@ -134,7 +135,7 @@ jobs:
             -np \
             --no-themes \
             --no-mcp \
-            --tools read,grep,find,ls,bash,submit_review \
+            --tools read,grep,find,ls,bash,submit_review,resolve_review_threads \
             --provider opencode-go \
             --model deepseek-v4.1-flash \
             --thinking medium \

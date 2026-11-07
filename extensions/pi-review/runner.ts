@@ -16,6 +16,12 @@ import { type ParsedDiff, parseDiff } from "./diff.ts";
 import { buildReviewPrompt } from "./prompt.ts";
 import type { ValidatedReview } from "./review.ts";
 import { createSubmitReviewTool, postReview, upsertStickyComment } from "./submit.ts";
+import {
+	type ReviewThread,
+	createResolveThreadsTool,
+	fetchBotThreads,
+	resolveThreads,
+} from "./github/threads.ts";
 
 export const REVIEW_ENV = "PI_REVIEW";
 
@@ -33,6 +39,7 @@ interface LoadedReview {
 	target: Awaited<ReturnType<typeof loadReviewTarget>>;
 	guidance: Awaited<ReturnType<typeof loadGuidance>>;
 	diff: ParsedDiff;
+	threads: ReviewThread[];
 	error?: string;
 }
 
@@ -49,6 +56,9 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 	const dryRun = env.PI_REVIEW_DRY_RUN === "1";
 	const outputPath = env.PI_REVIEW_OUTPUT;
 	const requestChanges = env.PI_REVIEW_REQUEST_CHANGES === "1";
+	// Resolving threads is a mutation: never do it in a dry run, even if the
+	// setting is on and the caller forgot to clear the env flag.
+	const resolveStaleThreads = env.PI_REVIEW_RESOLVE_THREADS === "1" && !dryRun;
 	const maxCommentsRaw = Number(env.PI_REVIEW_MAX_COMMENTS);
 	const maxComments = Number.isInteger(maxCommentsRaw) && maxCommentsRaw > 0 ? maxCommentsRaw : undefined;
 
@@ -69,10 +79,25 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 					baseRef: env.PI_REVIEW_BASE_REF,
 				});
 				const guidance = await loadGuidance(exec, cwd, target.baseSha);
+				let threads: ReviewThread[] = [];
+				if (resolveStaleThreads && target.repo && target.number) {
+					try {
+						threads = await fetchBotThreads(exec, cwd, target.repo, target.number);
+					} catch (error) {
+						console.error(
+							`pi-review: could not read review threads: ${error instanceof Error ? error.message : String(error)}`
+						);
+					}
+				}
 				// Positions must validate against the full PR diff: an incremental
 				// diff is a tree comparison and can contain content GitHub does not
 				// consider part of the PR.
-				return { target, guidance, diff: parseDiff(target.validationDiff ?? target.diff) };
+				return {
+					target,
+					guidance,
+					diff: parseDiff(target.validationDiff ?? target.diff),
+					threads,
+				};
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return {
@@ -86,6 +111,7 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 					},
 					guidance: [],
 					diff: parseDiff(""),
+					threads: [],
 					error: message,
 				};
 			}
@@ -114,6 +140,15 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 				}
 				return result;
 			};
+
+	if (resolveStaleThreads) {
+		pi.registerTool(
+			createResolveThreadsTool({
+				getThreads: async () => (await load()).threads,
+				resolve: (ids) => resolveThreads(exec, cwd, ids),
+			})
+		);
+	}
 
 	pi.registerTool(
 		createSubmitReviewTool({
@@ -166,6 +201,7 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 		const prompt = buildReviewPrompt(state.target, state.guidance, {
 			...(dependencies ? { dependencies } : {}),
 			strictness,
+			...(resolveStaleThreads && state.threads.length > 0 ? { openThreads: state.threads } : {}),
 		});
 		return {
 			systemPrompt: `${event.systemPrompt}\n\n${prompt.system}`,
