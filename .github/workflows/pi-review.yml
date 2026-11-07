@@ -102,7 +102,7 @@ jobs:
           set -euo pipefail
           git init "$RUNNER_TEMP/pi-review-src"
           git -C "$RUNNER_TEMP/pi-review-src" remote add origin https://github.com/AutumnsGrove/pi-extensions.git
-          git -C "$RUNNER_TEMP/pi-review-src" fetch --depth 1 origin '302db74aa11baa19c209199b337947c0fa9444fd'
+          git -C "$RUNNER_TEMP/pi-review-src" fetch --depth 1 origin 'c669c210524eb3a6881fc285cc9304110d4cb940'
           git -C "$RUNNER_TEMP/pi-review-src" checkout --detach FETCH_HEAD
       - name: Require a same-repo pull request
         if: github.event_name == 'issue_comment'
@@ -134,7 +134,7 @@ jobs:
           PI_REVIEW_MAX_COMMENTS: "25"
           PI_REVIEW_REQUEST_CHANGES: "0"
           PI_REVIEW_STRICTNESS: "significant"
-          PI_REVIEW_RESOLVE_THREADS: "1"
+          PI_REVIEW_RESOLVE_THREADS: "0"
         run: |
           set -euo pipefail
           mkdir -p "$(dirname "$PI_REVIEW_OUTPUT")"
@@ -151,7 +151,7 @@ jobs:
             -np \
             --no-themes \
             --no-mcp \
-            --tools read,grep,find,ls,bash,submit_review,resolve_review_threads \
+            --tools read,grep,find,ls,bash,submit_review \
             --provider opencode-go \
             --model deepseek-v4.1-flash \
             --thinking medium \

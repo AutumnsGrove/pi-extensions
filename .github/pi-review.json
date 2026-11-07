@@ -25,9 +25,9 @@
   },
   "review": {
     "event": "COMMENT",
+    "maxInlineComments": 25,
     "strictness": "significant",
-    "resolveStaleThreads": true,
-    "maxInlineComments": 25
+    "resolveStaleThreads": false
   },
   "paths": {
     "include": [],
@@ -35,7 +35,7 @@
   },
   "pi": {
     "version": "1.5.0",
-    "packageRef": "302db74aa11baa19c209199b337947c0fa9444fd"
+    "packageRef": "c669c210524eb3a6881fc285cc9304110d4cb940"
   },
   "timeoutMinutes": 20
 }
