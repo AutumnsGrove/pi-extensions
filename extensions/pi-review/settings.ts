@@ -47,6 +47,8 @@ export interface ReviewSettings {
 		maxInlineComments: number;
 		/** How much to report; `significant` is the quiet default. */
 		strictness: ReviewStrictness;
+		/** Let a follow-up resolve its own threads when it verifies they are fixed. */
+		resolveStaleThreads: boolean;
 	};
 	paths: { include: string[]; exclude: string[] };
 	pi: { version: string; packageRef: string };
@@ -87,6 +89,7 @@ export function defaultSettings(overrides: SettingsDefaults = {}): ReviewSetting
 			event: "COMMENT",
 			maxInlineComments: DEFAULT_MAX_INLINE_COMMENTS,
 			strictness: "significant",
+			resolveStaleThreads: false,
 		},
 		paths: { include: [], exclude: [] },
 		pi: {
@@ -176,6 +179,10 @@ export function parseSettings(value: unknown, defaults = defaultSettings()): Rev
 				STRICTNESS_LEVELS,
 				defaults.review.strictness,
 				"review strictness"
+			),
+			resolveStaleThreads: booleanValue(
+				review.resolveStaleThreads,
+				defaults.review.resolveStaleThreads
 			),
 			maxInlineComments:
 				Number.isFinite(maxInline)

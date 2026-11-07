@@ -107,6 +107,7 @@ describe("renderWorkflow", () => {
 			PI_REVIEW_MAX_COMMENTS: "40",
 			PI_REVIEW_REQUEST_CHANGES: "1",
 			PI_REVIEW_STRICTNESS: "significant",
+			PI_REVIEW_RESOLVE_THREADS: "0",
 		});
 	});
 
@@ -171,6 +172,12 @@ describe("renderWorkflow", () => {
 		expect(noBash.jobs.review.steps.map((step) => step.name ?? step.uses)).not.toContain(
 			"Install dependencies"
 		);
+	});
+
+	it("passes resolveStaleThreads", () => {
+		const workflow = render({ review: { ...settings().review, resolveStaleThreads: true } });
+		const review = workflow.jobs.review.steps.find((step) => step.name === "Review")!;
+		expect(review.env?.PI_REVIEW_RESOLVE_THREADS).toBe("1");
 	});
 
 	it("passes the configured strictness", () => {

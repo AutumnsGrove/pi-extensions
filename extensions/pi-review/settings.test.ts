@@ -53,6 +53,11 @@ describe("parseSettings", () => {
 		expect(() => parseSettings({ review: { strictness: "picky" } })).toThrow("Invalid review strictness");
 	});
 
+	it("parses resolveStaleThreads", () => {
+		expect(parseSettings({ review: { resolveStaleThreads: true } }).review.resolveStaleThreads).toBe(true);
+		expect(parseSettings({}).review.resolveStaleThreads).toBe(false);
+	});
+
 	it("parses the verify setting and its command override", () => {
 		expect(parseSettings({ verify: { installDependencies: true } }).verify.installDependencies).toBe(true);
 		expect(parseSettings({ verify: { installDependencies: "yes" } }).verify.installDependencies).toBe(false);

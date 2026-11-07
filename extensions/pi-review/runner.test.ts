@@ -202,6 +202,69 @@ describe("registerReviewRunner", () => {
 		expect(result.details.review?.dropped).toHaveLength(1);
 	});
 
+	it("offers open bot threads and the resolve tool when enabled", async () => {
+		const threadsPayload = {
+			data: {
+				repository: {
+					pullRequest: {
+						reviewThreads: {
+							nodes: [
+								{
+									id: "T1",
+									isResolved: false,
+									isOutdated: false,
+									path: "src/app.ts",
+									line: 2,
+									comments: {
+										nodes: [
+											{
+												body: "The null check is missing.",
+												author: { login: "pi-review-x[bot]", __typename: "Bot" },
+											},
+										],
+									},
+								},
+							],
+						},
+					},
+				},
+			},
+		};
+		const exec: Exec = async (command, args) => {
+			if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
+				return { stdout: JSON.stringify(threadsPayload), stderr: "", code: 0 };
+			}
+			const key = `${command} ${args.join(" ")}`;
+			const table: Record<string, { stdout?: string; code?: number }> = {
+				"git remote get-url origin": { stdout: "git@github.com:owner/repo.git" },
+				"gh pr view 5 --json number,title,body,author,baseRefName,baseRefOid,headRefOid": {
+					stdout: JSON.stringify(view),
+				},
+				"gh pr diff 5": { stdout: diff },
+			};
+			const hit = table[key] ?? { code: 1 };
+			return { stdout: hit.stdout ?? "", stderr: "", code: hit.code ?? 0 };
+		};
+		const { pi, tools, events } = fakePi(exec);
+		registerReviewRunner(pi, {
+			env: { PI_REVIEW: "1", PR_NUMBER: "5", PI_REVIEW_RESOLVE_THREADS: "1" },
+		});
+		expect(tools.map((tool) => tool.name)).toContain("resolve_review_threads");
+		const result = (await events.get("before_agent_start")!(
+			{ messageType: "user", prompt: "x", systemPrompt: "BASE" },
+			{ cwd: "/repo" }
+		)) as { systemPrompt: string; message: { content: string } };
+		expect(result.message.content).toContain("<open-review-threads>");
+		expect(result.message.content).toContain("id: `T1`");
+		expect(result.systemPrompt).toContain("resolve_review_threads");
+	});
+
+	it("does not register the resolve tool when disabled", () => {
+		const { pi, tools } = fakePi(fakeExec());
+		registerReviewRunner(pi, { env: { PI_REVIEW: "1", PR_NUMBER: "5" } });
+		expect(tools.map((tool) => tool.name)).not.toContain("resolve_review_threads");
+	});
+
 	it("passes the configured strictness into the prompt", async () => {
 		const { pi, events } = fakePi(fakeExec());
 		registerReviewRunner(pi, { env: { PI_REVIEW: "1", PR_NUMBER: "5", PI_REVIEW_STRICTNESS: "thorough" } });

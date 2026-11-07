@@ -25,7 +25,8 @@
   "review": {
     "event": "COMMENT",
     "strictness": "significant",
-    "maxInlineComments": 25
+    "maxInlineComments": 25,
+    "resolveStaleThreads": true
   },
   "paths": {
     "include": [],

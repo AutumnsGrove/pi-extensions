@@ -610,3 +610,16 @@ Decisions made while building the runner, where it differs from the design above
   target). It is a committed setting, reviewed like any other.
 - The cache covers the package stores for all supported ecosystems and is keyed
   by their lockfiles.
+
+## Implementation notes (milestone 6, part 5): stale-thread resolution
+
+- Opt-in via `review.resolveStaleThreads` (workflow env
+  `PI_REVIEW_RESOLVE_THREADS`). On a review, the runner reads the PR's review
+  threads over GraphQL and keeps only unresolved threads whose first comment is
+  from a bot. They are listed in the prompt with their ids; a
+  `resolve_review_threads` tool accepts ids **only from that fetched set** and
+  resolves them one by one, reporting per-id failures. Human threads and ids the
+  reviewer never saw are rejected, so the model cannot resolve anything it was
+  not shown.
+- The prompt is explicit: resolve only what the diff verifies, and leave the
+  rest. A failed mutation is reported back, not thrown.
