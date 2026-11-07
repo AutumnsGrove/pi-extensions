@@ -85,6 +85,7 @@ import {
 	type ReviewSettings,
 	type ThinkingLevel,
 	defaultSettings,
+	parseSettings,
 	renderSettings,
 } from "./settings.ts";
 import { renderWorkflow } from "./workflow.ts";
@@ -759,18 +760,25 @@ async function collectReviewSettings(
 	options: InstallOptions,
 	identity: IdentityMode,
 	piVersion: string,
-	packageRef: string
+	packageRef: string,
+	base?: ReviewSettings
 ): Promise<ReviewSettings | undefined> {
 	const { ui } = options;
 	const defaults = options.defaults ?? {};
-	const settings = defaultSettings({
-		identity,
-		...(defaults.provider ? { provider: defaults.provider } : {}),
-		...(defaults.model ? { model: defaults.model } : {}),
-		...(defaults.thinking ? { thinking: defaults.thinking } : {}),
-		piVersion,
-		packageRef,
-	});
+	// A re-install keeps everything the wizard does not ask about (paths,
+	// trigger types, timeout, stale-thread resolution, …).
+	const settings: ReviewSettings = base
+		? structuredClone(base)
+		: defaultSettings({
+				identity,
+				...(defaults.provider ? { provider: defaults.provider } : {}),
+				...(defaults.model ? { model: defaults.model } : {}),
+				...(defaults.thinking ? { thinking: defaults.thinking } : {}),
+				piVersion,
+				packageRef,
+			});
+	settings.identity = identity;
+	settings.pi = { version: piVersion, packageRef };
 
 	if (!settings.model) {
 		const model = await ui.input("Model id for reviews (provider/model)", "provider/model");
@@ -925,11 +933,18 @@ export async function installPiReview(options: InstallOptions): Promise<InstallO
 
 	const piVersion = await detectPiVersion(exec, cwd);
 	const packageRef = await detectPackageRef(exec, cwd, env);
+	let baseSettings: ReviewSettings | undefined;
+	try {
+		baseSettings = parseSettings(JSON.parse(await readFile(join(cwd, SETTINGS_PATH), "utf8")));
+	} catch {
+		baseSettings = undefined;
+	}
 	const settings = await collectReviewSettings(
 		options,
 		identity.identity,
 		piVersion,
-		packageRef
+		packageRef,
+		baseSettings
 	);
 	if (!settings) {
 		return {

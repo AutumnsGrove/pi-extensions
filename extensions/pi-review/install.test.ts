@@ -1,6 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync } from "node:fs";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -219,6 +219,7 @@ interface HarnessOptions {
 	keyDir?: string;
 	saveAppKeyLocally?: boolean;
 	keySearchDirs?: string[];
+	cwd?: string;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -236,7 +237,7 @@ function harness(options: HarnessOptions = {}) {
 		ui,
 		run: () =>
 			installPiReview({
-				cwd,
+				cwd: options.cwd ?? cwd,
 				env,
 				ui,
 				defaults: options.defaults ?? defaults,
@@ -667,6 +668,54 @@ describe("installPiReview cached App", () => {
 			const savedKey = await readFile(cache.owner.keyPath, "utf8");
 			expect(savedKey).toBe(pem);
 			expect((await stat(cache.owner.keyPath)).mode & 0o777).toBe(0o600);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("installPiReview re-install", () => {
+	it("keeps settings the wizard does not ask about", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "pi-review-reinstall-"));
+		await mkdir(join(dir, ".github"), { recursive: true });
+		const existing = {
+			version: 1,
+			identity: "app",
+			provider: "opencode-go",
+			providerEnv: "OPENCODE_API_KEY",
+			model: "existing-model",
+			thinking: "high",
+			tools: { bash: true },
+			verify: { installDependencies: true, installCommand: "" },
+			triggers: { types: ["opened"], skipDrafts: false, skipBots: true, mention: false },
+			review: {
+				event: "REQUEST_CHANGES",
+				maxInlineComments: 10,
+				strictness: "thorough",
+				resolveStaleThreads: true,
+			},
+			paths: { include: ["src/**"], exclude: ["**/*.md"] },
+			pi: { version: "1.5.0", packageRef: "old" },
+			timeoutMinutes: 45,
+		};
+		await writeFile(join(dir, ".github", "pi-review.json"), JSON.stringify(existing), "utf8");
+		try {
+			const writer = fakeBranchWriter();
+			const ui = scriptedUi({
+				confirm: [true, true],
+				select: [REUSE, "medium", "Read-only", "Comment only"],
+			});
+			const runner = fakeRunner({ secrets: [APP_ID_SECRET, APP_KEY_SECRET], slug: "pi-review-x" });
+			const outcome = await harness({ runner, ui, writeBranch: writer, cwd: dir }).run();
+			expect(outcome.status).toBe("existing");
+			const settings = JSON.parse(writer.calls[0]!.files[0]!.content);
+			expect(settings).toMatchObject({
+				model: "existing-model",
+				paths: { include: ["src/**"], exclude: ["**/*.md"] },
+				timeoutMinutes: 45,
+				triggers: { skipBots: true, mention: false },
+				review: { strictness: "thorough", resolveStaleThreads: true, maxInlineComments: 10 },
+			});
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}
