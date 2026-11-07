@@ -5,17 +5,24 @@
 
 import { spawn } from "node:child_process";
 
+/** Spawn detached; a missing opener (no `xdg-open` on a headless box) emits an async `error` that would otherwise crash the host process. */
+function launch(command: string, args: string[]): void {
+	const child = spawn(command, args, { detached: true, stdio: "ignore" });
+	child.on("error", () => {});
+	child.unref();
+}
+
 export function openExternalUrl(url: string): boolean {
 	try {
 		if (process.platform === "darwin") {
-			spawn("open", [url], { detached: true, stdio: "ignore" }).unref();
+			launch("open", [url]);
 			return true;
 		}
 		if (process.platform === "win32") {
-			spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" }).unref();
+			launch("cmd", ["/c", "start", "", url]);
 			return true;
 		}
-		spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref();
+		launch("xdg-open", [url]);
 		return true;
 	} catch {
 		return false;

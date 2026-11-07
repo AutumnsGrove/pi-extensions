@@ -114,7 +114,7 @@ export interface SubmitReviewDetails {
 
 async function writeArtifact(
 	path: string | undefined,
-	details: SubmitReviewDetails & { markdown?: string }
+	details: SubmitReviewDetails & { markdown?: string; incomplete?: boolean }
 ): Promise<void> {
 	if (!path) return;
 	await writeFile(path, JSON.stringify(details, null, 2), "utf8");
@@ -236,7 +236,10 @@ export function createSubmitReviewTool(deps: SubmitReviewDeps) {
 				// Keep the validated review: a failed post is exactly when the
 				// findings are most useful to the step summary.
 				const details: SubmitReviewDetails = { dryRun: false, review, error: message };
-				await writeArtifact(deps.outputPath, { ...details, markdown });
+				// `incomplete` makes the workflow fail (and say so on the PR) when the
+				// agent gives up after a rejected post, instead of a green run with no
+				// review. A later successful submission overwrites this artifact.
+				await writeArtifact(deps.outputPath, { ...details, incomplete: true, markdown });
 				return {
 					content: [
 						{

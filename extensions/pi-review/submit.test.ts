@@ -105,6 +105,8 @@ describe("submit_review tool", () => {
 		// The validated review survives a failed post, for the step summary.
 		const artifact = JSON.parse(await readFile(outputPath, "utf8"));
 		expect(artifact.error).toContain("422 Unprocessable Entity");
+		// The workflow fails the job on this marker, so an abandoned post is not green.
+		expect(artifact.incomplete).toBe(true);
 		expect(artifact.review.summary).toBe("Looks reasonable.");
 	});
 
