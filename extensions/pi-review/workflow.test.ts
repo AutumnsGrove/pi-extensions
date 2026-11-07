@@ -130,6 +130,11 @@ describe("renderWorkflow", () => {
 		expect(install.run).toContain("corepack yarn --version");
 		expect(install.run).toContain("corepack yarn install --frozen-lockfile");
 		expect(install.run).toContain("corepack yarn install --immutable");
+		// Node managers are exclusive; a second Node lockfile must not run a
+		// second installer (npm ci would delete what pnpm/yarn installed).
+		expect(install.run).toContain("elif [ -f package-lock.json ]");
+		expect(install.run).toContain("elif [ -f yarn.lock ]");
+		expect(install.run).toContain("elif [ -f bun.lock ]");
 		// Non-Node ecosystems are detected too.
 		expect(install.run).toContain("uv sync --frozen");
 		expect(install.run).toContain("python3 -m pip install -r requirements.txt");
