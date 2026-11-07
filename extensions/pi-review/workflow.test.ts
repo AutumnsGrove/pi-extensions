@@ -174,10 +174,15 @@ describe("renderWorkflow", () => {
 		);
 	});
 
-	it("passes resolveStaleThreads", () => {
+	it("passes resolveStaleThreads and puts the tool in the allowlist", () => {
 		const workflow = render({ review: { ...settings().review, resolveStaleThreads: true } });
 		const review = workflow.jobs.review.steps.find((step) => step.name === "Review")!;
 		expect(review.env?.PI_REVIEW_RESOLVE_THREADS).toBe("1");
+		expect(review.run).toContain("--tools read,grep,find,ls,submit_review,resolve_review_threads");
+		const off = render();
+		const offReview = off.jobs.review.steps.find((step) => step.name === "Review")!;
+		expect(offReview.run).toContain("--tools read,grep,find,ls,submit_review");
+		expect(offReview.run).not.toContain("resolve_review_threads");
 	});
 
 	it("passes the configured strictness", () => {

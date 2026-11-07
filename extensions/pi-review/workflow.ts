@@ -25,6 +25,9 @@ function toolList(settings: ReviewSettings): string {
 	const tools = ["read", "grep", "find", "ls"];
 	if (settings.tools.bash) tools.push("bash");
 	tools.push("submit_review");
+	// `--tools` is an allowlist: an extension tool not named here is not
+	// declared to the model, even though the runner registered it.
+	if (settings.review.resolveStaleThreads) tools.push("resolve_review_threads");
 	return tools.join(",");
 }
 
