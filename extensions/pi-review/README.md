@@ -268,7 +268,15 @@ Create the App once; the wizard then remembers it on this machine:
   on the repository (install it with **All repositories**), it does not even
   open the browser.
 - if the key file moved or was deleted, it warns and falls back to the normal
-  choices, including **Use an existing Pi GitHub App** (App ID + `.pem` path).
+  choices, including **Use an existing Pi GitHub App**. That asks for the App ID,
+  then shows the `.pem` files it can find (Downloads, Desktop, home) so you pick
+  one instead of typing a path; **Paste the key…** accepts the file contents in
+  the editor, and a manual path is still available (drag the file into the
+  terminal to paste it).
+
+If you never downloaded a key: open the App settings → **Private keys** →
+**Generate a private key**; the browser saves a `.pem` in Downloads, which the
+picker will list.
 
 Personal accounts have no shared secrets, so each repository still receives a
 copy of the key as a repo secret; the local copy makes that automatic.

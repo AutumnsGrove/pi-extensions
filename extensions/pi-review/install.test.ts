@@ -46,6 +46,7 @@ function scriptedUi(script: {
 	confirm?: Answer<boolean>[];
 	select?: Answer<string | undefined>[];
 	input?: Answer<string | undefined>[];
+	editor?: Answer<string | undefined>[];
 }): WizardUI & {
 	notifications: { message: string; type?: string }[];
 	prompts: string[];
@@ -54,6 +55,7 @@ function scriptedUi(script: {
 	const confirms = [...(script.confirm ?? [])];
 	const selectQueue = [...(script.select ?? [])];
 	const inputs = [...(script.input ?? [])];
+	const editors = [...(script.editor ?? [])];
 	const notifications: { message: string; type?: string }[] = [];
 	const prompts: string[] = [];
 	const selects: { title: string; options: string[] }[] = [];
@@ -78,6 +80,10 @@ function scriptedUi(script: {
 		async input(title) {
 			prompts.push(title);
 			return take(inputs, "input");
+		},
+		async editor(title) {
+			prompts.push(title);
+			return take(editors, "editor");
 		},
 		notify(message, type) {
 			notifications.push({ message, ...(type ? { type } : {}) });
@@ -212,6 +218,7 @@ interface HarnessOptions {
 	cachePath?: string;
 	keyDir?: string;
 	saveAppKeyLocally?: boolean;
+	keySearchDirs?: string[];
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -246,6 +253,7 @@ function harness(options: HarnessOptions = {}) {
 					saveAppKeyLocally: options.saveAppKeyLocally ?? false,
 					cachePath: options.cachePath ?? safe.cachePath,
 					keyDir: options.keyDir ?? safe.keyDir,
+					keySearchDirs: options.keySearchDirs ?? [],
 					writeBranch: writer.writeBranch,
 					...(options.authorizeOpenCode ? { authorizeOpenCode: options.authorizeOpenCode as never } : {}),
 					...(options.authorizeOpenRouter
@@ -498,7 +506,7 @@ describe("installPiReview reuse path", () => {
 			const writer = fakeBranchWriter();
 			const ui = scriptedUi({
 				confirm: [true, true],
-				select: [EXISTING, "medium", "Read-only", "Comment only"],
+				select: [EXISTING, "Enter a file path…", "medium", "Read-only", "Comment only"],
 				input: ["1234", keyPath],
 			});
 			const outcome = await harness({ runner, ui, writeBranch: writer }).run();
@@ -516,14 +524,38 @@ describe("installPiReview reuse path", () => {
 		}
 	});
 
-	it("rejects an existing-App key file that does not exist", async () => {
+	it("accepts a pasted key and caches it", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "pi-review-paste-"));
+		const cachePath = join(dir, "pi-review.json");
+		const keyDir = join(dir, "keys");
+		try {
+			const runner = fakeRunner({ secrets: [] });
+			const ui = scriptedUi({
+				confirm: [true, true],
+				select: [EXISTING, "Paste the key (multi-line)…", "medium", "Read-only", "Comment only"],
+				input: ["1234"],
+				editor: [pem],
+			});
+			const outcome = await harness({ runner, ui, cachePath, keyDir }).run();
+			expect(outcome.status).toBe("existing");
+			const cache = JSON.parse(await readFile(cachePath, "utf8"));
+			expect(cache.owner).toMatchObject({ appId: 1234, slug: "pi-review-x" });
+			expect(await readFile(cache.owner.keyPath, "utf8")).toBe(pem);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("reports an existing-App key file that does not exist", async () => {
 		const ui = scriptedUi({
 			confirm: [true],
-			select: [EXISTING],
+			select: [EXISTING, "Enter a file path…"],
 			input: ["1234", "/definitely/missing.pem"],
 		});
-		await expect(harness({ runner: fakeRunner({ secrets: [] }), ui }).run()).rejects.toThrow(
-			"Could not read the private key"
+		const outcome = await harness({ runner: fakeRunner({ secrets: [] }), ui }).run();
+		expect(outcome.status).toBe("aborted");
+		expect(ui.notifications.some((entry) => entry.message.includes("Could not read the private key"))).toBe(
+			true
 		);
 	});
 

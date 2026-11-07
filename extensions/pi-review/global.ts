@@ -10,7 +10,7 @@
  * wizard creates the App; the cache file is `0600` too.
  */
 
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
@@ -104,4 +104,35 @@ export async function saveAppKey(owner: string, pem: string, paths: CachePaths =
 		// As above.
 	}
 	return path;
+}
+
+/**
+ * Likely App key files, newest first. Browsers put a generated key in
+ * Downloads; the rest covers a key the user saved elsewhere.
+ */
+export async function findKeyCandidates(dirs: string[], limit = 10): Promise<string[]> {
+	const found: { path: string; mtime: number }[] = [];
+	for (const dir of dirs) {
+		const entries = await readdir(dir, { withFileTypes: true }).catch(() => undefined);
+		if (!entries) continue;
+		for (const entry of entries) {
+			if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".pem")) continue;
+			const path = join(dir, entry.name);
+			try {
+				found.push({ path, mtime: (await stat(path)).mtimeMs });
+			} catch {
+				// Raced with a delete; ignore.
+			}
+		}
+	}
+	const seen = new Set<string>();
+	return found
+		.sort((a, b) => b.mtime - a.mtime)
+		.map((entry) => entry.path)
+		.filter((path) => {
+			if (seen.has(path)) return false;
+			seen.add(path);
+			return true;
+		})
+		.slice(0, limit);
 }

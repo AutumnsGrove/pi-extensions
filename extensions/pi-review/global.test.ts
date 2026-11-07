@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { cachedAppFor, loadAppCache, saveAppKey, saveCachedApp } from "./global.ts";
+import { cachedAppFor, findKeyCandidates, loadAppCache, saveAppKey, saveCachedApp } from "./global.ts";
 
 const dirs: string[] = [];
 
@@ -37,6 +37,16 @@ describe("App cache", () => {
 		expect(await loadAppCache({ cachePath: bad })).toEqual({});
 		await writeFile(bad, JSON.stringify({ acme: { appId: "x" } }), "utf8");
 		expect(await loadAppCache({ cachePath: bad })).toEqual({});
+	});
+
+	it("finds .pem files newest first and ignores the rest", async () => {
+		const dir = await tempDir();
+		await writeFile(join(dir, "old.pem"), "x", "utf8");
+		await writeFile(join(dir, "notes.txt"), "x", "utf8");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		await writeFile(join(dir, "new.pem"), "x", "utf8");
+		const found = await findKeyCandidates([dir, join(dir, "missing")]);
+		expect(found).toEqual([join(dir, "new.pem"), join(dir, "old.pem")]);
 	});
 
 	it("writes the key with mode 600", async () => {
