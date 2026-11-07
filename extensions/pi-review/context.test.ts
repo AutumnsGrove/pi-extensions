@@ -135,6 +135,72 @@ describe("loadReviewTarget", () => {
 		expect(target.notes).toEqual([]);
 	});
 
+	it("diffs only since the last pi-review when it is an ancestor", async () => {
+		const exec = fakeExec({
+			"git remote get-url origin": { stdout: "git@github.com:owner/repo.git" },
+			"gh pr view 12 --json number,title,body,author,baseRefName,baseRefOid,headRefOid": {
+				stdout: JSON.stringify(view),
+			},
+			"gh pr diff 12": { stdout: "FULL DIFF" },
+			"gh api repos/owner/repo/pulls/12/reviews?per_page=100": {
+				stdout: JSON.stringify([
+					{ body: `old <!-- pi-review:review -->`, commit_id: "prev-sha", submitted_at: "2026-01-01T00:00:00Z" },
+				]),
+			},
+			"git merge-base --is-ancestor prev-sha head-sha": { code: 0 },
+			"git diff --no-color --no-ext-diff prev-sha...head-sha": { stdout: "INCREMENTAL DIFF" },
+		});
+		const target = await loadReviewTarget({ exec, cwd: "/repo", prNumber: 12, env: {} });
+		expect(target.incrementalFrom).toBe("prev-sha");
+		expect(target.diff).toBe("INCREMENTAL DIFF");
+		expect(target.notes.join("\n")).toContain("Follow-up review");
+	});
+
+	it("falls back to the full diff when the last review is not an ancestor", async () => {
+		const exec = fakeExec({
+			"git remote get-url origin": { stdout: "git@github.com:owner/repo.git" },
+			"gh pr view 12 --json number,title,body,author,baseRefName,baseRefOid,headRefOid": {
+				stdout: JSON.stringify(view),
+			},
+			"gh pr diff 12": { stdout: "FULL DIFF" },
+			"gh api repos/owner/repo/pulls/12/reviews?per_page=100": {
+				stdout: JSON.stringify([
+					{ body: "old <!-- pi-review:review -->", commit_id: "gone-sha", submitted_at: "2026-01-01T00:00:00Z" },
+				]),
+			},
+			"git merge-base --is-ancestor gone-sha head-sha": { code: 1 },
+		});
+		const target = await loadReviewTarget({ exec, cwd: "/repo", prNumber: 12, env: {} });
+		expect(target.incrementalFrom).toBeUndefined();
+		expect(target.diff).toBe("FULL DIFF");
+	});
+
+	it("can be told to skip the incremental lookup", async () => {
+		const exec = fakeExec({
+			"git remote get-url origin": { stdout: "git@github.com:owner/repo.git" },
+			"gh pr view 12 --json number,title,body,author,baseRefName,baseRefOid,headRefOid": {
+				stdout: JSON.stringify(view),
+			},
+			"gh pr diff 12": { stdout: "FULL DIFF" },
+			"gh api repos/owner/repo/pulls/12/reviews?per_page=100": {
+				stdout: JSON.stringify([
+					{ body: "old <!-- pi-review:review -->", commit_id: "prev-sha", submitted_at: "2026-01-01T00:00:00Z" },
+				]),
+			},
+			"git merge-base --is-ancestor prev-sha head-sha": { code: 0 },
+			"git diff --no-color --no-ext-diff prev-sha...head-sha": { stdout: "INCREMENTAL DIFF" },
+		});
+		const target = await loadReviewTarget({
+			exec,
+			cwd: "/repo",
+			prNumber: 12,
+			env: {},
+			incremental: false,
+		});
+		expect(target.incrementalFrom).toBeUndefined();
+		expect(target.diff).toBe("FULL DIFF");
+	});
+
 	it("reads the PR number from the environment", async () => {
 		const exec = fakeExec({
 			"gh pr view 12 --json number,title,body,author,baseRefName,baseRefOid,headRefOid": {

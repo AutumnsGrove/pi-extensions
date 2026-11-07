@@ -106,6 +106,13 @@ describe("buildReviewPrompt", () => {
 		expect(prompt.context).toContain("&lt;/diff>");
 	});
 
+	it("frames a follow-up review around the new changes", () => {
+		const prompt = buildReviewPrompt(target({ incrementalFrom: "abcdef1234567890" }), []);
+		expect(prompt.context).toContain("Follow-up: only changes since the previous review (abcdef123456)");
+		expect(prompt.system).toContain("follow-up review");
+		expect(prompt.system).toContain("Do not repeat findings");
+	});
+
 	it("describes a local branch review", () => {
 		const prompt = buildReviewPrompt(
 			target({ source: "local", number: undefined, author: undefined, title: "Latest commit" }),

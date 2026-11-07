@@ -11,6 +11,8 @@ import { SETTINGS_PATH, WORKFLOW_PATH } from "./settings.ts";
 import { renderUninstallOutcome, uninstallPiReview } from "./uninstall.ts";
 
 const repo = { owner: "owner", repo: "repo" };
+/** Never let a test reach the real browser opener. */
+const noBrowser = async () => true;
 const tempDirs: string[] = [];
 
 afterEach(async () => {
@@ -113,7 +115,7 @@ describe("uninstallPiReview", () => {
 		const outcome = await uninstallPiReview({
 			cwd,
 			ui,
-			deps: { exec: fakeExec(), run: fakeRunner(), writeBranch: fakeWriter().writeBranch },
+			deps: { exec: fakeExec(), run: fakeRunner(), writeBranch: fakeWriter().writeBranch, openUrl: noBrowser },
 		});
 		expect(outcome).toMatchObject({ status: "done", nothingToDo: true, changed: [] });
 		expect(renderUninstallOutcome(outcome)).toContain("Nothing to remove");
@@ -166,7 +168,7 @@ describe("uninstallPiReview", () => {
 		const outcome = await uninstallPiReview({
 			cwd,
 			ui: scriptedUi({ confirm: [false] }),
-			deps: { exec: fakeExec(), run: runner, writeBranch: writer.writeBranch },
+			deps: { exec: fakeExec(), run: runner, writeBranch: writer.writeBranch, openUrl: noBrowser },
 		});
 		expect(outcome.status).toBe("aborted");
 		expect(writer.calls).toHaveLength(0);
@@ -179,7 +181,7 @@ describe("uninstallPiReview", () => {
 		const outcome = await uninstallPiReview({
 			cwd,
 			ui: scriptedUi({ confirm: [true, false] }),
-			deps: { exec: fakeExec(), run: runner, writeBranch: fakeWriter().writeBranch },
+			deps: { exec: fakeExec(), run: runner, writeBranch: fakeWriter().writeBranch, openUrl: noBrowser },
 		});
 		expect(outcome.secretsRemoved).toEqual([]);
 		expect(runner.calls.some((args) => args[1] === "delete")).toBe(false);
@@ -198,6 +200,7 @@ describe("uninstallPiReview", () => {
 				writeBranch: async () => {
 					throw new Error("remote rejected");
 				},
+				openUrl: noBrowser,
 			},
 		});
 		expect(outcome.workflowError).toContain("remote rejected");

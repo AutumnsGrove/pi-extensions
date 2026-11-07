@@ -15,7 +15,7 @@ import type { Exec } from "./detect.ts";
 import { type ParsedDiff, parseDiff } from "./diff.ts";
 import { buildReviewPrompt } from "./prompt.ts";
 import type { ValidatedReview } from "./review.ts";
-import { createSubmitReviewTool, postReview } from "./submit.ts";
+import { createSubmitReviewTool, postReview, upsertStickyComment } from "./submit.ts";
 
 export const REVIEW_ENV = "PI_REVIEW";
 
@@ -99,12 +99,17 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 						"No pull request to post to: set PR_NUMBER and run from a github.com checkout with `gh` available."
 					);
 				}
-				return postReview(
-					exec,
-					{ repo: target.repo, number: target.number, commitId: target.headSha },
-					review,
-					{ cwd }
-				);
+				const postTarget = { repo: target.repo, number: target.number, commitId: target.headSha };
+				const result = await postReview(exec, postTarget, review, { cwd });
+				try {
+					await upsertStickyComment(exec, postTarget, review, result.url, { cwd });
+				} catch (error) {
+					// The review posted; a stale status line is not worth failing the run.
+					console.error(
+						`pi-review: could not update the sticky summary: ${error instanceof Error ? error.message : String(error)}`
+					);
+				}
+				return result;
 			};
 
 	pi.registerTool(

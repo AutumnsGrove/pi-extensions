@@ -4,7 +4,13 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type Exec } from "./detect.ts";
 import { parseDiff } from "./diff.ts";
-import { createSubmitReviewTool, postReview } from "./submit.ts";
+import { REVIEW_MARKER, STICKY_MARKER } from "./markers.ts";
+import {
+	createSubmitReviewTool,
+	postReview,
+	renderStickySummary,
+	upsertStickyComment,
+} from "./submit.ts";
 
 const diffText = `diff --git a/src/app.ts b/src/app.ts
 index 1111111..2222222 100644
@@ -140,7 +146,7 @@ describe("postReview", () => {
 		expect(payload).toEqual({
 			commit_id: "head-sha",
 			event: "COMMENT",
-			body: "Body.",
+			body: `Body.\n\n${REVIEW_MARKER}`,
 			comments: [{ path: "src/app.ts", line: 2, side: "RIGHT", body: "Hi." }],
 		});
 	});
@@ -155,5 +161,65 @@ describe("postReview", () => {
 				dropped: [],
 			})
 		).rejects.toThrow("Bad credentials");
+	});
+});
+
+describe("upsertStickyComment", () => {
+	function fakeExec(list: unknown, options: { failWrite?: boolean } = {}) {
+		const calls: string[][] = [];
+		const exec: Exec = async (_command, args) => {
+			calls.push(args);
+			if (args[1]?.endsWith("/comments?per_page=100")) {
+				return { stdout: JSON.stringify(list), stderr: "", code: 0 };
+			}
+			if (options.failWrite) return { stdout: "", stderr: "HTTP 403", code: 1 };
+			return { stdout: JSON.stringify({ html_url: "https://example.test/comment" }), stderr: "", code: 0 };
+		};
+		return Object.assign(exec, { calls });
+	}
+
+	const review = {
+		event: "COMMENT" as const,
+		summary: "Body.",
+		comments: [{ path: "src/app.ts", line: 2, side: "RIGHT" as const, body: "Hi." }],
+		dropped: [],
+	};
+	const target = { repo: { owner: "o", repo: "r" }, number: 3, commitId: "abcdef1234567890" };
+
+	it("creates the sticky comment when none exists", async () => {
+		const exec = fakeExec([]);
+		const result = await upsertStickyComment(exec, target, review, "https://example.test/review", {
+			cwd: "/repo",
+		});
+		expect(result.url).toBe("https://example.test/comment");
+		const write = exec.calls.find((args) => args[1] === "--method" && args[2] === "POST")!;
+		expect(write[3]).toBe("repos/o/r/issues/3/comments");
+		expect(write.join(" ")).toContain(STICKY_MARKER);
+	});
+
+	it("updates the existing marker comment in place", async () => {
+		const exec = fakeExec([
+			{ id: 5, body: "unrelated" },
+			{ id: 7, body: `${STICKY_MARKER}\nold` },
+		]);
+		await upsertStickyComment(exec, target, review, "https://example.test/review", { cwd: "/repo" });
+		const write = exec.calls.find((args) => args[1] === "--method" && args[2] === "PATCH")!;
+		expect(write[3]).toBe("repos/o/r/issues/comments/7");
+		expect(exec.calls.some((args) => args[2] === "POST")).toBe(false);
+	});
+
+	it("throws when the write fails", async () => {
+		await expect(
+			upsertStickyComment(fakeExec([], { failWrite: true }), target, review, undefined, { cwd: "/repo" })
+		).rejects.toThrow("HTTP 403");
+	});
+
+	it("renders a compact status line", () => {
+		const text = renderStickySummary(review, target, "https://example.test/review");
+		expect(text.startsWith(STICKY_MARKER)).toBe(true);
+		expect(text).toContain("reviewed `abcdef123456`");
+		expect(text).toContain("comment ·");
+		expect(text).toContain("1 inline comment");
+		expect(text).toContain("[details](https://example.test/review)");
 	});
 });

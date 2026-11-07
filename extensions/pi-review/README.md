@@ -121,6 +121,22 @@ The review is printed rather than posted unless `--post` is given. `bash` is
 opt-in because a shell on the runner can read the job's environment, including
 the review key.
 
+## Follow-up reviews
+
+Every posted review carries a hidden marker. On the next push, the runner looks
+up the last pi-review on the PR, and when its commit is an ancestor of the new
+head it diffs only `last-reviewed...head`. The prompt then asks for a follow-up:
+do not repeat earlier findings, check whether they were addressed, and focus on
+the new changes. A force-pushed branch falls back to a full review.
+
+A second hidden marker identifies one **sticky summary comment** that is created
+on the first run and updated in place afterwards:
+
+> **pi-review** reviewed `abcdef123456` — commented · 3 inline comments · [details](…)
+
+That keeps a stable status line on the PR instead of one status comment per
+push. The review itself still carries the findings.
+
 ## Changing settings
 
 `/pi-review settings` opens `.github/pi-review.json` in pi's editor. On save the

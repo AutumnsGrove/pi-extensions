@@ -365,7 +365,8 @@ fixed (opt-in). Read `REVIEW.md` from the **base** branch, never the PR branch.
    a JSON settings editor, and `uninstall`. The dedicated panel is the remaining
    piece.
 6. Polish: incremental re-review, stale-thread resolution, `@pi` mention
-   trigger, scheduled sweep, `REVIEW.md`.
+   trigger, scheduled sweep, `REVIEW.md`. Incremental re-review and the sticky
+   summary comment are done; stale threads and the `@pi` mention remain.
 
 ## Decisions (owner)
 
@@ -543,3 +544,24 @@ Decisions made while building the runner, where it differs from the design above
   one never force-pushes over another's open PR.
 - **The branch writer handles deletions** with `git add -A`, so uninstall is the
   same code path as install and settings.
+
+## Implementation notes (milestone 6, part 1)
+
+- **Incremental reviews need no extra workflow input.** Every posted review body
+  ends with an invisible `<!-- pi-review:review -->` marker. The runner lists the
+  PR's reviews, takes the newest marked one, checks that its commit is an
+  ancestor of the new head (`git merge-base --is-ancestor`), and diffs
+  `last-reviewed...head` instead of the whole PR. The prompt switches to
+  follow-up mode: do not repeat findings, verify they were addressed, focus on
+  the new changes. A force push (not an ancestor) falls back to a full review.
+  Inline validation runs against the incremental diff, which is a subset of the
+  PR diff, so any position it accepts is valid for GitHub.
+- **The sticky comment is a status line, not a second review.** A separate
+  `<!-- pi-review:summary -->` marker identifies one issue comment that is
+  patched on every push with the reviewed commit, verdict, inline count, and a
+  link to the review. Creating it first, updating it later.
+- **Tests must never open a browser.** The real `openExternalUrl` is the default
+  in the installer, and one uninstall test reached it, so every `npm test` run
+  opened a GitHub compare tab. Tests now inject the opener; `openExternalUrl`
+  also refuses to spawn when `VITEST` is set unless a `spawn` is injected, so a
+  missed fake cannot leak a tab again.

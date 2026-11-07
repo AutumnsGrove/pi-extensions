@@ -16,6 +16,7 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { Exec, RepoRef } from "./detect.ts";
 import type { ParsedDiff } from "./diff.ts";
+import { REVIEW_MARKER, STICKY_MARKER } from "./markers.ts";
 import {
 	type ReviewInput,
 	type ReviewMeta,
@@ -46,7 +47,8 @@ export async function postReview(
 	const payload = {
 		...(target.commitId ? { commit_id: target.commitId } : {}),
 		event: review.event,
-		body: review.summary,
+		// Invisible marker: lets a later run find the last reviewed commit.
+		body: `${review.summary}\n\n${REVIEW_MARKER}`,
 		comments: review.comments.map((comment) => ({
 			path: comment.path,
 			line: comment.line,
@@ -87,6 +89,76 @@ export async function postReview(
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}
+}
+
+export interface StickyCommentOptions {
+	cwd: string;
+	timeout?: number;
+}
+
+/**
+ * Update the one sticky summary comment on the PR (or create it). The comment
+ * is a stable status line; the review itself carries the findings, so this is
+ * updated in place on every push instead of piling up comments.
+ */
+export async function upsertStickyComment(
+	exec: Exec,
+	target: PostTarget,
+	review: ValidatedReview,
+	reviewUrl: string | undefined,
+	options: StickyCommentOptions
+): Promise<{ url?: string }> {
+	const base = `repos/${target.repo.owner}/${target.repo.repo}/issues/${target.number}/comments`;
+	const body = renderStickySummary(review, target, reviewUrl);
+	const timeout = options.timeout ?? 60_000;
+
+	let existingId: number | undefined;
+	const list = await exec("gh", ["api", `${base}?per_page=100`], { cwd: options.cwd, timeout });
+	if ((list.code ?? 0) === 0) {
+		try {
+			const parsed = JSON.parse(list.stdout) as unknown;
+			if (Array.isArray(parsed)) {
+				for (const entry of parsed as { id?: unknown; body?: unknown }[]) {
+					if (typeof entry?.body === "string" && entry.body.includes(STICKY_MARKER)) {
+						if (typeof entry.id === "number") existingId = entry.id;
+					}
+				}
+			}
+		} catch {
+			// A malformed list only means we cannot update; creating is safe.
+		}
+	}
+
+	const args = existingId
+		? ["api", "--method", "PATCH", `repos/${target.repo.owner}/${target.repo.repo}/issues/comments/${existingId}`, "-f", `body=${body}`]
+		: ["api", "--method", "POST", base, "-f", `body=${body}`];
+	const result = await exec("gh", args, { cwd: options.cwd, timeout });
+	if ((result.code ?? 0) !== 0) {
+		throw new Error(
+			`gh api could not write the sticky summary (exit ${result.code ?? "?"}): ${(result.stderr || result.stdout).trim() || "no output"}`
+		);
+	}
+	let url: string | undefined;
+	try {
+		const parsed = JSON.parse(result.stdout) as { html_url?: string };
+		url = parsed.html_url;
+	} catch {
+		// The comment still posted; the URL is only for the summary.
+	}
+	return { url };
+}
+
+/** One line, plus the marker. Kept short so it reads as a status line. */
+export function renderStickySummary(
+	review: ValidatedReview,
+	target: PostTarget,
+	reviewUrl: string | undefined
+): string {
+	const sha = target.commitId ? `\`${target.commitId.slice(0, 12)}\`` : "the latest commit";
+	const count = review.comments.length;
+	const inline = `${count} inline comment${count === 1 ? "" : "s"}`;
+	const link = reviewUrl ? ` · [details](${reviewUrl})` : "";
+	return `${STICKY_MARKER}\n**pi-review** reviewed ${sha} — ${review.event.toLowerCase()} · ${inline}${link}`;
 }
 
 export interface SubmitReviewDeps {
