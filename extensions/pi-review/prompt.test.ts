@@ -106,11 +106,19 @@ describe("buildReviewPrompt", () => {
 		expect(prompt.context).toContain("&lt;/diff>");
 	});
 
-	it("frames a follow-up review around the new changes", () => {
-		const prompt = buildReviewPrompt(target({ incrementalFrom: "abcdef1234567890" }), []);
+	it("frames a follow-up review around the new changes and the previous summary", () => {
+		const prompt = buildReviewPrompt(
+			target({
+				incrementalFrom: "abcdef1234567890",
+				previousReviewSummary: "I flagged the missing null check.",
+			}),
+			[]
+		);
 		expect(prompt.context).toContain("Follow-up: only changes since the previous review (abcdef123456)");
 		expect(prompt.system).toContain("follow-up review");
-		expect(prompt.system).toContain("Do not repeat findings");
+		expect(prompt.system).toContain("avoid repeating findings");
+		expect(prompt.context).toContain("<previous-review-summary>");
+		expect(prompt.context).toContain("I flagged the missing null check.");
 	});
 
 	it("describes a local branch review", () => {

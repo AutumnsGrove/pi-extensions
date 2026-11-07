@@ -1,9 +1,14 @@
 import type { spawn } from "node:child_process";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { openExternalUrl } from "./open.ts";
+
+afterEach(() => {
+	vi.unstubAllEnvs();
+});
 
 describe("openExternalUrl", () => {
 	it("never opens a real browser during tests", () => {
+		vi.stubEnv("VITEST", "true");
 		expect(openExternalUrl("https://example.com")).toBe(false);
 	});
 

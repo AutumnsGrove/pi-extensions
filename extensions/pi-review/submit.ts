@@ -113,7 +113,9 @@ export async function upsertStickyComment(
 	const timeout = options.timeout ?? 60_000;
 
 	let existingId: number | undefined;
-	const list = await exec("gh", ["api", `${base}?per_page=100`], { cwd: options.cwd, timeout });
+	// Newest first: the sticky comment is the most recent marker comment, and a
+	// long PR can have more than one page of comments.
+	const list = await exec("gh", ["api", `${base}?per_page=100&sort=created&direction=desc`], { cwd: options.cwd, timeout });
 	if ((list.code ?? 0) === 0) {
 		try {
 			const parsed = JSON.parse(list.stdout) as unknown;
@@ -158,7 +160,8 @@ export function renderStickySummary(
 	const count = review.comments.length;
 	const inline = `${count} inline comment${count === 1 ? "" : "s"}`;
 	const link = reviewUrl ? ` · [details](${reviewUrl})` : "";
-	return `${STICKY_MARKER}\n**pi-review** reviewed ${sha} — ${review.event.toLowerCase()} · ${inline}${link}`;
+	const verdict = review.event === "REQUEST_CHANGES" ? "requested changes" : "commented";
+	return `${STICKY_MARKER}\n**pi-review** reviewed ${sha} — ${verdict} · ${inline}${link}`;
 }
 
 export interface SubmitReviewDeps {

@@ -36,6 +36,14 @@ export interface ReviewTarget {
 	notes: string[];
 	/** When set, the diff only covers commits after this one (last review). */
 	incrementalFrom?: string;
+	/** Summary of the previous pi-review on this PR (for follow-up reviews). */
+	previousReviewSummary?: string;
+	/**
+	 * The full PR diff. When `diff` is incremental, this is what inline
+	 * positions must validate against, because the incremental diff is a tree
+	 * comparison and can contain content outside the PR.
+	 */
+	validationDiff?: string;
 }
 
 export interface GuidanceFile {
@@ -107,14 +115,20 @@ interface PullReview {
  * `headSha`. A previous review from a force-pushed branch is ignored so the
  * follow-up falls back to a full diff.
  */
-export async function findLastReviewedSha(
+export interface PreviousReview {
+	sha: string;
+	/** The previous review body, without the hidden marker. */
+	summary: string;
+}
+
+export async function findLastReview(
 	exec: Exec,
 	cwd: string,
 	repo: RepoRef,
 	number: number,
 	headSha: string | undefined,
 	timeoutMs = 30_000
-): Promise<string | undefined> {
+): Promise<PreviousReview | undefined> {
 	if (!headSha) return undefined;
 	let reviews: unknown;
 	try {
@@ -139,14 +153,19 @@ export async function findLastReviewedSha(
 				review.commit_id.length > 0
 		)
 		.sort((a, b) => String(a.submitted_at ?? "").localeCompare(String(b.submitted_at ?? "")));
-	const latest = ours.at(-1)?.commit_id;
-	if (typeof latest !== "string" || latest === headSha) return undefined;
+	const latest = ours.at(-1);
+	if (!latest) return undefined;
+	const sha = latest.commit_id;
+	if (typeof sha !== "string" || sha === headSha) return undefined;
 
-	const ancestor = await exec("git", ["merge-base", "--is-ancestor", latest, headSha], {
+	const ancestor = await exec("git", ["merge-base", "--is-ancestor", sha, headSha], {
 		cwd,
 		timeout: timeoutMs,
 	});
-	return (ancestor.code ?? 1) === 0 ? latest : undefined;
+	if ((ancestor.code ?? 1) !== 0) return undefined;
+
+	const summary = String(latest.body).replace(REVIEW_MARKER, "").trim();
+	return { sha, summary };
 }
 
 /**
@@ -192,9 +211,11 @@ export async function loadReviewTarget(options: LoadTargetOptions): Promise<Revi
 					diff = (await gitDiff(exec, cwd, [`${baseRef}...HEAD`], timeoutMs)) ?? "";
 				}
 			}
+			const fullDiff = diff;
 			let incrementalFrom: string | undefined;
+			let previousReviewSummary: string | undefined;
 			if (repo && options.incremental !== false) {
-				const previous = await findLastReviewedSha(
+				const previous = await findLastReview(
 					exec,
 					cwd,
 					repo,
@@ -206,14 +227,15 @@ export async function loadReviewTarget(options: LoadTargetOptions): Promise<Revi
 					const incremental = await gitDiff(
 						exec,
 						cwd,
-						[`${previous}...${view.headRefOid ?? "HEAD"}`],
+						[`${previous.sha}...${view.headRefOid ?? "HEAD"}`],
 						timeoutMs
 					);
 					if (incremental?.trim()) {
 						diff = incremental;
-						incrementalFrom = previous;
+						incrementalFrom = previous.sha;
+						previousReviewSummary = previous.summary;
 						notes.push(
-							`Follow-up review: showing only the changes since the last review (${previous.slice(0, 12)}).`
+							`Follow-up review: showing only the changes since the last review (${previous.sha.slice(0, 12)}).`
 						);
 					}
 				}
@@ -231,6 +253,8 @@ export async function loadReviewTarget(options: LoadTargetOptions): Promise<Revi
 				diff,
 				notes,
 				...(incrementalFrom ? { incrementalFrom } : {}),
+				...(previousReviewSummary ? { previousReviewSummary } : {}),
+				...(incrementalFrom ? { validationDiff: fullDiff } : {}),
 			};
 		}
 		notes.push(

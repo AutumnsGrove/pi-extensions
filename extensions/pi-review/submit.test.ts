@@ -169,7 +169,7 @@ describe("upsertStickyComment", () => {
 		const calls: string[][] = [];
 		const exec: Exec = async (_command, args) => {
 			calls.push(args);
-			if (args[1]?.endsWith("/comments?per_page=100")) {
+			if (args[1]?.includes("/comments?per_page=100")) {
 				return { stdout: JSON.stringify(list), stderr: "", code: 0 };
 			}
 			if (options.failWrite) return { stdout: "", stderr: "HTTP 403", code: 1 };
@@ -195,6 +195,9 @@ describe("upsertStickyComment", () => {
 		const write = exec.calls.find((args) => args[1] === "--method" && args[2] === "POST")!;
 		expect(write[3]).toBe("repos/o/r/issues/3/comments");
 		expect(write.join(" ")).toContain(STICKY_MARKER);
+		const list = exec.calls.find((args) => args[1]?.includes("?per_page=100"))!;
+		expect(list[1]).toContain("sort=created");
+		expect(list[1]).toContain("direction=desc");
 	});
 
 	it("updates the existing marker comment in place", async () => {
@@ -218,7 +221,7 @@ describe("upsertStickyComment", () => {
 		const text = renderStickySummary(review, target, "https://example.test/review");
 		expect(text.startsWith(STICKY_MARKER)).toBe(true);
 		expect(text).toContain("reviewed `abcdef123456`");
-		expect(text).toContain("comment ·");
+		expect(text).toContain("commented ·");
 		expect(text).toContain("1 inline comment");
 		expect(text).toContain("[details](https://example.test/review)");
 	});

@@ -69,7 +69,10 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 					baseRef: env.PI_REVIEW_BASE_REF,
 				});
 				const guidance = await loadGuidance(exec, cwd, target.baseSha);
-				return { target, guidance, diff: parseDiff(target.diff) };
+				// Positions must validate against the full PR diff: an incremental
+				// diff is a tree comparison and can contain content GitHub does not
+				// consider part of the PR.
+				return { target, guidance, diff: parseDiff(target.validationDiff ?? target.diff) };
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return {

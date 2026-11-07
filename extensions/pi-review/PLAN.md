@@ -554,8 +554,13 @@ Decisions made while building the runner, where it differs from the design above
   `last-reviewed...head` instead of the whole PR. The prompt switches to
   follow-up mode: do not repeat findings, verify they were addressed, focus on
   the new changes. A force push (not an ancestor) falls back to a full review.
-  Inline validation runs against the incremental diff, which is a subset of the
-  PR diff, so any position it accepts is valid for GitHub.
+  Inline validation runs against the **full PR diff**, not the increment: the
+  incremental diff is a tree comparison and can contain content outside the PR
+  (a base-branch merge after the last review, or a revert of a reviewed line),
+  where GitHub would reject the comment and fail the whole review. The full PR
+  diff is parsed for `submit_review`; the incremental diff only shapes the
+  prompt. The previous review's summary is folded into the context so
+  "check whether they were addressed" is actionable.
 - **The sticky comment is a status line, not a second review.** A separate
   `<!-- pi-review:summary -->` marker identifies one issue comment that is
   patched on every push with the reviewed commit, verdict, inline count, and a

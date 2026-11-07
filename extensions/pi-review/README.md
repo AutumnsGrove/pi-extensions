@@ -125,9 +125,16 @@ the review key.
 
 Every posted review carries a hidden marker. On the next push, the runner looks
 up the last pi-review on the PR, and when its commit is an ancestor of the new
-head it diffs only `last-reviewed...head`. The prompt then asks for a follow-up:
-do not repeat earlier findings, check whether they were addressed, and focus on
-the new changes. A force-pushed branch falls back to a full review.
+head it diffs only `last-reviewed...head`. The prompt then gets that review's
+summary and asks for a follow-up: avoid repeating findings, check whether they
+were addressed, and focus on the new changes. A force-pushed branch falls back
+to a full review.
+
+That incremental diff is a tree comparison, not a subset of the PR diff (a base
+merge or a revert can put unrelated content in it), so the prompt sees the
+increment while **inline positions validate against the full PR diff**. A
+comment on something outside the PR is folded into the summary instead of
+failing the review.
 
 A second hidden marker identifies one **sticky summary comment** that is created
 on the first run and updated in place afterwards:
