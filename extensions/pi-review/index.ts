@@ -440,6 +440,7 @@ function wizardUi(ctx: ExtensionCommandContext): WizardUI {
 		confirm: (title, message) => ctx.ui.confirm(title, message),
 		select: (title, options) => ctx.ui.select(title, options),
 		input: (title, placeholder) => ctx.ui.input(title, placeholder),
+		editor: (title, prefill) => ctx.ui.editor(title, prefill),
 		notify: (message, type) => ctx.ui.notify(message, type),
 	};
 }
