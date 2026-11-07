@@ -8,6 +8,9 @@
   "tools": {
     "bash": true
   },
+  "verify": {
+    "installDependencies": false
+  },
   "triggers": {
     "types": [
       "opened",
@@ -28,7 +31,7 @@
   },
   "pi": {
     "version": "1.5.0",
-    "packageRef": "1e94dde4cbfad3438ec2b62805310094e1ff4571"
+    "packageRef": "f88a29dec11cb58f3283417f39e3f911f6c58c96"
   },
   "timeoutMinutes": 20
 }
