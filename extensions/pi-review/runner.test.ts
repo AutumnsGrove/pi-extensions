@@ -259,6 +259,19 @@ describe("registerReviewRunner", () => {
 		expect(result.systemPrompt).toContain("resolve_review_threads");
 	});
 
+	it("never registers the resolve tool in a dry run", () => {
+		const { pi, tools } = fakePi(fakeExec());
+		registerReviewRunner(pi, {
+			env: {
+				PI_REVIEW: "1",
+				PR_NUMBER: "5",
+				PI_REVIEW_RESOLVE_THREADS: "1",
+				PI_REVIEW_DRY_RUN: "1",
+			},
+		});
+		expect(tools.map((tool) => tool.name)).not.toContain("resolve_review_threads");
+	});
+
 	it("does not register the resolve tool when disabled", () => {
 		const { pi, tools } = fakePi(fakeExec());
 		registerReviewRunner(pi, { env: { PI_REVIEW: "1", PR_NUMBER: "5" } });

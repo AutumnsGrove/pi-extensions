@@ -56,7 +56,9 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 	const dryRun = env.PI_REVIEW_DRY_RUN === "1";
 	const outputPath = env.PI_REVIEW_OUTPUT;
 	const requestChanges = env.PI_REVIEW_REQUEST_CHANGES === "1";
-	const resolveStaleThreads = env.PI_REVIEW_RESOLVE_THREADS === "1";
+	// Resolving threads is a mutation: never do it in a dry run, even if the
+	// setting is on and the caller forgot to clear the env flag.
+	const resolveStaleThreads = env.PI_REVIEW_RESOLVE_THREADS === "1" && !dryRun;
 	const maxCommentsRaw = Number(env.PI_REVIEW_MAX_COMMENTS);
 	const maxComments = Number.isInteger(maxCommentsRaw) && maxCommentsRaw > 0 ? maxCommentsRaw : undefined;
 

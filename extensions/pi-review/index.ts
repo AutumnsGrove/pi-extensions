@@ -165,7 +165,8 @@ async function runCommand(
 	let resolveThreads = false;
 	try {
 		const raw = await readFile(join(ctx.cwd, SETTINGS_PATH), "utf8");
-		resolveThreads = parseSettings(JSON.parse(raw)).review.resolveStaleThreads;
+		// Never resolve threads from a dry run; only `--post` may mutate the PR.
+		resolveThreads = options.post && parseSettings(JSON.parse(raw)).review.resolveStaleThreads;
 	} catch {
 		resolveThreads = false;
 	}

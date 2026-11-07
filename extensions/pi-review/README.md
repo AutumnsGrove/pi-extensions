@@ -155,6 +155,10 @@ so it cannot resolve a human's thread or invent one, and the prompt tells it to
 leave anything it cannot verify open. Threads that are already resolved or
 written by people are never offered.
 
+Resolving is a mutation, so it only happens on a real run: `/pi-review run`
+needs `--post`, and the runner refuses to register the tool when
+`PI_REVIEW_DRY_RUN=1`, even if the setting is on.
+
 ## Review strictness
 
 The default is **significant issues only**: the reviewer reports things that
