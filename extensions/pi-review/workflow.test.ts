@@ -1,0 +1,167 @@
+import { parse } from "yaml";
+import { describe, expect, it } from "vitest";
+import { defaultSettings, type ReviewSettings } from "./settings.ts";
+import { PACKAGE_REPO, PACKAGE_SUBDIR, renderWorkflow } from "./workflow.ts";
+
+function settings(overrides: Partial<ReviewSettings> = {}): ReviewSettings {
+	const base = defaultSettings({
+		provider: "opencode-go",
+		model: "deepseek-v4.1-flash",
+		piVersion: "1.5.0",
+		packageRef: "abc123",
+	});
+	return { ...base, ...overrides };
+}
+
+interface Workflow {
+	on: { pull_request: { types: string[]; paths?: string[] } };
+	concurrency: { group: string; "cancel-in-progress": boolean };
+	permissions: Record<string, string>;
+	jobs: {
+		review: {
+			if: string;
+			"timeout-minutes": number;
+			steps: {
+				name?: string;
+				uses?: string;
+				id?: string;
+				run?: string;
+				env?: Record<string, string>;
+				if?: string;
+				with?: Record<string, string>;
+				"timeout-minutes"?: number;
+			}[];
+		};
+	};
+}
+
+function render(overrides: Partial<ReviewSettings> = {}): Workflow {
+	return parse(renderWorkflow(settings(overrides))) as Workflow;
+}
+
+describe("renderWorkflow", () => {
+	it("renders valid YAML with the review job and its steps", () => {
+		const workflow = render();
+		expect(workflow.on.pull_request.types).toEqual([
+			"opened",
+			"synchronize",
+			"ready_for_review",
+			"reopened",
+		]);
+		expect(workflow.concurrency).toEqual({
+			group: "pi-review-${{ github.event.pull_request.number }}",
+			"cancel-in-progress": true,
+		});
+		expect(workflow.permissions).toEqual({
+			contents: "read",
+			"pull-requests": "write",
+			issues: "write",
+		});
+		expect(workflow.jobs.review["timeout-minutes"]).toBe(25);
+		const names = workflow.jobs.review.steps.map((step) => step.name ?? step.uses);
+		expect(names).toEqual([
+			"actions/checkout@v4",
+			"actions/setup-node@v4",
+			"Install pi",
+			"Check out pi-review",
+			"Mint the App token",
+			"Review",
+			"Step summary",
+			"Report an incomplete review",
+		]);
+	});
+
+	it("pins pi and the package ref, and checks out the PR with history", () => {
+		const workflow = render();
+		const text = JSON.stringify(workflow.jobs.review.steps);
+		expect(text).toContain("@earendil-works/pi-coding-agent@1.5.0");
+		expect(text).toContain("fetch --depth 1 origin 'abc123'");
+		expect(text).toContain(PACKAGE_REPO);
+		expect(text).toContain(`${PACKAGE_SUBDIR}/index.ts`);
+		expect(workflow.jobs.review.steps[0]).toMatchObject({
+			uses: "actions/checkout@v4",
+			with: { "fetch-depth": 0, "persist-credentials": false },
+		});
+	});
+
+	it("runs the review with the configured model, tools, and env", () => {
+		const workflow = render({ tools: { bash: true }, review: { event: "REQUEST_CHANGES", maxInlineComments: 40 } });
+		const review = workflow.jobs.review.steps.find((step) => step.name === "Review")!;
+		expect(review["timeout-minutes"]).toBe(20);
+		expect(review.run).toContain('--tools read,grep,find,ls,bash,submit_review');
+		expect(review.run).toContain("--provider opencode-go");
+		expect(review.run).toContain("--model deepseek-v4.1-flash");
+		expect(review.run).toContain("--thinking medium");
+		expect(review.run).toContain('"Review pull request #$PR_NUMBER."');
+		expect(review.run).toContain("set -euo pipefail");
+		expect(review.run).toContain("wrote no review artifact");
+		expect(review.run).toContain("finished without submitting a review");
+		expect(review.env).toMatchObject({
+			PI_REVIEW: "1",
+			PR_NUMBER: "${{ github.event.pull_request.number }}",
+			OPENCODE_API_KEY: "${{ secrets.PI_REVIEW_API_KEY }}",
+			PI_REVIEW_MAX_COMMENTS: "40",
+			PI_REVIEW_REQUEST_CHANGES: "1",
+		});
+	});
+
+	it("uses the GITHUB_TOKEN fallback without the App step", () => {
+		const workflow = render({ identity: "token" });
+		const names = workflow.jobs.review.steps.map((step) => step.name ?? step.uses);
+		expect(names).not.toContain("Mint the App token");
+		const review = workflow.jobs.review.steps.find((step) => step.name === "Review")!;
+		expect(review.env?.GH_TOKEN).toBe("${{ steps.app-token.outputs.token || github.token }}");
+	});
+
+	it("filters paths with a single list of negations when excludes are set", () => {
+		expect(render({ paths: { include: ["src/**"], exclude: ["**/*.md"] } }).on.pull_request.paths).toEqual([
+			"src/**",
+			"!**/*.md",
+		]);
+		expect(render({ paths: { include: [], exclude: ["docs/**"] } }).on.pull_request.paths).toEqual([
+			"**",
+			"!docs/**",
+		]);
+		expect(render({ paths: { include: [], exclude: [] } }).on.pull_request.paths).toBeUndefined();
+	});
+
+	it("adds skip conditions for drafts and bots", () => {
+		expect(render().jobs.review.if).toContain("github.event.pull_request.draft == false");
+		expect(render().jobs.review.if).not.toContain("Bot");
+		expect(render({ triggers: { ...settings().triggers, skipBots: true } }).jobs.review.if).toContain(
+			"github.event.pull_request.user.type != 'Bot'"
+		);
+		expect(render({ triggers: { ...settings().triggers, skipDrafts: false } }).jobs.review.if).not.toContain(
+			"draft"
+		);
+	});
+
+	it("always skips fork pull requests", () => {
+		expect(render().jobs.review.if).toContain(
+			"github.event.pull_request.head.repo.full_name == github.repository"
+		);
+	});
+
+	it("reports an incomplete review on failure and summarizes the artifact", () => {
+		const steps = render().jobs.review.steps;
+		const summary = steps.find((step) => step.name === "Step summary")!;
+		expect(summary.if).toBe("always()");
+		expect(summary.run).toContain("$GITHUB_STEP_SUMMARY");
+		expect(summary.run).toContain("incomplete");
+		const failure = steps.find((step) => step.name === "Report an incomplete review")!;
+		expect(failure.if).toBe("failure()");
+		expect(failure.run).toContain("gh pr comment");
+		expect(failure.run).toContain('"incomplete": true');
+	});
+
+	it("omits the provider key env when the provider env is unknown", () => {
+		const workflow = render({ provider: "custom", providerEnv: "" });
+		const review = workflow.jobs.review.steps.find((step) => step.name === "Review")!;
+		expect(Object.keys(review.env ?? {})).not.toContain("OPENCODE_API_KEY");
+		expect(review.run).toContain("--provider custom");
+	});
+
+	it("is deterministic", () => {
+		expect(renderWorkflow(settings())).toBe(renderWorkflow(settings()));
+	});
+});
