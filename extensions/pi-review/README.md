@@ -138,6 +138,24 @@ The review is printed rather than posted unless `--post` is given. `bash` is
 opt-in because a shell on the runner can read the job's environment, including
 the review key.
 
+## Asking for a review
+
+Comment `@pi` on any pull request to run a review on demand. The comment body is
+the maintainer's request, so `@pi focus on the migration` narrows the review
+instead of restating the whole diff. It is still treated as untrusted text and
+fenced.
+
+The mention path only runs when:
+
+- the comment is on a pull request (not a plain issue);
+- the author is an owner, member, or collaborator (not a random commenter);
+- the author is not a bot;
+- the check-out is a same-repo PR; a fork's merge ref is refused before the job
+  can execute its code with secrets.
+
+The workflow listens to `issue_comment` for this (default on); set
+`triggers.mention: false` to disable it. Auto-reviews on push are unchanged.
+
 ## Resolving stale threads
 
 On follow-ups, the reviewer can close the threads it already opened once it
@@ -240,10 +258,16 @@ push. The review itself still carries the findings.
 
 ## Changing settings
 
-`/pi-review settings` opens `.github/pi-review.json` in pi's editor. On save the
-JSON is validated (unknown enums are refused, numbers are clamped), the workflow
-is regenerated from it, and both files are committed to `pi-review/settings` (or
-the next free suffix) with a PR-compare URL. The default branch is untouched.
+`/pi-review settings` opens a menu for the common knobs: model, thinking, tools
+(read-only vs +bash), strictness, verdict, dependency install, stale-thread
+resolution, and the `@pi` mention trigger. Each entry shows the current value;
+**Save and continue** commits the result, and **Edit raw JSON…** opens the
+committed file for provider, path filters, triggers, and pins.
+
+On save the JSON is validated (unknown enums are refused, numbers are clamped),
+the workflow is regenerated from it, and both files are committed to
+`pi-review/settings` (or the next free suffix) with a PR-compare URL. The
+default branch is untouched.
 
 `/pi-review status` shows the effective settings, whether the workflow file is
 present, and whether `PI_REVIEW_API_KEY` is set.

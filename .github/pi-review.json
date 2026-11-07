@@ -35,7 +35,7 @@
   },
   "pi": {
     "version": "1.5.0",
-    "packageRef": "5f120d6623d875e2c56ef33293bf40f64d6ee467"
+    "packageRef": "cdc54115eba12097421265fc03ba5ad77c39b0e3"
   },
   "timeoutMinutes": 20
 }

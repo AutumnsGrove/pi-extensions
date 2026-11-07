@@ -33,6 +33,7 @@ import { parseDiff } from "./diff.ts";
 import { type CommandRunner, spawnRunner } from "./github/exec.ts";
 import { openExternalUrl } from "./github/open.ts";
 import { listRepoSecretNames } from "./github/secrets.ts";
+import { editSettings } from "./panel.ts";
 import { API_KEY_SECRET, installPiReview, renderInstallOutcome, type WizardUI } from "./install.ts";
 import { parseRunArgs, reviewChildEnv, reviewPromptFor, reviewTools, runLocalReview } from "./local.ts";
 import { renderReviewMarkdown, type ReviewMeta } from "./review.ts";
@@ -237,21 +238,41 @@ async function settingsCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext): 
 		return;
 	}
 
-	const edited = await ctx.ui.editor("pi-review settings (JSON)", raw);
-	if (edited === undefined || edited === raw) {
-		ctx.ui.notify("Settings unchanged.", "info");
-		return;
-	}
-
-	let settings: ReviewSettings;
+	let existing: ReviewSettings;
 	try {
-		settings = parseSettings(JSON.parse(edited));
+		existing = parseSettings(JSON.parse(raw));
 	} catch (error) {
 		ctx.ui.notify(
 			`Invalid settings: ${error instanceof Error ? error.message : String(error)}`,
 			"error"
 		);
 		return;
+	}
+
+	const choice = await editSettings(existing, wizardUi(ctx));
+	if (choice === undefined) {
+		ctx.ui.notify("Settings unchanged.", "info");
+		return;
+	}
+
+	let settings: ReviewSettings;
+	if (choice === "json") {
+		const edited = await ctx.ui.editor("pi-review settings (JSON)", raw);
+		if (edited === undefined || edited === raw) {
+			ctx.ui.notify("Settings unchanged.", "info");
+			return;
+		}
+		try {
+			settings = parseSettings(JSON.parse(edited));
+		} catch (error) {
+			ctx.ui.notify(
+				`Invalid settings: ${error instanceof Error ? error.message : String(error)}`,
+				"error"
+			);
+			return;
+		}
+	} else {
+		settings = choice;
 	}
 	if (!settings.model) {
 		ctx.ui.notify("Settings need a model id before they can be saved.", "error");

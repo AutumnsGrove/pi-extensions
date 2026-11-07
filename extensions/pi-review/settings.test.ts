@@ -53,6 +53,11 @@ describe("parseSettings", () => {
 		expect(() => parseSettings({ review: { strictness: "picky" } })).toThrow("Invalid review strictness");
 	});
 
+	it("parses the mention trigger", () => {
+		expect(parseSettings({ triggers: { mention: false } }).triggers.mention).toBe(false);
+		expect(parseSettings({}).triggers.mention).toBe(true);
+	});
+
 	it("parses resolveStaleThreads", () => {
 		expect(parseSettings({ review: { resolveStaleThreads: true } }).review.resolveStaleThreads).toBe(true);
 		expect(parseSettings({}).review.resolveStaleThreads).toBe(false);

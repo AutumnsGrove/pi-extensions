@@ -32,12 +32,21 @@ function toolList(settings: ReviewSettings): string {
 }
 
 function jobCondition(settings: ReviewSettings): string {
-	const parts = [
+	const pullRequest = [
 		settings.triggers.skipDrafts ? "github.event.pull_request.draft == false" : undefined,
 		"github.event.pull_request.head.repo.full_name == github.repository",
 		settings.triggers.skipBots ? "github.event.pull_request.user.type != 'Bot'" : undefined,
-	].filter((part): part is string => part !== undefined);
-	return parts.join(" && ");
+	]
+		.filter((part): part is string => part !== undefined)
+		.join(" && ");
+
+	const conditions = [`(${pullRequest})`];
+	if (settings.triggers.mention) {
+		conditions.push(
+			`(github.event_name == 'issue_comment' && github.event.issue.pull_request != null && contains(github.event.comment.body, '@pi') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) && github.event.comment.user.type != 'Bot')`
+		);
+	}
+	return conditions.join(" || ");
 }
 
 /**
@@ -134,13 +143,17 @@ export function renderWorkflow(settings: ReviewSettings): string {
 		`--thinking ${settings.thinking}`,
 	];
 
+	const prNumberExpression = "${{ github.event.pull_request.number || github.event.issue.number }}";
 	const envLines = [
 		'          PI_REVIEW: "1"',
-		"          PR_NUMBER: ${{ github.event.pull_request.number }}",
+		`          PR_NUMBER: ${prNumberExpression}`,
 		'          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}',
 	];
 	if (settings.providerEnv) {
 		envLines.push(`          ${settings.providerEnv}: \${{ secrets.PI_REVIEW_API_KEY }}`);
+	}
+	if (settings.triggers.mention) {
+		envLines.push("          PI_REVIEW_REQUEST: ${{ github.event.comment.body }}");
 	}
 	envLines.push(
 		"          PI_REVIEW_OUTPUT: ${{ runner.temp }}/pi-review/review.json",
@@ -206,9 +219,10 @@ export function renderWorkflow(settings: ReviewSettings): string {
 		"  pull_request:",
 		`    types: [${trigger}]`,
 		...paths,
+		...(settings.triggers.mention ? ["  issue_comment:", "    types: [created]"] : []),
 		"",
 		"concurrency:",
-		`  group: ${EXTENSION_NAME}-${"${{ github.event.pull_request.number }}"}`,
+		`  group: ${EXTENSION_NAME}-${prNumberExpression}`,
 		"  cancel-in-progress: true",
 		"",
 		"permissions:",
@@ -224,6 +238,7 @@ export function renderWorkflow(settings: ReviewSettings): string {
 		"    steps:",
 		"      - uses: actions/checkout@v4",
 		"        with:",
+		`          ref: refs/pull/${prNumberExpression}/merge`,
 		"          fetch-depth: 0",
 		"          persist-credentials: false",
 		"      - uses: actions/setup-node@v4",
@@ -239,6 +254,22 @@ export function renderWorkflow(settings: ReviewSettings): string {
 		`          git -C "$RUNNER_TEMP/pi-review-src" remote add origin ${PACKAGE_REPO}`,
 		`          git -C "$RUNNER_TEMP/pi-review-src" fetch --depth 1 origin ${quote(settings.pi.packageRef)}`,
 		'          git -C "$RUNNER_TEMP/pi-review-src" checkout --detach FETCH_HEAD',
+		...(settings.triggers.mention
+			? [
+					"      - name: Require a same-repo pull request",
+					"        if: github.event_name == 'issue_comment'",
+					"        env:",
+					"          GH_TOKEN: ${{ github.token }}",
+					"          PR_NUMBER: ${{ github.event.issue.number }}",
+					"        run: |",
+					"          set -euo pipefail",
+					"          head=$(gh pr view \"$PR_NUMBER\" --json headRepository --jq '.headRepository.nameWithOwner')",
+					'          if [ "$head" != "${{ github.repository }}" ]; then',
+					'            echo "::error::pi-review only reviews pull requests from this repository"',
+					"            exit 1",
+					"          fi",
+				]
+			: []),
 		...(tokenStep ? tokenStep.replace(/\n$/, "").split("\n") : []),
 		"      - name: Review",
 		`        timeout-minutes: ${settings.timeoutMinutes}`,
@@ -276,7 +307,7 @@ export function renderWorkflow(settings: ReviewSettings): string {
 		"        if: failure()",
 		"        env:",
 		"          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}",
-		"          PR_NUMBER: ${{ github.event.pull_request.number }}",
+		`          PR_NUMBER: ${prNumberExpression}`,
 		"          PI_REVIEW_OUTPUT: ${{ runner.temp }}/pi-review/review.json",
 		"        run: |",
 		'          if [ -f "$PI_REVIEW_OUTPUT" ] && ! grep -q \'"incomplete": true\' "$PI_REVIEW_OUTPUT"; then',
