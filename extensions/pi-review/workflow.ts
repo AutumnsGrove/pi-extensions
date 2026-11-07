@@ -79,7 +79,8 @@ export function renderWorkflow(settings: ReviewSettings): string {
 	envLines.push(
 		"          PI_REVIEW_OUTPUT: ${{ runner.temp }}/pi-review/review.json",
 		`          PI_REVIEW_MAX_COMMENTS: "${settings.review.maxInlineComments}"`,
-		`          PI_REVIEW_REQUEST_CHANGES: "${settings.review.event === "REQUEST_CHANGES" ? "1" : "0"}"`
+		`          PI_REVIEW_REQUEST_CHANGES: "${settings.review.event === "REQUEST_CHANGES" ? "1" : "0"}"`,
+		`          PI_REVIEW_STRICTNESS: "${settings.review.strictness}"`
 	);
 
 	const tokenStep =

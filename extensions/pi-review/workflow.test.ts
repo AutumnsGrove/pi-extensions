@@ -86,7 +86,10 @@ describe("renderWorkflow", () => {
 	});
 
 	it("runs the review with the configured model, tools, and env", () => {
-		const workflow = render({ tools: { bash: true }, review: { event: "REQUEST_CHANGES", maxInlineComments: 40 } });
+		const workflow = render({
+			tools: { bash: true },
+			review: { ...settings().review, event: "REQUEST_CHANGES", maxInlineComments: 40 },
+		});
 		const review = workflow.jobs.review.steps.find((step) => step.name === "Review")!;
 		expect(review["timeout-minutes"]).toBe(20);
 		expect(review.run).toContain('--tools read,grep,find,ls,bash,submit_review');
@@ -103,6 +106,7 @@ describe("renderWorkflow", () => {
 			OPENCODE_API_KEY: "${{ secrets.PI_REVIEW_API_KEY }}",
 			PI_REVIEW_MAX_COMMENTS: "40",
 			PI_REVIEW_REQUEST_CHANGES: "1",
+			PI_REVIEW_STRICTNESS: "significant",
 		});
 	});
 
@@ -137,6 +141,12 @@ describe("renderWorkflow", () => {
 		expect(noBash.jobs.review.steps.map((step) => step.name ?? step.uses)).not.toContain(
 			"Install dependencies"
 		);
+	});
+
+	it("passes the configured strictness", () => {
+		const workflow = render({ review: { ...settings().review, strictness: "thorough" } });
+		const review = workflow.jobs.review.steps.find((step) => step.name === "Review")!;
+		expect(review.env?.PI_REVIEW_STRICTNESS).toBe("thorough");
 	});
 
 	it("uses the GITHUB_TOKEN fallback without the App step", () => {

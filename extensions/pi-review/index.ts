@@ -380,6 +380,7 @@ async function describeReviewSetup(
 		`- tools: ${settings.tools.bash ? "read, grep, find, ls, bash" : "read, grep, find, ls"}`,
 		`- verify: ${settings.tools.bash && settings.verify.installDependencies ? "dependencies installed before the review (tests can run)" : "read-only; tests are not run"}`,
 		`- verdict: ${settings.review.event} · max ${settings.review.maxInlineComments} inline comments`,
+		`- strictness: ${settings.review.strictness}`,
 		`- package ref: \`${settings.pi.packageRef}\` · pi ${settings.pi.version}`,
 	];
 

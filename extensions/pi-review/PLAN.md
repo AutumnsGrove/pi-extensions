@@ -586,3 +586,13 @@ Decisions made while building the runner, where it differs from the design above
   longer the mechanism: the workflow does the install, the agent verifies.
 - **Security is unchanged and explicit:** installing runs lifecycle scripts from
   the PR checkout, on top of the already opt-in `bash`; same-repo PRs only.
+
+## Implementation notes (milestone 6, part 3): strictness
+
+- The review prompt ends with a strictness section driven by
+  `review.strictness` (workflow env `PI_REVIEW_STRICTNESS`). The default is
+  `significant`: merge-blocking findings only, no nits and no "minor" section.
+  `balanced` adds design/test gaps; `thorough` adds non-blocking suggestions.
+- It is deliberately not a wizard prompt: the quiet default applies everywhere,
+  and per-repo tuning is a one-line settings edit. `REVIEW.md` on the base
+  branch remains the free-form channel for repo-specific rules.

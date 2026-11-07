@@ -202,6 +202,16 @@ describe("registerReviewRunner", () => {
 		expect(result.details.review?.dropped).toHaveLength(1);
 	});
 
+	it("passes the configured strictness into the prompt", async () => {
+		const { pi, events } = fakePi(fakeExec());
+		registerReviewRunner(pi, { env: { PI_REVIEW: "1", PR_NUMBER: "5", PI_REVIEW_STRICTNESS: "thorough" } });
+		const result = (await events.get("before_agent_start")!(
+			{ messageType: "user", prompt: "x", systemPrompt: "BASE" },
+			{ cwd: "/repo" }
+		)) as { systemPrompt: string };
+		expect(result.systemPrompt).toContain("then minor suggestions marked as non-blocking");
+	});
+
 	it("passes the dependency install outcome into the prompt", async () => {
 		const { pi, events } = fakePi(fakeExec());
 		registerReviewRunner(pi, {

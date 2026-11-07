@@ -159,8 +159,13 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 		}
 		const deps = env.PI_REVIEW_DEPS;
 		const dependencies = deps === "installed" || deps === "unavailable" ? deps : undefined;
+		const strictness =
+			env.PI_REVIEW_STRICTNESS === "balanced" || env.PI_REVIEW_STRICTNESS === "thorough"
+				? env.PI_REVIEW_STRICTNESS
+				: "significant";
 		const prompt = buildReviewPrompt(state.target, state.guidance, {
 			...(dependencies ? { dependencies } : {}),
+			strictness,
 		});
 		return {
 			systemPrompt: `${event.systemPrompt}\n\n${prompt.system}`,

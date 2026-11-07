@@ -18,10 +18,12 @@ export const WORKFLOW_PATH = ".github/workflows/pi-review.yml";
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export const TRIGGER_TYPES = ["opened", "synchronize", "ready_for_review", "reopened"] as const;
 export const REVIEW_EVENTS = ["COMMENT", "REQUEST_CHANGES"] as const;
+export const STRICTNESS_LEVELS = ["significant", "balanced", "thorough"] as const;
 
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export type TriggerType = (typeof TRIGGER_TYPES)[number];
 export type ReviewEvent = (typeof REVIEW_EVENTS)[number];
+export type ReviewStrictness = (typeof STRICTNESS_LEVELS)[number];
 export type IdentityMode = "app" | "token";
 
 export interface ReviewSettings {
@@ -37,7 +39,12 @@ export interface ReviewSettings {
 	/** Pre-install dependencies in the workflow so the reviewer can run tests. */
 	verify: { installDependencies: boolean };
 	triggers: { types: TriggerType[]; skipDrafts: boolean; skipBots: boolean };
-	review: { event: ReviewEvent; maxInlineComments: number };
+	review: {
+		event: ReviewEvent;
+		maxInlineComments: number;
+		/** How much to report; `significant` is the quiet default. */
+		strictness: ReviewStrictness;
+	};
 	paths: { include: string[]; exclude: string[] };
 	pi: { version: string; packageRef: string };
 	/** Wall-clock ceiling for the review step. */
@@ -73,7 +80,11 @@ export function defaultSettings(overrides: SettingsDefaults = {}): ReviewSetting
 			skipDrafts: true,
 			skipBots: false,
 		},
-		review: { event: "COMMENT", maxInlineComments: DEFAULT_MAX_INLINE_COMMENTS },
+		review: {
+			event: "COMMENT",
+			maxInlineComments: DEFAULT_MAX_INLINE_COMMENTS,
+			strictness: "significant",
+		},
 		paths: { include: [], exclude: [] },
 		pi: {
 			version: overrides.piVersion ?? DEFAULT_PI_VERSION,
@@ -156,6 +167,12 @@ export function parseSettings(value: unknown, defaults = defaultSettings()): Rev
 		},
 		review: {
 			event: oneOf(review.event, REVIEW_EVENTS, defaults.review.event, "review event"),
+			strictness: oneOf(
+				review.strictness,
+				STRICTNESS_LEVELS,
+				defaults.review.strictness,
+				"review strictness"
+			),
 			maxInlineComments:
 				Number.isFinite(maxInline)
 					? Math.max(1, Math.min(100, Math.trunc(maxInline)))

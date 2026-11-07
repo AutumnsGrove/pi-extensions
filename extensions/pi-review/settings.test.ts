@@ -47,6 +47,12 @@ describe("parseSettings", () => {
 		expect(settings.triggers.skipDrafts).toBe(true);
 	});
 
+	it("parses strictness and rejects unknown levels", () => {
+		expect(parseSettings({ review: { strictness: "thorough" } }).review.strictness).toBe("thorough");
+		expect(parseSettings({ review: { strictness: "balanced" } }).review.strictness).toBe("balanced");
+		expect(() => parseSettings({ review: { strictness: "picky" } })).toThrow("Invalid review strictness");
+	});
+
 	it("parses the verify setting", () => {
 		expect(parseSettings({ verify: { installDependencies: true } }).verify.installDependencies).toBe(true);
 		expect(parseSettings({ verify: { installDependencies: "yes" } }).verify.installDependencies).toBe(false);

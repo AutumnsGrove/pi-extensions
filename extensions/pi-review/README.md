@@ -121,6 +121,27 @@ The review is printed rather than posted unless `--post` is given. `bash` is
 opt-in because a shell on the runner can read the job's environment, including
 the review key.
 
+## Review strictness
+
+The default is **significant issues only**: the reviewer reports things that
+should block the change (correctness, security, data loss, races, tests that
+hide a real bug) and skips naming, formatting, wording, optional refactors, and
+"nits". If there is nothing significant, it says so without inline comments.
+
+Set it per repository in `.github/pi-review.json`:
+
+```json
+{ "review": { "strictness": "significant" } }
+```
+
+- `significant` (default) — only merge-blocking findings.
+- `balanced` — real defects and meaningful design/test gaps; still no pure style.
+- `thorough` — adds minor suggestions, marked non-blocking.
+
+For free-form repo rules ("we care about X", "never comment on Y"), put them in
+`REVIEW.md` on the base branch; it is loaded into every review and cannot be
+rewritten by a PR.
+
 ## Verifying with tests
 
 Reviews are much better when the agent can run the suite. Two settings cooperate:
