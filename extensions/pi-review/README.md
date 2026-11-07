@@ -258,10 +258,16 @@ push. The review itself still carries the findings.
 
 ## Changing settings
 
-`/pi-review settings` opens `.github/pi-review.json` in pi's editor. On save the
-JSON is validated (unknown enums are refused, numbers are clamped), the workflow
-is regenerated from it, and both files are committed to `pi-review/settings` (or
-the next free suffix) with a PR-compare URL. The default branch is untouched.
+`/pi-review settings` opens a menu for the common knobs: model, thinking, tools
+(read-only vs +bash), strictness, verdict, dependency install, stale-thread
+resolution, and the `@pi` mention trigger. Each entry shows the current value;
+**Save and continue** commits the result, and **Edit raw JSON…** opens the
+committed file for provider, path filters, triggers, and pins.
+
+On save the JSON is validated (unknown enums are refused, numbers are clamped),
+the workflow is regenerated from it, and both files are committed to
+`pi-review/settings` (or the next free suffix) with a PR-compare URL. The
+default branch is untouched.
 
 `/pi-review status` shows the effective settings, whether the workflow file is
 present, and whether `PI_REVIEW_API_KEY` is set.

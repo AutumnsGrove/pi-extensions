@@ -361,9 +361,9 @@ fixed (opt-in). Read `REVIEW.md` from the **base** branch, never the PR branch.
 4. **Provider auth**: OpenCode Go (CI token pathway or `provisionApiKey`), then
    OpenRouter PKCE incl. headless code-paste. ✅ Done using the device grant +
    `provisionApiKey`; no separate CI-token API surfaced.
-5. **Panel**: model/thinking/tools UI, status, uninstall. Partly done: `status`,
-   a JSON settings editor, and `uninstall`. The dedicated panel is the remaining
-   piece.
+5. **Panel**: model/thinking/tools UI, status, uninstall. ✅ Done as a dialog
+   menu (`panel.ts`) rather than a custom TUI: every common field is editable,
+   with the raw JSON editor one entry away for provider/paths/pins.
 6. Polish: incremental re-review, stale-thread resolution, `@pi` mention
    trigger, scheduled sweep, `REVIEW.md`. Incremental re-review and the sticky
    summary comment are done; stale threads and the `@pi` mention remain.
@@ -529,11 +529,12 @@ Decisions made while building the runner, where it differs from the design above
 
 ## Implementation notes (milestone 5, partial)
 
-- **Settings uses the editor, not a panel.** `/pi-review settings` opens the
-  committed JSON, validates it with the same function the workflow uses, refuses
-  an empty model or an unknown enum, regenerates the YAML, and commits to
-  `pi-review/settings`. The panel with pickers is still open; the JSON file is
-  the source of truth either way, so the panel is presentation work.
+- **Settings is a dialog menu.** `/pi-review settings` walks model, thinking,
+  tools, strictness, verdict, dependency install, stale threads, and the mention
+  trigger as select/input dialogs, with the raw JSON editor as one entry. Each
+  edit is applied to a copy; saving regenerates the workflow and commits to
+  `pi-review/settings`. Turning bash off also disables dependency install so the
+  pair cannot drift.
 - **Uninstall is two confirmations.** The first approves the removal branch; the
   second approves deleting the credentials, with the warning that the workflow
   still on the default branch will fail until the removal PR merges. The App is
