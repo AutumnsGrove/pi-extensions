@@ -102,7 +102,7 @@ jobs:
           set -euo pipefail
           git init "$RUNNER_TEMP/pi-review-src"
           git -C "$RUNNER_TEMP/pi-review-src" remote add origin https://github.com/AutumnsGrove/pi-extensions.git
-          git -C "$RUNNER_TEMP/pi-review-src" fetch --depth 1 origin '302db74aa11baa19c209199b337947c0fa9444fd'
+          git -C "$RUNNER_TEMP/pi-review-src" fetch --depth 1 origin '56e1a35d25286d8c11eae7e58dbf9bca874b2d16'
           git -C "$RUNNER_TEMP/pi-review-src" checkout --detach FETCH_HEAD
       - name: Require a same-repo pull request
         if: github.event_name == 'issue_comment'
