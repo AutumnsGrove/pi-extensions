@@ -623,3 +623,18 @@ Decisions made while building the runner, where it differs from the design above
   not shown.
 - The prompt is explicit: resolve only what the diff verifies, and leave the
   rest. A failed mutation is reported back, not thrown.
+
+## Implementation notes (milestone 6, part 6): `@pi` mentions
+
+- The workflow adds `issue_comment: [created]` (on by default;
+  `triggers.mention: false` removes it) and a job condition that requires a PR
+  comment, `@pi` in the body, `author_association` in
+  OWNER/MEMBER/COLLABORATOR, and a non-bot author. The check-out uses
+  `refs/pull/<n>/merge` for both events, and the PR number expression covers
+  `pull_request` and `issue_comment`.
+- A same-repo guard runs before the App token on the mention path: the PR's
+  `headRepository.nameWithOwner` must equal the current repository, so a
+  maintainer mentioning `@pi` on a fork cannot execute fork code with secrets.
+- The comment body is passed as `PI_REVIEW_REQUEST` and becomes the
+  maintainer's request in the prompt (fenced, capped). It focuses the review;
+  the security and output rules still apply.
