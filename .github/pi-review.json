@@ -20,7 +20,8 @@
       "reopened"
     ],
     "skipDrafts": true,
-    "skipBots": false
+    "skipBots": false,
+    "mention": true
   },
   "review": {
     "event": "COMMENT",
@@ -34,7 +35,7 @@
   },
   "pi": {
     "version": "1.5.0",
-    "packageRef": "00b7841e75293703dd7f548d679077568ba6dee8"
+    "packageRef": "5f120d6623d875e2c56ef33293bf40f64d6ee467"
   },
   "timeoutMinutes": 20
 }
