@@ -653,6 +653,7 @@ describe("installPiReview settings and key", () => {
 
 	it("prompts for a model when the session has none", async () => {
 		const writer = fakeBranchWriter();
+		const safe = harnessDirsFor();
 		const ui = scriptedUi({
 			confirm: [true, true],
 			select: [CREATE, "medium", "Read-only", "Comment only"],
@@ -670,6 +671,9 @@ describe("installPiReview settings and key", () => {
 				fetch: fakeFetch(),
 				waitForInstallation: async () => ({ id: 9 }),
 				writeBranch: writer.writeBranch,
+				cachePath: safe.cachePath,
+				keyDir: safe.keyDir,
+				saveAppKeyLocally: false,
 			},
 		});
 		expect(outcome.status).toBe("created");
