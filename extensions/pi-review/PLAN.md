@@ -6,8 +6,20 @@ request — the same experience as Claude Code's `/install-github-app`, but with
 whatever provider pi is logged into (OpenCode Go, OpenRouter, …), with the
 model configurable from a panel.
 
-Status: **plan only — nothing implemented.** Researched 2026-11-05; scope updated after owner review (name `pi-review`, no turn budget, OpenCode Go in CI is explicitly permitted). Tracked in
-the GitHub issue "Add `pi-review` extension".
+Status: **milestones 1–4 implemented, milestone 5 partly:** runner, App
+identity, workflow + settings, provider credentials, plus a settings editor and
+uninstall. The dedicated settings panel is the remaining milestone-5 piece. Researched 2026-11-05; scope
+updated after owner review (name `pi-review`, no turn budget, OpenCode Go in CI is
+explicitly permitted). Tracked in the GitHub issue "Add `pi-review` extension".
+
+Implemented in milestone 1: `diff.ts`, `detect.ts`, `context.ts`, `review.ts`,
+`submit.ts`, `prompt.ts`, `runner.ts`, `local.ts`, and the `/pi-review run`
+`/pi-review status` commands, milestone 2 added the manifest flow, secret
+storage, installation check, and `/pi-review install`, and milestone 3 added the
+settings schema, the workflow generator, and the branch writer, and milestone 4
+added OpenCode Go and OpenRouter credential minting, and milestone 5 added the
+settings editor and uninstall, with 217 tests in the extension. See [`README.md`](./README.md) for the current usage and the
+deviations recorded at the end of this file.
 
 ## Why agentic (and not "diff in, comments out")
 
@@ -193,24 +205,30 @@ run reporting. That gap is this extension.
 
 ```
 extensions/pi-review/
-├── index.ts        /pi-review command; registers mode-specific behaviour
-├── detect.ts       git remote → owner/repo, gh auth, current provider/model
-├── auth/
-│   ├── index.ts    strategy interface: detect(ctx) → "opencode-go" | "openrouter" | "manual"
-│   ├── opencode-go.ts   reuse opencode-go/oauth.ts with key name pi-review-<owner>-<repo>
-│   ├── openrouter.ts    PKCE + localhost callback / headless code paste
-│   └── manual.ts        paste key / use current key (with warning)
+├── index.ts        /pi-review command; switches into runner mode
+├── detect.ts       git remote → owner/repo, branch, base ref, gh auth, PR lookup
+├── context.ts      PR/local diff, metadata, base-branch REVIEW.md + AGENTS.md
+├── diff.ts         unified-diff parsing; inline position index
+├── review.ts       submission validation, summary folding, markdown rendering
+├── submit.ts       submit_review tool + gh api posting
+├── prompt.ts       review instructions + fenced, capped PR context
+├── runner.ts       CI-only wiring (PI_REVIEW=1): tool, context, artifact
+├── local.ts        headless child pi for /pi-review run
+├── install.ts      /pi-review install: preflight + App/secret/installation wizard
 ├── github/
-│   ├── secrets.ts  gh secret set (+ fallback instructions)
-│   ├── app.ts      manifest flow, localhost redirect server, pem → secrets
-│   └── pr.ts       open "create PR" URL for the workflow branch
+│   ├── app.ts      manifest code exchange, account and installation lookups
+│   ├── exec.ts     stdin-capable command runner (gh secret set)
+│   ├── git.ts      branch writer for the settings + workflow commit
+│   ├── jwt.ts      App JWT for the installation check
+│   ├── manifest.ts App manifest, registration and install URLs
+│   ├── open.ts     open a URL in the system browser
+│   ├── secrets.ts  repo secrets and variables via gh
+│   └── server.ts   localhost redirect server for the manifest flow
+├── auth/           provider credential strategies (device grant, PKCE, paste)
+├── uninstall.ts    removal branch + credential deletion + App links
 ├── workflow.ts     render .github/workflows/pi-review.yml from settings
-├── settings.ts     .github/pi-review.json (committed) schema + defaults
-├── panel.ts        TUI panel: provider, model, thinking, triggers, tools
-├── runner/
-│   ├── index.ts    CI-only: activated by PI_REVIEW=1, ctx.mode print/json
-│   ├── submit.ts   submit_review tool: validate inline positions, post one review
-│   └── prompt.ts   review prompt, PR context, REVIEW.md (base branch)
+├── settings.ts     .github/pi-review.json schema, defaults, validation
+├── panel.ts        (milestone 5) TUI panel: provider, model, thinking, triggers, tools
 ├── *.test.ts
 ├── PLAN.md
 └── README.md
@@ -336,12 +354,16 @@ fixed (opt-in). Read `REVIEW.md` from the **base** branch, never the PR branch.
 2. **Custom Pi GitHub App (default identity)**: manifest flow with a localhost
    redirect, store `PI_REVIEW_APP_ID` + `PI_REVIEW_APP_PRIVATE_KEY`, one-click
    install on the repo, `actions/create-github-app-token` in the workflow.
-   `GITHUB_TOKEN` remains as an opt-out fallback.
+   `GITHUB_TOKEN` remains as an opt-out fallback. ✅ Done (the workflow's token
+   step lands with milestone 3).
 3. **Workflow + settings**: `workflow.ts`, `settings.ts`, `gh secret set`,
-   branch + PR-compare URL; manual key paste only.
+   branch + PR-compare URL; manual key paste only. ✅ Done.
 4. **Provider auth**: OpenCode Go (CI token pathway or `provisionApiKey`), then
-   OpenRouter PKCE incl. headless code-paste.
-5. **Panel**: model/thinking/tools UI, status, uninstall.
+   OpenRouter PKCE incl. headless code-paste. ✅ Done using the device grant +
+   `provisionApiKey`; no separate CI-token API surfaced.
+5. **Panel**: model/thinking/tools UI, status, uninstall. Partly done: `status`,
+   a JSON settings editor, and `uninstall`. The dedicated panel is the remaining
+   piece.
 6. Polish: incremental re-review, stale-thread resolution, `@pi` mention
    trigger, scheduled sweep, `REVIEW.md`.
 
@@ -374,3 +396,150 @@ fixed (opt-in). Read `REVIEW.md` from the **base** branch, never the PR branch.
   wizard should ask; Polaris may be under a user or an org). Should one App be
   reused across all of the owner's repos? (Likely yes: one App, installed per repo.)
 - `auth.json`-style refreshing credentials in CI: out of scope for v1.
+
+## Implementation notes (milestone 1)
+
+Decisions made while building the runner, where it differs from the design above:
+
+- **The child loads the extension file, not the package.** `-e git:github.com/…`
+  loads every extension in the package, including the ones with runtime
+  dependencies that have no place in a review job. `/pi-review run` and the
+  workflow therefore pass `-e <path>/extensions/pi-review/index.ts`, which loads
+  exactly one extension. The workflow will clone this repo at a pinned tag and
+  point at that file.
+- **Context is injected, not embedded in the prompt.** The workflow command line
+  is just `pi -p "Review pull request #N."`; the extension loads the PR, diff,
+  and guidance on `before_agent_start` and returns both a system-prompt section
+  and a `pi-review-context` custom message. One code path serves CI and the
+  local dry run.
+- **The base commit is the only source of guidance.** The child runs with `-nc`,
+  so `AGENTS.md`/`CLAUDE.md` from the merge-result checkout never load; the
+  extension reads `REVIEW.md`, `.github/REVIEW.md`, `AGENTS.md`, and
+  `CLAUDE.md` from the base SHA instead.
+- **`PI_REVIEW_OUTPUT` is the result channel.** `submit_review` writes
+  `{ dryRun, review, markdown, url }` there. `/pi-review run` reads it back; in
+  CI it is the step artifact, and an `agent_settled` handler writes an
+  `incomplete` marker when the agent never submitted, so the workflow can fail
+  loudly.
+- **Review state is still `COMMENT` by default.** `REQUEST_CHANGES` is enabled
+  per run with `PI_REVIEW_REQUEST_CHANGES=1`; the settings panel will write that
+  as a workflow/env setting.
+- **Invalid inline comments are folded, not dropped.** They become a collapsed
+  section of the summary with the reason, because a review that loses findings
+  is worse than one with an unattached paragraph. Invalid `start_line` values
+  are cleared while keeping the comment.
+
+## Implementation notes (milestone 2)
+
+- **One App per repository.** The suggested name is
+  `pi-review-<owner>-<repo>` when that fits GitHub's 34 characters, otherwise the
+  shorter `pi-review-<repo>`; the first draft truncated mid-word
+  (`pi-review-autumnsgrove-pi-extensio`), which the real install showed is not a
+  name anyone wants. A shared App per owner would keep the App list smaller but
+  needs a name-collision story and a way to copy the key between repos; the
+  per-repo App is the honest v1 because revocation is per repo. GitHub lets the
+  user edit the name on the creation page if the suggestion collides.
+- **The key is stored first, the id second.** A re-run uses
+  `PI_REVIEW_APP_ID` as the "identity exists" marker, so it must never be
+  written before the key it belongs to. The key goes through `gh secret set`
+  on stdin (`github/exec.ts` exists because `pi.exec` cannot write stdin); it is
+  never printed, logged, or written to disk. GitHub only returns the key once,
+  so a storage failure names the App and points at its advanced settings to
+  generate a new one.
+- **`PI_REVIEW_APP_SLUG` is a repository variable, not a secret.** Secret values
+  cannot be read back, and a re-run needs the slug to find the App's
+  installation. The slug is not sensitive, so a variable is the right store; the
+  workflow can read it as `vars.PI_REVIEW_APP_SLUG` for links.
+- **Installation verification uses an App JWT, not `/user/installations`.**
+  Found on the first real install: `GET /user/installations` returns 403 for a
+  `gh` token ("must authenticate with an access token authorized to a GitHub
+  App"). During creation the PEM is still in memory, so the wizard signs a
+  nine-minute RS256 JWT (`github/jwt.ts`) and asks
+  `GET /repos/{owner}/{repo}/installation`, polling briefly because a fresh
+  installation can take a few seconds to appear. A reuse run has no readable
+  key, so it asks the user to confirm instead; the summary says the installation
+  was confirmed by them, not verified. A wrong key can only surface as a 401 at
+  review time; the summary says how to rotate it.
+- **The manifest flow cannot be pre-filled with a GET**, so the local server
+  serves one page that auto-POSTs the manifest to GitHub. The `state` nonce is
+  echoed back and required, so another local process cannot hand the wizard a
+  code for an App it created. A five-minute timeout falls back to pasting the
+  redirect URL (the SSH/container path); a wrong state is refused.
+- **Choosing `GITHUB_TOKEN` deletes the App secrets** (after a confirmation) so
+  the workflow's fallback is unambiguous rather than silently ignoring them.
+- **The wizard is dependency-injected** (UI, command runner, fetch, browser,
+  redirect server), so all four identity paths plus timeouts, aborts, and
+  storage failures are tested without a browser or network.
+
+## Implementation notes (milestone 3)
+
+- **The settings file is the policy, the workflow is generated.** Every knob
+  (triggers, paths, tools, verdict, model, pins, timeout) lives in
+  `.github/pi-review.json`; `workflow.ts` renders deterministic YAML from it
+  without a YAML dependency, because the extension runs from a bare git checkout
+  in CI where this package's `node_modules` is absent. Re-running install
+  regenerates the file (and commits nothing when it is unchanged).
+- **Paths are one list with negations.** GitHub rejects `paths` together with
+  `paths-ignore` on the same event, so excludes become `!pattern` entries; when
+  only excludes are configured the list starts with `**`.
+- **Package pinning defaults to the local commit.** `settings.pi.packageRef`
+  defaults to this checkout's HEAD (only when its `origin` looks like
+  pi-extensions); `PI_REVIEW_PACKAGE_REF` overrides it, and a tag is the right
+  value once released. The workflow fetches that ref with `git fetch --depth 1`
+  and runs `-e <checkout>/extensions/pi-review/index.ts`, so no other extension
+  loads.
+- **The review step enforces the artifact.** A run can finish with exit 0
+  without submitting (the runner writes `incomplete`); the step then fails
+  deliberately so the `if: failure()` step posts the "could not complete"
+  comment. The job timeout is the review timeout + 5 minutes, so a timed-out
+  review still reaches that step.
+- **The branch writer refuses a dirty tree**, branches from the fetched default,
+  commits only the two generated paths, pushes, and restores the original
+  branch even when the push fails. `pi-review/setup` is reused with the first
+  free `-N` suffix so a second install never force-pushes over an open PR.
+- **Provider key paste is intentionally temporary.** Milestone 3 can store
+  `PI_REVIEW_API_KEY` from a pasted key (or skip and set it later); milestone 4
+  replaces the paste for OpenCode Go / OpenRouter with a minted, dedicated key.
+  The settings' `providerEnv` decides which env var the workflow exposes it as.
+
+## Implementation notes (milestone 4)
+
+- **OpenCode Go reuses the existing device grant.** `auth/opencode.ts` calls
+  `deviceSignIn` and `provisionApiKey` from the `opencode-go` extension with a
+  per-repository key name (`pi-review-<owner>-<repo>`), so provisioning can
+  never revoke the interactive `pi-<host>` key (the two names differ, and
+  `provisionApiKey` only revokes active keys with the *same* name). The session
+  `orgId` is forwarded. After re-reading OpenCode's docs, no separate "CI token"
+  endpoint surfaced that was better than provisioning; the documented CI use is
+  what this does. The module graph stays CI-safe (only `node:child_process` and
+  type-only pi-ai imports).
+- **OpenRouter PKCE keeps the verifier in-process.** S256 only; the auth URL
+  carries `callback_url`, `state`, and `key_label` (the repo name). A one-shot
+  localhost callback validates `state` and refuses a mismatched redirect; a
+  five-minute timeout falls back to pasting the code from the page (the headless
+  flow). Exchange is `POST /api/v1/auth/keys` and the response must contain an
+  `sk-or-` key.
+- **The paste path stays for everything else**, and a provider with no known env
+  var gets a warning telling the user to set `providerEnv` in the settings file
+  rather than silently storing a key the workflow cannot see.
+- **One secret, many providers.** `PI_REVIEW_API_KEY` is mapped to the
+  provider's env var by the generated workflow (`providerEnv`), so revoking is a
+  single secret delete.
+
+## Implementation notes (milestone 5, partial)
+
+- **Settings uses the editor, not a panel.** `/pi-review settings` opens the
+  committed JSON, validates it with the same function the workflow uses, refuses
+  an empty model or an unknown enum, regenerates the YAML, and commits to
+  `pi-review/settings`. The panel with pickers is still open; the JSON file is
+  the source of truth either way, so the panel is presentation work.
+- **Uninstall is two confirmations.** The first approves the removal branch; the
+  second approves deleting the credentials, with the warning that the workflow
+  still on the default branch will fail until the removal PR merges. The App is
+  deliberately left alone: the API can delete App private keys but not the App,
+  and deleting it would also drop installations the user may still want.
+- **Branch names are per action** (`pi-review/setup`, `pi-review/settings`,
+  `pi-review/remove`), each with the same first-free-suffix rule, so re-running
+  one never force-pushes over another's open PR.
+- **The branch writer handles deletions** with `git add -A`, so uninstall is the
+  same code path as install and settings.
