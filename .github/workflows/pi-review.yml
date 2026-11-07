@@ -35,7 +35,7 @@ jobs:
           set -euo pipefail
           git init "$RUNNER_TEMP/pi-review-src"
           git -C "$RUNNER_TEMP/pi-review-src" remote add origin https://github.com/AutumnsGrove/pi-extensions.git
-          git -C "$RUNNER_TEMP/pi-review-src" fetch --depth 1 origin '315970626ef6a972e2d5d8342fac9c3186f5111a'
+          git -C "$RUNNER_TEMP/pi-review-src" fetch --depth 1 origin '186b868564bd0cf174528da2e55a0bdc4624c38e'
           git -C "$RUNNER_TEMP/pi-review-src" checkout --detach FETCH_HEAD
       - name: Mint the App token
         id: app-token
