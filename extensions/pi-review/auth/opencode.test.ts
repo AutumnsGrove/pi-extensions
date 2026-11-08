@@ -40,6 +40,29 @@ describe("authorizeOpenCodeGo", () => {
 		expect(provision).toHaveBeenCalledWith("https://opencode.ai/console", "session-token", expect.objectContaining({ keyName: "pi-review-owner-repo", orgId: "org-1" }));
 	});
 
+	it("routes progress ticks away from notify and forwards the abort signal", async () => {
+		const controller = new AbortController();
+		const notified: string[] = [];
+		const progress: string[] = [];
+		const provision = vi.fn(async () => "oc_sk");
+		const key = await authorizeOpenCodeGo({
+			keyName: "k",
+			notify: (message) => notified.push(message),
+			progress: (message) => progress.push(message),
+			signal: controller.signal,
+			signIn: (async (interaction: { notify: (event: unknown) => void }) => {
+				interaction.notify({ type: "progress", message: "Waiting for OpenCode Go sign-in…" });
+				return session;
+			}) as never,
+			provision: provision as never,
+		});
+
+		expect(key).toBe("oc_sk");
+		expect(progress).toEqual(["Waiting for OpenCode Go sign-in…"]);
+		expect(notified.join(" ")).not.toContain("Waiting");
+		expect((provision.mock.calls[0] as unknown[])[2]).toMatchObject({ signal: controller.signal });
+	});
+
 	it("omits orgId when the session has none", async () => {
 		const provision = vi.fn(async () => "oc_sk");
 		await authorizeOpenCodeGo({

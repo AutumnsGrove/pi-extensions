@@ -21,7 +21,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { providerFlow, reviewKeyName } from "./auth/index.ts";
-import { authorizeOpenCodeGo } from "./auth/opencode.ts";
+import { OPENCODE_SIGN_IN_TIMEOUT_MS, authorizeOpenCodeGo } from "./auth/opencode.ts";
 import { authorizeOpenRouter } from "./auth/openrouter.ts";
 import { type Exec, type RepoRef, hasGhAuth, resolveRepo, run } from "./detect.ts";
 import {
@@ -101,6 +101,16 @@ export interface WizardUI {
 	input(title: string, placeholder?: string): Promise<string | undefined>;
 	/** Multi-line input; falls back to `input` when unavailable. */
 	editor?(title: string, prefill?: string): Promise<string | undefined>;
+	/**
+	 * Show a dialog while a background flow waits, with Escape (or the timeout)
+	 * cancelling it. `signal` closes the dialog without cancelling. Headless UIs
+	 * omit it and wait silently.
+	 */
+	wait?(
+		title: string,
+		message: string,
+		opts?: { signal?: AbortSignal; timeout?: number }
+	): Promise<void>;
 	notify(message: string, type?: "info" | "warning" | "error"): void;
 }
 
@@ -134,6 +144,8 @@ export interface InstallOptions {
 	env?: Record<string, string | undefined>;
 	ui: WizardUI;
 	deps: InstallDeps;
+	/** Aborted when the session reloads or shuts down; stops dialogs and auth. */
+	signal?: AbortSignal;
 	/** Prefills from the running session. */
 	defaults?: { provider?: string; model?: string; thinking?: ThinkingLevel };
 }
@@ -820,6 +832,87 @@ async function collectReviewSettings(
 }
 
 /**
+ * Run the OpenCode device sign-in behind a dialog the user can Escape out of.
+ * The sign-in itself is already abort-aware; this only supplies the abort.
+ */
+async function authorizeOpenCodeWithCancel(
+	authorize: typeof authorizeOpenCodeGo,
+	options: InstallOptions,
+	keyName: string
+): Promise<string> {
+	const { ui } = options;
+	const controller = new AbortController();
+	const notify = (message: string): void => ui.notify(message, "info");
+	const auth = authorize({
+		keyName,
+		notify,
+		// The dialog is the waiting indicator; polling ticks would stack toasts.
+		...(ui.wait ? { progress: () => {} } : {}),
+		signal: controller.signal,
+	});
+	if (!ui.wait) return auth;
+
+	// Close the dialog as soon as the sign-in settles either way, and when the
+	// session goes away (reload/quit) so the command can unwind.
+	const dismissed = new AbortController();
+	const close = (): void => dismissed.abort();
+	auth.then(close, close);
+	if (options.signal?.aborted) {
+		close();
+		controller.abort(options.signal.reason);
+	} else {
+		options.signal?.addEventListener("abort", close, { once: true });
+	}
+	await ui.wait(
+		"OpenCode Go sign-in",
+		"Waiting for the browser approval. Press Escape to cancel and try again.",
+		{ signal: dismissed.signal, timeout: OPENCODE_SIGN_IN_TIMEOUT_MS + 60_000 }
+	);
+	options.signal?.removeEventListener("abort", close);
+	if (!dismissed.signal.aborted) {
+		controller.abort(new Error("OpenCode Go sign-in cancelled."));
+	} else if (options.signal?.aborted) {
+		controller.abort(options.signal.reason);
+	}
+	return auth;
+}
+
+/**
+ * OpenCode sign-in with a way back in: a failed, expired, or cancelled device
+ * grant offers a fresh code, a pasted key, or a skip instead of dead-ending the
+ * install. The Console sometimes rejects a valid-looking device code, and the
+ * only recovery is to mint a new one.
+ */
+async function requestOpenCodeKey(
+	authorize: typeof authorizeOpenCodeGo,
+	options: InstallOptions,
+	repo: RepoRef,
+	provider: string
+): Promise<string | undefined> {
+	const { ui } = options;
+	const retry = "Try signing in again (new code)";
+	const paste = "Paste an API key";
+	const skip = "Skip for now";
+	for (;;) {
+		try {
+			return await authorizeOpenCodeWithCancel(authorize, options, reviewKeyName(repo));
+		} catch (error) {
+			// A reload/quit already answered every dialog; do not queue another one.
+			if (options.signal?.aborted) return undefined;
+			const message = error instanceof Error ? error.message : String(error);
+			ui.notify(`OpenCode Go sign-in did not finish: ${message}`, "warning");
+			const choice = await ui.select("OpenCode Go sign-in", [retry, paste, skip]);
+			if (!choice?.startsWith("Try")) {
+				if (!choice?.startsWith("Paste")) return undefined;
+				return await ui.input(
+					`Paste the ${provider} API key (visible while typing; stored as a repository secret)`
+				);
+			}
+		}
+	}
+}
+
+/**
  * Store `PI_REVIEW_API_KEY` for the configured provider: a device sign-in for
  * OpenCode Go, PKCE for OpenRouter, or a pasted key for anything else. A key
  * already in the repo is left alone.
@@ -862,10 +955,7 @@ async function configureReviewKey(
 		);
 	} else if (flow === "opencode-go") {
 		const authorize = options.deps.authorizeOpenCode ?? authorizeOpenCodeGo;
-		key = await authorize({
-			keyName: reviewKeyName(repo),
-			notify: (message) => ui.notify(message, "info"),
-		});
+		key = await requestOpenCodeKey(authorize, options, repo, settings.provider);
 	} else if (flow === "openrouter") {
 		const authorize = options.deps.authorizeOpenRouter ?? authorizeOpenRouter;
 		const openUrl = options.deps.openUrl ?? (async (url: string) => openExternalUrl(url));
@@ -960,8 +1050,26 @@ export async function installPiReview(options: InstallOptions): Promise<InstallO
 		apiKeySet = await configureReviewKey(options, repo, state.secrets, settings);
 		if (apiKeySet) changed.push(API_KEY_SECRET);
 	} catch (error) {
+		if (options.signal?.aborted) {
+			return {
+				...identity,
+				changed,
+				apiKeySet,
+				apiKeyPresent: state.secrets.includes(API_KEY_SECRET),
+			};
+		}
 		const message = error instanceof Error ? error.message : String(error);
 		ui.notify(`Could not set ${API_KEY_SECRET}: ${message}`, "warning");
+	}
+
+	// Reload/quit aborts the wizard; do not create a branch after the fact.
+	if (options.signal?.aborted) {
+		return {
+			...identity,
+			changed,
+			apiKeySet,
+			apiKeyPresent: state.secrets.includes(API_KEY_SECRET) || apiKeySet,
+		};
 	}
 
 	let workflow: WorkflowOutcome | undefined;

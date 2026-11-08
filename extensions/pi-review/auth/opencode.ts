@@ -13,6 +13,8 @@ import { deviceSignIn, provisionApiKey } from "../../opencode-go/oauth.ts";
 export interface AuthorizeOpenCodeOptions {
 	keyName: string;
 	notify: (message: string) => void;
+	/** Poll ticks. Defaults to `notify`; a waiting dialog can mute them. */
+	progress?: (message: string) => void;
 	signal?: AbortSignal;
 	fetcher?: typeof fetch;
 	/** Test seams. */
@@ -21,7 +23,8 @@ export interface AuthorizeOpenCodeOptions {
 	timeoutMs?: number;
 }
 
-const DEFAULT_TIMEOUT_MS = 15 * 60_000;
+/** How long the device grant may stay unapproved before it is abandoned. */
+export const OPENCODE_SIGN_IN_TIMEOUT_MS = 15 * 60_000;
 
 /**
  * Sign in with the OpenCode Console device grant, then mint a revocable Go key
@@ -33,7 +36,7 @@ export async function authorizeOpenCodeGo(options: AuthorizeOpenCodeOptions): Pr
 	options.signal?.addEventListener("abort", onAbort, { once: true });
 	const timer = setTimeout(
 		() => controller.abort(new Error("OpenCode sign-in timed out.")),
-		options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+		options.timeoutMs ?? OPENCODE_SIGN_IN_TIMEOUT_MS
 	);
 
 	const interaction: ProviderAuthInteraction = {
@@ -49,7 +52,7 @@ export async function authorizeOpenCodeGo(options: AuthorizeOpenCodeOptions): Pr
 					`OpenCode sign-in: open ${event.verificationUri} and confirm the code ${event.userCode}.`
 				);
 			} else if (event.type === "progress" || event.type === "info") {
-				options.notify(event.message);
+				(options.progress ?? options.notify)(event.message);
 			} else if (event.type === "auth_url") {
 				options.notify(event.url);
 			}

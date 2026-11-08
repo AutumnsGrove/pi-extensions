@@ -91,7 +91,9 @@ one.
    - **OpenCode Go** — device sign-in to the Console (the same grant
      `/login opencode-go` uses), then a new Go key named
      `pi-review-<owner>-<repo>`. The interactive `pi-<host>` key is never
-     touched, and re-provisioning revokes only keys with that CI name.
+     touched, and re-provisioning revokes only keys with that CI name. A
+     dialog shows the wait: Escape cancels it, and a rejected, expired, or
+     cancelled code offers a fresh code, a pasted key, or a skip.
    - **OpenRouter** — OAuth PKCE: a local callback receives a one-time code,
      the verifier never leaves the process, and `key_label` is the repository
      name. The headless fallback pastes the code the page shows.

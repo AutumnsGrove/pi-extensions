@@ -51,6 +51,57 @@ const EXTENSION_PATH = fileURLToPath(new URL("./index.ts", import.meta.url));
 
 const SUBCOMMANDS = ["run", "status", "install", "settings", "uninstall", "help"];
 
+/**
+ * Aborts in-flight command work. Pi invalidates the command ctx on reload, so
+ * every await that can outlive the command (device sign-in, dialogs, the local
+ * review child) watches this signal instead of calling a stale ctx.
+ */
+let activeRun: AbortController | undefined;
+
+function beginRun(): AbortController {
+	activeRun?.abort(new Error("pi-review: a newer command took over."));
+	const controller = new AbortController();
+	activeRun = controller;
+	return controller;
+}
+
+function endRun(controller: AbortController): void {
+	if (activeRun === controller) activeRun = undefined;
+}
+
+/** The ctx throws this once pi reloads extensions or switches sessions. */
+function isStaleContextError(error: unknown): boolean {
+	return (
+		error instanceof Error &&
+		error.message.startsWith("This extension ctx is stale after session replacement or reload.")
+	);
+}
+
+/** Teardown runs after a reload too; never let it turn into a command error. */
+function quietly(action: () => void): void {
+	try {
+		action();
+	} catch {
+		// The ctx is stale after reload/quit; there is no one left to tell.
+	}
+}
+
+/** Resolve `fallback` as soon as `signal` aborts, even if `promise` never settles. */
+async function abortable<T>(
+	promise: Promise<T>,
+	signal: AbortSignal | undefined,
+	fallback: T
+): Promise<T> {
+	if (!signal) return promise;
+	if (signal.aborted) return fallback;
+	return await Promise.race([
+		promise,
+		new Promise<T>((resolve) => {
+			signal.addEventListener("abort", () => resolve(fallback), { once: true });
+		}),
+	]);
+}
+
 function execFor(pi: ExtensionAPI): Exec {
 	return (command, args, options) => pi.exec(command, args, options);
 }
@@ -136,7 +187,8 @@ async function showRunResult(
 async function runCommand(
 	pi: ExtensionAPI,
 	ctx: ExtensionCommandContext,
-	argv: string[]
+	argv: string[],
+	signal: AbortSignal
 ): Promise<void> {
 	if (!ctx.isProjectTrusted()) {
 		ctx.ui.notify("pi-review: the project is not trusted; a review run needs a trusted checkout", "warning");
@@ -187,7 +239,9 @@ async function runCommand(
 				...reviewChildEnv({ prNumber: pr, baseRef }),
 				...(resolveThreads ? { PI_REVIEW_RESOLVE_THREADS: "1" } : {}),
 			},
-			onProgress: (line) => ctx.ui.setStatus(STATUS_KEY, `reviewing · ${line}`),
+			signal,
+			onProgress: (line) =>
+				quietly(() => ctx.ui.setStatus(STATUS_KEY, `reviewing · ${line}`)),
 		});
 		await showRunResult(
 			pi,
@@ -197,8 +251,8 @@ async function runCommand(
 			options.post
 		);
 	} finally {
-		ctx.ui.setWorkingMessage();
-		ctx.ui.setStatus(STATUS_KEY, undefined);
+		quietly(() => ctx.ui.setWorkingMessage());
+		quietly(() => ctx.ui.setStatus(STATUS_KEY, undefined));
 	}
 }
 
@@ -228,7 +282,11 @@ async function warnOnCheckoutMismatch(
 	);
 }
 
-async function settingsCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+async function settingsCommand(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	signal?: AbortSignal
+): Promise<void> {
 	const path = join(ctx.cwd, SETTINGS_PATH);
 	let raw: string;
 	try {
@@ -249,7 +307,7 @@ async function settingsCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext): 
 		return;
 	}
 
-	const choice = await editSettings(existing, wizardUi(ctx));
+	const choice = await editSettings(existing, wizardUi(ctx, signal));
 	if (choice === undefined) {
 		ctx.ui.notify("Settings unchanged.", "info");
 		return;
@@ -257,7 +315,11 @@ async function settingsCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext): 
 
 	let settings: ReviewSettings;
 	if (choice === "json") {
-		const edited = await ctx.ui.editor("pi-review settings (JSON)", raw);
+		const edited = await abortable(
+			ctx.ui.editor("pi-review settings (JSON)", raw),
+			signal,
+			undefined
+		);
 		if (edited === undefined || edited === raw) {
 			ctx.ui.notify("Settings unchanged.", "info");
 			return;
@@ -320,16 +382,20 @@ async function settingsCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext): 
 			].join("\n")
 		);
 	} finally {
-		ctx.ui.setStatus(STATUS_KEY, undefined);
+		quietly(() => ctx.ui.setStatus(STATUS_KEY, undefined));
 	}
 }
 
-async function uninstallCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+async function uninstallCommand(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	signal?: AbortSignal
+): Promise<void> {
 	ctx.ui.setStatus(STATUS_KEY, "uninstall: checking the repository…");
 	try {
 		const outcome = await uninstallPiReview({
 			cwd: ctx.cwd,
-			ui: wizardUi(ctx),
+			ui: wizardUi(ctx, signal),
 			deps: {
 				exec: execFor(pi),
 				run: spawnRunner,
@@ -338,7 +404,7 @@ async function uninstallCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext):
 		});
 		await showMessage(pi, ctx, renderUninstallOutcome(outcome), { uninstall: outcome.status });
 	} finally {
-		ctx.ui.setStatus(STATUS_KEY, undefined);
+		quietly(() => ctx.ui.setStatus(STATUS_KEY, undefined));
 	}
 }
 
@@ -435,23 +501,35 @@ async function describeReviewSetup(
 	return lines;
 }
 
-function wizardUi(ctx: ExtensionCommandContext): WizardUI {
+function wizardUi(ctx: ExtensionCommandContext, signal?: AbortSignal): WizardUI {
+	const opts = signal ? { signal } : undefined;
 	return {
-		confirm: (title, message) => ctx.ui.confirm(title, message),
-		select: (title, options) => ctx.ui.select(title, options),
-		input: (title, placeholder) => ctx.ui.input(title, placeholder),
-		editor: (title, prefill) => ctx.ui.editor(title, prefill),
+		confirm: (title, message) => ctx.ui.confirm(title, message, opts),
+		select: (title, options) => ctx.ui.select(title, options, opts),
+		input: (title, placeholder) => ctx.ui.input(title, placeholder, opts),
+		// The multi-line editor has no signal option; race it so a reload cannot
+		// leave the command waiting on a dialog pi already removed.
+		editor: (title, prefill) => abortable(ctx.ui.editor(title, prefill), signal, undefined),
+		wait: async (title, message, waitOpts) => {
+			// A one-option selector: any close (Enter, Escape, timeout) stops waiting.
+			await ctx.ui.select(`${title}\n\n${message}`, ["Cancel sign-in"], waitOpts);
+		},
 		notify: (message, type) => ctx.ui.notify(message, type),
 	};
 }
 
-async function installCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+async function installCommand(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	signal: AbortSignal
+): Promise<void> {
 	ctx.ui.setStatus(STATUS_KEY, "install: checking the repository…");
 	try {
 		const outcome = await installPiReview({
 			cwd: ctx.cwd,
 			env: process.env,
-			ui: wizardUi(ctx),
+			ui: wizardUi(ctx, signal),
+			signal,
 			deps: {
 				exec: execFor(pi),
 				run: spawnRunner,
@@ -467,7 +545,7 @@ async function installCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext): P
 			ctx.ui.notify("pi-review: the App is created; finish by installing it on the repository", "warning");
 		}
 	} finally {
-		ctx.ui.setStatus(STATUS_KEY, undefined);
+		quietly(() => ctx.ui.setStatus(STATUS_KEY, undefined));
 	}
 }
 
@@ -480,6 +558,7 @@ export default function piReview(pi: ExtensionAPI): void {
 		},
 		handler: async (args, ctx) => {
 			const [subcommand = "", ...rest] = args.trim().split(/\s+/).filter(Boolean);
+			const run = beginRun();
 			try {
 				switch (subcommand) {
 					case "":
@@ -487,29 +566,46 @@ export default function piReview(pi: ExtensionAPI): void {
 						await showMessage(pi, ctx, helpText());
 						return;
 					case "run":
-						await runCommand(pi, ctx, rest);
+						await runCommand(pi, ctx, rest, run.signal);
 						return;
 					case "status":
 						await showStatus(pi, ctx);
 						return;
 					case "install":
-						await installCommand(pi, ctx);
+						await installCommand(pi, ctx, run.signal);
 						return;
 					case "settings":
-						await settingsCommand(pi, ctx);
+						await settingsCommand(pi, ctx, run.signal);
 						return;
 					case "uninstall":
-						await uninstallCommand(pi, ctx);
+						await uninstallCommand(pi, ctx, run.signal);
 						return;
 					default:
 						ctx.ui.notify(`pi-review: unknown subcommand "${subcommand}" (try /pi-review help)`, "error");
 				}
 			} catch (error) {
+				// A reload invalidates ctx; reporting that error would itself use the stale ctx.
+				if (isStaleContextError(error) || run.signal.aborted) return;
 				const message = error instanceof Error ? error.message : String(error);
-				ctx.ui.notify(`pi-review: ${message}`, "error");
+				quietly(() => ctx.ui.notify(`pi-review: ${message}`, "error"));
+			} finally {
+				endRun(run);
 			}
 		},
 	});
 
 	if (isReviewRunner()) registerReviewRunner(pi);
+
+	// Reload and quit emit session_shutdown before invalidating the ctx; the
+	// session-changing commands invalidate it during the switch. Stop dialogs and
+	// background work on all of them so the command unwinds instead of calling
+	// into a ctx that is about to disappear.
+	const stop = (): void => {
+		activeRun?.abort(new Error("pi-review stopped because the session changed."));
+		activeRun = undefined;
+	};
+	pi.on("session_shutdown", stop);
+	pi.on("session_before_switch", stop);
+	pi.on("session_before_fork", stop);
+	pi.on("session_before_tree", stop);
 }

@@ -13,6 +13,7 @@ type Handler = (args: string, ctx: ExtensionCommandContext) => Promise<void>;
 interface Harness {
 	command: { name: string; handler: Handler; getArgumentCompletions?: (prefix: string) => unknown };
 	tools: ToolDefinition[];
+	handlers: Map<string, (...args: unknown[]) => unknown>;
 	notify: ReturnType<typeof vi.fn>;
 	sendMessage: ReturnType<typeof vi.fn>;
 	ctx: ExtensionCommandContext;
@@ -26,6 +27,7 @@ function load(
 	})
 ): Harness {
 	const tools: ToolDefinition[] = [];
+	const handlers = new Map<string, (...args: unknown[]) => unknown>();
 	const notify = vi.fn();
 	const sendMessage = vi.fn();
 	let command: Harness["command"] | undefined;
@@ -36,7 +38,10 @@ function load(
 		registerTool: (tool: ToolDefinition) => {
 			tools.push(tool);
 		},
-		on: () => () => {},
+		on: (event: string, handler: (...args: unknown[]) => unknown) => {
+			handlers.set(event, handler);
+			return () => handlers.delete(event);
+		},
 		exec,
 		sendMessage,
 	} as unknown as Parameters<typeof piReview>[0];
@@ -53,7 +58,7 @@ function load(
 			setWorkingMessage: vi.fn(),
 		},
 	} as unknown as ExtensionCommandContext;
-	return { command, tools, notify, sendMessage, ctx };
+	return { command, tools, handlers, notify, sendMessage, ctx };
 }
 
 const original = process.env.PI_REVIEW;
@@ -126,6 +131,41 @@ describe("pi-review command", () => {
 		const { command, notify, ctx } = load();
 		await command.handler("nope", ctx);
 		expect(notify).toHaveBeenCalledWith(expect.stringContaining("unknown subcommand"), "error");
+	});
+
+	it("does not surface a stale ctx after a reload", async () => {
+		delete process.env.PI_REVIEW;
+		const { command, ctx } = load();
+		vi.mocked(ctx.ui.notify).mockImplementation(() => {
+			throw new Error(
+				"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx."
+			);
+		});
+		await expect(command.handler("uninstall", ctx)).resolves.toBeUndefined();
+	});
+
+	it("aborts in-flight work when the session shuts down", async () => {
+		delete process.env.PI_REVIEW;
+		let received: AbortSignal | undefined;
+		vi.mocked(runLocalReview).mockImplementation(
+			(options) =>
+				new Promise((_resolve, reject) => {
+					received = options.signal;
+					options.signal?.addEventListener("abort", () => reject(options.signal?.reason), {
+						once: true,
+					});
+				})
+		);
+		const { command, handlers, ctx } = load(async (name, args) =>
+			name === "git" && args.join(" ") === "remote get-url origin"
+				? { stdout: "git@github.com:owner/repo.git", stderr: "", code: 0 }
+				: { stdout: "", stderr: "", code: 1 }
+		);
+		const pending = command.handler("run --pr 7", ctx);
+		await vi.waitFor(() => expect(received).toBeDefined());
+		handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "reload" });
+		await expect(pending).resolves.toBeUndefined();
+		expect(received?.aborted).toBe(true);
 	});
 
 	it("passes the resolved PR and base to the child process", async () => {

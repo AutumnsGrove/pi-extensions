@@ -12,6 +12,7 @@ import type { ManifestServer, ManifestServerOptions } from "./github/server.ts";
 import { ManifestTimeoutError } from "./github/server.ts";
 import { APP_ID_SECRET, APP_KEY_SECRET, APP_SLUG_VARIABLE } from "./github/secrets.ts";
 import { API_KEY_SECRET, installPiReview, renderInstallOutcome, type WizardUI } from "./install.ts";
+import type { AuthorizeOpenCodeOptions } from "./auth/opencode.ts";
 import { defaultSettings, parseSettings } from "./settings.ts";
 
 const CREATE = "Create a Pi GitHub App (recommended)";
@@ -212,7 +213,7 @@ interface HarnessOptions {
 	writeBranch?: ReturnType<typeof fakeBranchWriter>;
 	opened?: string[];
 	defaults?: { provider?: string; model?: string };
-	authorizeOpenCode?: () => Promise<string>;
+	authorizeOpenCode?: (options: AuthorizeOpenCodeOptions) => Promise<string>;
 	authorizeOpenRouter?: (options: { keyLabel: string }) => Promise<string>;
 	fetch?: ReturnType<typeof fakeFetch>;
 	cachePath?: string;
@@ -220,6 +221,7 @@ interface HarnessOptions {
 	saveAppKeyLocally?: boolean;
 	keySearchDirs?: string[];
 	cwd?: string;
+	signal?: AbortSignal;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -240,6 +242,7 @@ function harness(options: HarnessOptions = {}) {
 				cwd: options.cwd ?? cwd,
 				env,
 				ui,
+				...(options.signal ? { signal: options.signal } : {}),
 				defaults: options.defaults ?? defaults,
 				deps: {
 					exec: options.exec ?? fakeExec(),
@@ -797,6 +800,135 @@ describe("installPiReview settings and key", () => {
 		expect(outcome.apiKeySet).toBe(true);
 		const keyCall = runner.calls.find((call) => call.args[2] === API_KEY_SECRET);
 		expect(keyCall?.stdin).toBe("oc_sk_minted");
+	});
+
+	it("lets a stuck OpenCode sign-in be cancelled", async () => {
+		const runner = fakeRunner({ secrets: [] });
+		const base = scriptedUi({
+			confirm: [true, true],
+			select: [
+				CREATE,
+				"medium",
+				"Read-only",
+				"Comment only",
+				"Sign in to OpenCode Go (recommended)",
+				"Skip for now",
+			],
+		});
+		let waited = false;
+		const ui: WizardUI = {
+			...base,
+			wait: async () => {
+				waited = true;
+			},
+		};
+		const outcome = await harness({
+			runner,
+			ui,
+			authorizeOpenCode: ({ signal }) =>
+				new Promise<string>((_resolve, reject) => {
+					if (signal?.aborted) reject(signal.reason);
+					signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+				}),
+		}).run();
+		expect(waited).toBe(true);
+		expect(outcome.apiKeySet).toBe(false);
+		expect(outcome.status).toBe("created");
+		expect(base.selects.at(-1)?.title).toBe("OpenCode Go sign-in");
+		expect(
+			base.notifications.some((entry) => entry.message.includes("sign-in cancelled"))
+		).toBe(true);
+	});
+
+	it("mints a fresh code when the device page rejects the sign-in", async () => {
+		const runner = fakeRunner({ secrets: [] });
+		const ui = scriptedUi({
+			confirm: [true, true],
+			select: [
+				CREATE,
+				"medium",
+				"Read-only",
+				"Comment only",
+				"Sign in to OpenCode Go (recommended)",
+				"Try signing in again (new code)",
+			],
+		});
+		const attempts: string[] = [];
+		const outcome = await harness({
+			runner,
+			ui,
+			authorizeOpenCode: async () => {
+				attempts.push("attempt");
+				if (attempts.length === 1) throw new Error("OpenCode Go returned an incomplete device-code response.");
+				return "oc_sk_retry";
+			},
+		}).run();
+		expect(attempts).toHaveLength(2);
+		expect(outcome.apiKeySet).toBe(true);
+		const keyCall = runner.calls.find((call) => call.args[2] === API_KEY_SECRET);
+		expect(keyCall?.stdin).toBe("oc_sk_retry");
+	});
+
+	it("stops the wizard when the session reloads mid-sign-in", async () => {
+		const runner = fakeRunner({ secrets: [] });
+		const controller = new AbortController();
+		const base = scriptedUi({
+			confirm: [true, true],
+			select: [
+				CREATE,
+				"medium",
+				"Read-only",
+				"Comment only",
+				"Sign in to OpenCode Go (recommended)",
+			],
+		});
+		const ui: WizardUI = {
+			...base,
+			wait: (_title, _message, opts) =>
+				new Promise<void>((resolve) => {
+					if (opts?.signal?.aborted) return resolve();
+					opts?.signal?.addEventListener("abort", () => resolve(), { once: true });
+					queueMicrotask(() => controller.abort(new Error("reloaded")));
+				}),
+		};
+		const outcome = await harness({
+			runner,
+			ui,
+			signal: controller.signal,
+			authorizeOpenCode: ({ signal }) =>
+				new Promise<string>((_resolve, reject) => {
+					signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+				}),
+		}).run();
+		expect(outcome.apiKeySet).toBe(false);
+		expect(outcome.workflow).toBeUndefined();
+		expect(base.selects.some((entry) => entry.title === "OpenCode Go sign-in")).toBe(false);
+	});
+
+	it("accepts a pasted key after a failed OpenCode sign-in", async () => {
+		const runner = fakeRunner({ secrets: [] });
+		const ui = scriptedUi({
+			confirm: [true, true],
+			select: [
+				CREATE,
+				"medium",
+				"Read-only",
+				"Comment only",
+				"Sign in to OpenCode Go (recommended)",
+				"Paste an API key",
+			],
+			input: ["oc_sk_pasted"],
+		});
+		const outcome = await harness({
+			runner,
+			ui,
+			authorizeOpenCode: async () => {
+				throw new Error("OpenCode Go sign-in was denied.");
+			},
+		}).run();
+		expect(outcome.apiKeySet).toBe(true);
+		const keyCall = runner.calls.find((call) => call.args[2] === API_KEY_SECRET);
+		expect(keyCall?.stdin).toBe("oc_sk_pasted");
 	});
 
 	it("authorizes OpenRouter with a repository-scoped key label", async () => {

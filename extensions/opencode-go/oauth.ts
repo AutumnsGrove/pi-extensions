@@ -152,12 +152,14 @@ export const parseTokens = (payload: unknown): Tokens | undefined => {
 /** Request a device + user code from the Console. */
 export async function requestDeviceCode(
 	server: string = resolveServer(),
-	fetcher: typeof fetch = fetch
+	fetcher: typeof fetch = fetch,
+	signal?: AbortSignal
 ): Promise<DeviceCode> {
 	const response = await fetcher(`${server}/auth/device/code`, {
 		method: "POST",
 		headers: { Accept: "application/json", "Content-Type": "application/json" },
 		body: JSON.stringify({ client_id: OPENCODE_CLIENT_ID }),
+		...(signal ? { signal } : {}),
 	});
 	if (!response.ok) {
 		throw new Error(`OpenCode Go device authorization failed (${response.status}).`);
@@ -287,7 +289,7 @@ export async function deviceSignIn(
 	interaction: ProviderAuthInteraction
 ): Promise<DeviceSession> {
 	const server = resolveServer();
-	const device = await requestDeviceCode(server);
+	const device = await requestDeviceCode(server, fetch, interaction.signal);
 	interaction.notify({
 		type: "device_code",
 		userCode: device.userCode,
