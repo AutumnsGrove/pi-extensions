@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -58,8 +58,9 @@ function baseResponses(): Record<string, { stdout?: string; stderr?: string; cod
 		"git status --porcelain -- .github/pi-review.json .github/workflows/pi-review.yml": {
 			stdout: "A  .github/pi-review.json\nA  .github/workflows/pi-review.yml\n",
 		},
-		"git commit -m Add pi-review workflow and settings": { stdout: "" },
-		"git push -u origin pi-review/setup": { stdout: "" },
+		"git commit --no-verify -m Add pi-review workflow and settings": { stdout: "" },
+		"git push --no-verify -u origin pi-review/setup": { stdout: "" },
+		"git reset -q -- .github/pi-review.json .github/workflows/pi-review.yml": { stdout: "" },
 		"git checkout feature": { stdout: "" },
 	};
 }
@@ -116,8 +117,8 @@ describe("writeWorkflowBranch", () => {
 		expect(await readFile(join(cwd, ".github/pi-review.json"), "utf8")).toBe('{"version":1}\n');
 		const order = exec.calls.map((call) => call.args.join(" "));
 		expect(order).toContain("checkout -B pi-review/setup origin/main");
-		expect(order.indexOf("commit -m Add pi-review workflow and settings")).toBeLessThan(
-			order.indexOf("push -u origin pi-review/setup")
+		expect(order.indexOf("commit --no-verify -m Add pi-review workflow and settings")).toBeLessThan(
+			order.indexOf("push --no-verify -u origin pi-review/setup")
 		);
 		expect(order.at(-1)).toBe("checkout feature");
 	});
@@ -157,12 +158,15 @@ describe("writeWorkflowBranch", () => {
 	it("surfaces a push failure and still restores the branch", async () => {
 		const cwd = await repoDir();
 		const responses = baseResponses();
-		responses["git push -u origin pi-review/setup"] = { stderr: "protected branch", code: 1 };
+		responses["git push --no-verify -u origin pi-review/setup"] = {
+			stderr: "protected branch",
+			code: 1,
+		};
 		const exec = fakeExec(responses);
 		await expect(
 			writeWorkflowBranch({ exec, cwd, repo, defaultBranch: "main", files, message: "m" })
 		).rejects.toThrow("protected branch");
-		expect(exec.calls.at(-1)?.args.join(" ")).toBe("checkout feature");
+		expect(exec.calls.map((call) => call.args.join(" "))).toContain("checkout feature");
 	});
 
 	it("stages deletions when deletePaths are given", async () => {
@@ -190,6 +194,58 @@ describe("writeWorkflowBranch", () => {
 		expect(exec.calls.map((call) => call.args.join(" "))).toContain(
 			"add -A -- .github/pi-review.json .github/workflows/pi-review.yml"
 		);
+	});
+
+	it("skips repository hooks on the commit and the push", async () => {
+		const cwd = await repoDir();
+		const exec = fakeExec(baseResponses());
+		await writeWorkflowBranch({
+			exec,
+			cwd,
+			repo,
+			defaultBranch: "main",
+			files,
+			message: "Add pi-review workflow and settings",
+		});
+		const commands = exec.calls.map((call) => call.args.join(" "));
+		expect(commands).toContain("commit --no-verify -m Add pi-review workflow and settings");
+		expect(commands).toContain("push --no-verify -u origin pi-review/setup");
+	});
+
+	it("cleans the generated files out of the working tree when the commit fails", async () => {
+		const cwd = await repoDir();
+		const responses = baseResponses();
+		responses["git commit --no-verify -m m"] = {
+			stderr: "hook failed",
+			code: 1,
+		};
+		const exec = fakeExec(responses);
+		await expect(
+			writeWorkflowBranch({ exec, cwd, repo, defaultBranch: "main", files, message: "m" })
+		).rejects.toThrow("hook failed");
+		expect(
+			exec.calls.map((call) => call.args.join(" ")).at(-1)
+		).toBe("reset -q -- .github/pi-review.json .github/workflows/pi-review.yml");
+		await expect(readFile(join(cwd, ".github/pi-review.json"), "utf8")).rejects.toThrow();
+		await expect(readFile(join(cwd, ".github/workflows/pi-review.yml"), "utf8")).rejects.toThrow();
+	});
+
+	it("restores files that existed before a failed commit", async () => {
+		const cwd = await repoDir();
+		await mkdir(join(cwd, ".github", "workflows"), { recursive: true });
+		await writeFile(join(cwd, ".github/pi-review.json"), '{"old":true}\n', "utf8");
+		await writeFile(join(cwd, ".github/workflows/pi-review.yml"), "old\n", "utf8");
+		const responses = baseResponses();
+		responses["git commit --no-verify -m m"] = {
+			stderr: "hook failed",
+			code: 1,
+		};
+		const exec = fakeExec(responses);
+		await expect(
+			writeWorkflowBranch({ exec, cwd, repo, defaultBranch: "main", files, message: "m" })
+		).rejects.toThrow("hook failed");
+		expect(await readFile(join(cwd, ".github/pi-review.json"), "utf8")).toBe('{"old":true}\n');
+		expect(await readFile(join(cwd, ".github/workflows/pi-review.yml"), "utf8")).toBe("old\n");
 	});
 
 	it("fails clearly when the checkout cannot be created", async () => {

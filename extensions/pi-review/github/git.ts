@@ -6,7 +6,7 @@
  * restores the branch the user was on. The caller opens the compare URL.
  */
 
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { type Exec, type RepoRef, run } from "../detect.ts";
 
@@ -94,6 +94,34 @@ function failure(action: string, result: { stderr?: string; code?: number }): Er
 	return new Error(`${action} failed (exit ${result.code ?? "?"})${detail ? `: ${detail}` : ""}`);
 }
 
+/** The file's current contents, or undefined when it does not exist yet. */
+async function readCurrent(cwd: string, path: string): Promise<string | undefined> {
+	try {
+		return await readFile(join(cwd, path), "utf8");
+	} catch {
+		return undefined;
+	}
+}
+
+/** Undo an uncommitted attempt: unstage the paths and put the old contents back. */
+async function restoreWorkingTree(
+	exec: Exec,
+	cwd: string,
+	before: Map<string, string | undefined>
+): Promise<void> {
+	const paths = [...before.keys()];
+	await git(exec, cwd, ["reset", "-q", "--", ...paths]);
+	for (const [path, content] of before) {
+		const full = join(cwd, path);
+		try {
+			if (content === undefined) await rm(full, { force: true });
+			else await writeFile(full, content, "utf8");
+		} catch {
+			// Best effort: the git error is the one worth reporting.
+		}
+	}
+}
+
 /**
  * Write the files, commit them on a fresh branch off the default, and push.
  * Throws on a dirty tree or a git failure before anything is pushed.
@@ -123,6 +151,13 @@ export async function writeWorkflowBranch(options: BranchOptions): Promise<Branc
 	const deletePaths = options.deletePaths ?? [];
 	const paths = [...files.map((file) => file.path), ...deletePaths];
 	if (paths.length === 0) throw new Error("Nothing to write or delete.");
+
+	// The setup commit only adds generated files, so repository hooks (which
+	// usually lint or test the whole tree) must not gate it.
+	const before = new Map<string, string | undefined>();
+	for (const path of paths) before.set(path, await readCurrent(cwd, path));
+
+	let succeeded = false;
 	try {
 		for (const file of files) {
 			const full = join(cwd, file.path);
@@ -142,12 +177,17 @@ export async function writeWorkflowBranch(options: BranchOptions): Promise<Branc
 		const committed = Boolean(staged.trim());
 
 		if (committed) {
-			const commit = await exec("git", ["commit", "-m", message], { cwd });
+			// `--no-verify`: the generated commit must not run the repo's hooks.
+			const commit = await exec("git", ["commit", "--no-verify", "-m", message], { cwd });
 			if ((commit.code ?? 0) !== 0) throw failure("git commit", commit);
-			const push = await exec("git", ["push", "-u", "origin", branch], { cwd, timeout: 120_000 });
+			const push = await exec("git", ["push", "--no-verify", "-u", "origin", branch], {
+				cwd,
+				timeout: 120_000,
+			});
 			if ((push.code ?? 0) !== 0) throw failure(`git push origin ${branch}`, push);
 		}
 
+		succeeded = true;
 		return {
 			branch,
 			compareUrl: compareUrl(repo, defaultBranch, branch),
@@ -161,5 +201,8 @@ export async function writeWorkflowBranch(options: BranchOptions): Promise<Branc
 		if (original && original !== "HEAD") {
 			await git(exec, cwd, ["checkout", original]);
 		}
+		// A failed commit leaves the generated files staged in the working tree;
+		// put the checkout back the way it was found.
+		if (!succeeded) await restoreWorkingTree(exec, cwd, before);
 	}
 }
