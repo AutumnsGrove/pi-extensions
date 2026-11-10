@@ -17,6 +17,9 @@ export const PACKAGE_REPO = "https://github.com/AutumnsGrove/pi-extensions.git";
 export const PACKAGE_SUBDIR = "extensions/pi-review";
 export const EXTENSION_NAME = "pi-review";
 
+/** The pull request a run is about, whichever event started it. */
+const PR_NUMBER = "github.event.pull_request.number || github.event.issue.number";
+
 function quote(value: string): string {
 	return `'${value.replace(/'/g, "''")}'`;
 }
@@ -31,7 +34,13 @@ function toolList(settings: ReviewSettings): string {
 	return tools.join(",");
 }
 
-function jobCondition(settings: ReviewSettings): string {
+/**
+ * The condition under which a run actually reviews something. The job `if:` and
+ * the concurrency group share it deliberately: GitHub evaluates `concurrency`
+ * when the run is created, *before* the job `if:`, so a run that will be skipped
+ * must not join the pull request's group or it cancels the review in flight.
+ */
+export function reviewCondition(settings: ReviewSettings): string {
 	const pullRequest = [
 		settings.triggers.skipDrafts ? "github.event.pull_request.draft == false" : undefined,
 		"github.event.pull_request.head.repo.full_name == github.repository",
@@ -47,6 +56,24 @@ function jobCondition(settings: ReviewSettings): string {
 		);
 	}
 	return conditions.join(" || ");
+}
+
+/**
+ * One group per pull request for runs that review; a unique group for runs that
+ * will be skipped, so an ordinary comment (or a draft push, or a fork) cancels
+ * nothing. `github.run_id` is the documented unique fallback: the group name is
+ * unique per run, so the run waits behind nothing and displaces nothing.
+ *
+ * Returned as lines so the workflow can render it as a folded scalar: the
+ * expression is long, and folding keeps it one string (and the committed YAML
+ * readable) without escaping the quotes inside it.
+ */
+export function concurrencyGroup(settings: ReviewSettings): string[] {
+	return [
+		`\${{ ((${reviewCondition(settings)}))`,
+		`&& format('${EXTENSION_NAME}-{0}', ${PR_NUMBER})`,
+		`|| format('${EXTENSION_NAME}-ignored-{0}', github.run_id) }}`,
+	];
 }
 
 /**
@@ -143,7 +170,7 @@ export function renderWorkflow(settings: ReviewSettings): string {
 		`--thinking ${settings.thinking}`,
 	];
 
-	const prNumberExpression = "${{ github.event.pull_request.number || github.event.issue.number }}";
+	const prNumberExpression = `\${{ ${PR_NUMBER} }}`;
 	const envLines = [
 		'          PI_REVIEW: "1"',
 		`          PR_NUMBER: ${prNumberExpression}`,
@@ -222,7 +249,8 @@ export function renderWorkflow(settings: ReviewSettings): string {
 		...(settings.triggers.mention ? ["  issue_comment:", "    types: [created]"] : []),
 		"",
 		"concurrency:",
-		`  group: ${EXTENSION_NAME}-${prNumberExpression}`,
+		"  group: >-",
+		...concurrencyGroup(settings).map((line) => `    ${line}`),
 		"  cancel-in-progress: true",
 		"",
 		"permissions:",
@@ -232,7 +260,7 @@ export function renderWorkflow(settings: ReviewSettings): string {
 		"",
 		"jobs:",
 		"  review:",
-		`    if: ${jobCondition(settings)}`,
+		`    if: ${reviewCondition(settings)}`,
 		"    runs-on: ubuntu-latest",
 		`    timeout-minutes: ${settings.timeoutMinutes + 5 + (verifyDeps ? installBudgetMinutes : 0)}`,
 		"    steps:",
