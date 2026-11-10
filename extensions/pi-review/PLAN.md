@@ -271,7 +271,7 @@ name: Pi Review
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
-concurrency: { group: pi-review-${{ github.event.pull_request.number }}, cancel-in-progress: true }
+concurrency: { group: pi-review-${{ <review condition> && pr number || github.run_id }}, cancel-in-progress: true }
 jobs:
   review:
     if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
@@ -310,7 +310,10 @@ adds complexity for a problem the owner does not want to own. Instead rely on
 what exists natively:
 
 - `timeout-minutes` on the job (wall-clock cap) and `concurrency` with
-  `cancel-in-progress` so a new push cancels a stale review.
+  `cancel-in-progress` so a new push cancels a stale review. The group is only
+  shared by runs that will actually review (`workflow.ts` reuses the job `if:`
+  in the group expression); a run the job would skip gets `github.run_id` and
+  cancels nothing, because concurrency is evaluated before the job `if:`.
 - Cap the diff embedded in the prompt (large diffs are summarised by file list;
   the agent reads the rest on demand).
 - A `GITHUB_STEP_SUMMARY` written in a `finally` (model, duration, tools

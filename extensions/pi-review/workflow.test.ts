@@ -52,10 +52,7 @@ describe("renderWorkflow", () => {
 			"ready_for_review",
 			"reopened",
 		]);
-		expect(workflow.concurrency).toEqual({
-			group: "pi-review-${{ github.event.pull_request.number || github.event.issue.number }}",
-			"cancel-in-progress": true,
-		});
+		expect(workflow.concurrency["cancel-in-progress"]).toBe(true);
 		expect(workflow.permissions).toEqual({
 			contents: "read",
 			"pull-requests": "write",
@@ -74,6 +71,35 @@ describe("renderWorkflow", () => {
 			"Step summary",
 			"Report an incomplete review",
 		]);
+	});
+
+	it("gives a skipped run its own concurrency group so it cancels no review", () => {
+		const workflow = render();
+		const group = workflow.concurrency.group;
+		// The group repeats the job `if:` verbatim: concurrency is evaluated when
+		// the run is created, before the job is skipped, so an ignored comment
+		// (or a draft, or a fork) must not land in the pull request's group.
+		expect(group).toContain(`((${workflow.jobs.review.if}))`);
+		expect(group).toContain(
+			"format('pi-review-{0}', github.event.pull_request.number || github.event.issue.number)"
+		);
+		expect(group).toContain("format('pi-review-ignored-{0}', github.run_id)");
+		// One template, so the pull request number is an expression operand and
+		// not a nested `${{ }}` inside the outer one.
+		expect(group.match(/\$\{\{/g)).toHaveLength(1);
+		expect(group.startsWith("${{ ")).toBe(true);
+		expect(group.endsWith(" }}")).toBe(true);
+		// Folded so the expression is one scalar without quote escaping.
+		expect(renderWorkflow(settings())).toContain("concurrency:\n  group: >-\n    ${{ ");
+	});
+
+	it("keeps the unique-group fallback with the mention trigger off", () => {
+		const workflow = render({ triggers: { ...settings().triggers, mention: false } });
+		const group = workflow.concurrency.group;
+		expect(group).not.toContain("@pi");
+		expect(group).not.toContain("issue_comment");
+		expect(group).toContain("format('pi-review-ignored-{0}', github.run_id)");
+		expect(group).toContain(`((${workflow.jobs.review.if}))`);
 	});
 
 	it("pins pi and the package ref, and checks out the PR with history", () => {

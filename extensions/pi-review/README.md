@@ -346,7 +346,12 @@ the summary links the pages to uninstall it and delete it.
   optionally bot authors;
 - one job, `contents: read`, `pull-requests: write`, `issues: write`,
   `concurrency` cancel-in-progress, job timeout = review timeout + 5 minutes so
-  the failure step can run;
+  the failure step can run. The concurrency group is the pull request number
+  *only for runs that will review*: the group expression repeats the job `if:`
+  and falls back to `github.run_id` otherwise, because GitHub evaluates
+  `concurrency` when the run is created — before the job `if:` is considered —
+  so an ignored `issue_comment` (or a draft push) sharing the group would
+  cancel the review already in flight;
 - checks out the PR with full history, installs a pinned pi, fetches this
   package at `settings.pi.packageRef`, mints the App token when
   `identity: "app"`, then runs one headless pi with the review extension;
