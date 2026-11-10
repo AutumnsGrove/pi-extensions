@@ -191,6 +191,37 @@ describe("pi-q-n-a is a hard blocker", () => {
 	});
 });
 
+describe("pi-q-n-a program status", () => {
+	it("reports a blocked question to the terminal while the form is open", async () => {
+		const tool = loadTool();
+		const seen: unknown[] = [];
+		const ctx = {
+			mode: "tui",
+			abort: () => {},
+			ui: {
+				custom: async (_factory: unknown, options?: unknown) => {
+					seen.push(options);
+					return { questions: [], answers: [], interrupted: false };
+				},
+			},
+		} as unknown as ExtensionToolContext;
+
+		await tool.execute("call", { questions: [question] }, undefined, undefined, ctx);
+		await tool.execute(
+			"call",
+			{ questions: [question, { ...question, id: "cache", label: "Cache" }] },
+			undefined,
+			undefined,
+			ctx
+		);
+
+		expect(seen).toEqual([
+			{ blocked: { kind: "question", message: "Answer 1 question" } },
+			{ blocked: { kind: "question", message: "Answer 2 questions" } },
+		]);
+	});
+});
+
 describe("pi-q-n-a rendering", () => {
 	it("renders a summary in the transcript", () => {
 		const tool = loadTool();
