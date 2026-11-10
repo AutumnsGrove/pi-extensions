@@ -11,14 +11,13 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { stringEnum } from "../_shared/schema.ts";
 import type { Exec, RepoRef } from "./detect.ts";
 import type { ParsedDiff } from "./diff.ts";
 import { REVIEW_MARKER, STICKY_MARKER } from "./markers.ts";
 import {
-	type ReviewInput,
 	type ReviewMeta,
 	type ValidatedReview,
 	renderReviewMarkdown,
@@ -254,7 +253,7 @@ export function createSubmitReviewTool(deps: SubmitReviewDeps) {
 					"Markdown review body: what the change does, the important findings, and anything you could not verify. Required, even when inline comments are also given.",
 			}),
 			event: Type.Optional(
-				StringEnum(["COMMENT", "REQUEST_CHANGES"] as const, {
+				stringEnum(["COMMENT", "REQUEST_CHANGES"] as const, {
 					description:
 						"COMMENT posts a normal review. REQUEST_CHANGES blocks the PR and is only honored when the reviewer was configured to allow it.",
 				})
@@ -265,7 +264,7 @@ export function createSubmitReviewTool(deps: SubmitReviewDeps) {
 						path: Type.String({ description: "Repository-relative path, as shown in the diff" }),
 						line: Type.Integer({ minimum: 1, description: "Line number in the file on the chosen side" }),
 						side: Type.Optional(
-							StringEnum(["RIGHT", "LEFT"] as const, {
+							stringEnum(["RIGHT", "LEFT"] as const, {
 								description: "RIGHT for the new file (default), LEFT for the base file",
 							})
 						),
@@ -295,7 +294,7 @@ export function createSubmitReviewTool(deps: SubmitReviewDeps) {
 			}
 
 			const diff = await deps.getDiff();
-			const review = validateReview(params as ReviewInput, diff, {
+			const review = validateReview(params, diff, {
 				requestChanges: deps.requestChanges,
 				...(deps.maxComments === undefined ? {} : { maxComments: deps.maxComments }),
 			});
