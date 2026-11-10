@@ -99,13 +99,13 @@ jobs:
           fi
           echo "PI_REVIEW_DEPS=installed" >> "$GITHUB_ENV"
       - name: Install pi
-        run: npm install -g @earendil-works/pi-coding-agent@1.5.0
+        run: npm install -g @earendil-works/pi-coding-agent@1.5.2
       - name: Check out pi-review
         run: |
           set -euo pipefail
           git init "$RUNNER_TEMP/pi-review-src"
           git -C "$RUNNER_TEMP/pi-review-src" remote add origin https://github.com/AutumnsGrove/pi-extensions.git
-          git -C "$RUNNER_TEMP/pi-review-src" fetch --depth 1 origin '058530fd7245464ba9738119f8930fb5122f760c'
+          git -C "$RUNNER_TEMP/pi-review-src" fetch --depth 1 origin 'cbdef42eaa563872cb31ebca7e9a79fc8d3b43e0'
           git -C "$RUNNER_TEMP/pi-review-src" checkout --detach FETCH_HEAD
       - name: Require a same-repo pull request
         if: github.event_name == 'issue_comment'
