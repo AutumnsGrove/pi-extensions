@@ -19,7 +19,6 @@
  * metadata, config file, i18n, or turn-based fading.
  */
 
-import { StringEnum } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
@@ -54,17 +53,22 @@ const DRIFT_RESEND_TURNS = 3;
 const MAX_PANEL_ROWS = 5;
 
 const TodoParamsSchema = Type.Object({
-	action: StringEnum(["create", "update", "delete", "list"] as const, {
-		description: "create a task, update it, delete it, or list all tasks",
-	}),
+	// Plain JSON Schema literals rather than StringEnum: pi validates tool
+	// arguments with pi-schema, which reads `anyOf`/`const` and keeps the
+	// inferred type (StringEnum's `TUnsafe` degrades it to `unknown`).
+	action: Type.Union(
+		["create", "update", "delete", "list"].map((action) => Type.Literal(action)),
+		{ description: "create a task, update it, delete it, or list all tasks" }
+	),
 	subject: Type.Optional(
 		Type.String({ description: "Short imperative task subject (required for create, mutable on update)" }),
 	),
 	id: Type.Optional(Type.Number({ description: "Task id (required for update and delete)" })),
 	status: Type.Optional(
-		StringEnum(["pending", "in_progress", "completed"] as const, {
-			description: "New status when action is update",
-		}),
+		Type.Union(
+			["pending", "in_progress", "completed"].map((status) => Type.Literal(status)),
+			{ description: "New status when action is update" }
+		),
 	),
 	activeForm: Type.Optional(
 		Type.String({

@@ -22,7 +22,6 @@
  * stops the jobs owned by that session. Logs stay on disk for the OS to clean.
  */
 
-import { StringEnum } from "@earendil-works/pi-ai";
 import {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
@@ -102,9 +101,13 @@ const BashParams = Type.Object({
 type BashArgs = Static<typeof BashParams>;
 
 const JobsParams = Type.Object({
-	action: StringEnum(["list", "output", "attach", "kill", "search", "clear"] as const, {
-		description: "list jobs, read output, wait for one, kill one, search logs, or clear finished jobs",
-	}),
+	// Plain JSON Schema literals rather than StringEnum: pi validates tool
+	// arguments with pi-schema, which reads `anyOf`/`const` and keeps the
+	// inferred type (StringEnum's `TUnsafe` degrades it to `unknown`).
+	action: Type.Union(
+		["list", "output", "attach", "kill", "search", "clear"].map((action) => Type.Literal(action)),
+		{ description: "list jobs, read output, wait for one, kill one, search logs, or clear finished jobs" }
+	),
 	id: Type.Optional(Type.String({ description: "Job id (required for output, attach, and kill)" })),
 	pattern: Type.Optional(Type.String({ description: "Regular expression to search in job logs (required for search)" })),
 	lines: Type.Optional(Type.Number({ description: "Number of output lines to return (default 60, max 500)" })),
