@@ -76,8 +76,16 @@ export default function piQnA(pi: ExtensionAPI) {
 			const release = beginBlocker(TOOL_NAME);
 			let result: QuestionnaireResult;
 			try {
-				result = await ctx.ui.custom<QuestionnaireResult>((tui, theme, _keybindings, done) =>
-					new QuestionnaireComponent({ tui, theme, questions, done })
+				result = await ctx.ui.custom<QuestionnaireResult>(
+					(tui, theme, _keybindings, done) => new QuestionnaireComponent({ tui, theme, questions, done }),
+					// Report the wait to terminals that support OSC 7501, the way pi's own
+					// dialogs do, so the tab says "blocked" instead of "working".
+					{
+						blocked: {
+							kind: "question",
+							message: `Answer ${questions.length} question${questions.length === 1 ? "" : "s"}`,
+						},
+					}
 				);
 			} finally {
 				release();

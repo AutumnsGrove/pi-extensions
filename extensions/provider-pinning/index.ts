@@ -276,17 +276,21 @@ export default function providerPinning(pi: ExtensionAPI): void {
 			}
 		};
 
-		const result = await ctx.ui.custom<PinResult | undefined>((tui, theme, _keybindings, done) =>
-			createProviderTable({
-				modelId,
-				pin: pins.pins[modelId],
-				lastServed: lastServed.get(modelId),
-				load,
-				initial: cached,
-				theme,
-				requestRender: () => tui.requestRender(),
-				done,
-			})
+		const result = await ctx.ui.custom<PinResult | undefined>(
+			(tui, theme, _keybindings, done) =>
+				createProviderTable({
+					modelId,
+					pin: pins.pins[modelId],
+					lastServed: lastServed.get(modelId),
+					load,
+					initial: cached,
+					theme,
+					requestRender: () => tui.requestRender(),
+					done,
+				}),
+			// Report the wait to terminals that support OSC 7501, the way pi's own
+			// dialogs do, so the tab says "blocked" instead of "working".
+			{ blocked: { kind: "question", message: "Choose an OpenRouter provider" } }
 		);
 		if (!result) {
 			return;

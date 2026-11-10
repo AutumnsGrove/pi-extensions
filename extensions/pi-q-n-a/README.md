@@ -91,6 +91,10 @@ Interrupting the form terminates the current run, so the model cannot answer an
 empty result and continue without you. The blocker is released on submit,
 interrupt, or if the form throws.
 
+The form also reports `blocked` program status (OSC 7501) to terminals that
+support it, like pi's own dialogs, so the tab reads "Answer 2 questions" instead
+of "working" while it waits.
+
 ## The result
 
 The model receives a transcript:
