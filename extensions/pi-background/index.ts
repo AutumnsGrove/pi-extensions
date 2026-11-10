@@ -22,7 +22,6 @@
  * stops the jobs owned by that session. Logs stay on disk for the OS to clean.
  */
 
-import { StringEnum } from "@earendil-works/pi-ai";
 import {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
@@ -34,6 +33,7 @@ import {
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import { isBlocked, onBlockersChange } from "../_shared/blockers.ts";
+import { stringEnum } from "../_shared/schema.ts";
 import {
 	DEFAULT_AUTO_BACKGROUND_SECONDS,
 	clearFinishedJobs,
@@ -102,7 +102,7 @@ const BashParams = Type.Object({
 type BashArgs = Static<typeof BashParams>;
 
 const JobsParams = Type.Object({
-	action: StringEnum(["list", "output", "attach", "kill", "search", "clear"] as const, {
+	action: stringEnum(["list", "output", "attach", "kill", "search", "clear"] as const, {
 		description: "list jobs, read output, wait for one, kill one, search logs, or clear finished jobs",
 	}),
 	id: Type.Optional(Type.String({ description: "Job id (required for output, attach, and kill)" })),

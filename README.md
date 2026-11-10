@@ -206,6 +206,12 @@ pnpm test           # vitest run
 Extensions are loaded directly as TypeScript by pi (via jiti); there is no build
 step.
 
+Build tool parameter schemas with `stringEnum()` from
+[`extensions/_shared/schema.ts`](extensions/_shared/schema.ts) rather than
+`StringEnum` from `@earendil-works/pi-ai`: since pi 1.5.0 the published helper
+is typed as a pi-schema `Schema`, so `Static` widens those parameters to
+`unknown` when `pnpm check` runs outside pi.
+
 ### Tracking development cost
 
 `cost-tracker` reads pi's own session usage, so every run is measured exactly.

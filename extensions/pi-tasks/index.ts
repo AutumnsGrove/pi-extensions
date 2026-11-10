@@ -19,7 +19,6 @@
  * metadata, config file, i18n, or turn-based fading.
  */
 
-import { StringEnum } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
@@ -30,6 +29,7 @@ import type {
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { isBlocked, PI_QNA_TOOL } from "../_shared/blockers.ts";
+import { stringEnum } from "../_shared/schema.ts";
 import {
 	applyTodoMutation,
 	emptyState,
@@ -54,7 +54,7 @@ const DRIFT_RESEND_TURNS = 3;
 const MAX_PANEL_ROWS = 5;
 
 const TodoParamsSchema = Type.Object({
-	action: StringEnum(["create", "update", "delete", "list"] as const, {
+	action: stringEnum(["create", "update", "delete", "list"] as const, {
 		description: "create a task, update it, delete it, or list all tasks",
 	}),
 	subject: Type.Optional(
@@ -62,7 +62,7 @@ const TodoParamsSchema = Type.Object({
 	),
 	id: Type.Optional(Type.Number({ description: "Task id (required for update and delete)" })),
 	status: Type.Optional(
-		StringEnum(["pending", "in_progress", "completed"] as const, {
+		stringEnum(["pending", "in_progress", "completed"] as const, {
 			description: "New status when action is update",
 		}),
 	),
