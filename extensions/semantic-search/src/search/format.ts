@@ -8,6 +8,7 @@ import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import type { SearchConfig } from "../config.ts";
 import { EmbedError } from "../embed/types.ts";
+import type { PrunePlan, PruneReport } from "../store/prune.ts";
 import type { RankedItem } from "./rank.ts";
 
 export interface SearchOutput {
@@ -21,6 +22,10 @@ export interface SearchOutput {
 
 export interface IndexStatusInfo {
 	projectPath: string;
+	/** Domain root whose database holds this root's rows. */
+	domainPath?: string;
+	/** Domain-relative prefix owned by this root. */
+	rootPrefix?: string;
 	totalFiles: number;
 	totalChunks: number;
 	embeddingModel?: string;
@@ -180,6 +185,13 @@ export function formatSearchResults(projectPath: string, out: SearchOutput): str
 
 export function formatIndexStatus(info: IndexStatusInfo): string {
 	const lines = [`Index: ${info.projectPath}`];
+	if (info.domainPath && info.domainPath !== info.projectPath) {
+		lines.push(
+			`Shared database: ${info.domainPath}${
+				info.rootPrefix ? ` (this root owns "${info.rootPrefix}")` : ""
+			}`
+		);
+	}
 	lines.push(
 		`Files: ${info.totalFiles} | Indexed chunks: ${info.totalChunks} | Model: ${
 			info.embeddingModel ?? "unknown"
@@ -195,6 +207,52 @@ export function formatIndexStatus(info: IndexStatusInfo): string {
 		lines.push(`Config error: ${info.configError}`);
 	}
 	return lines.join("\n");
+}
+
+/** Human-readable byte count for prune output. */
+export function formatBytes(bytes: number): string {
+	const units = ["B", "KiB", "MiB", "GiB"];
+	let value = bytes;
+	let unit = 0;
+	while (value >= 1024 && unit < units.length - 1) {
+		value /= 1024;
+		unit += 1;
+	}
+	return `${value >= 10 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${
+		units[unit]
+	}`;
+}
+
+/** Explain what `/semsearch prune` would do, before anything is deleted. */
+export function formatPrunePlan(plan: PrunePlan): string {
+	if (plan.actions.length === 0) {
+		return `Nothing to prune: ${plan.kept} index database${
+			plan.kept === 1 ? "" : "s"
+		} in use.`;
+	}
+	const lines = ["Index databases"];
+	for (const action of plan.actions) {
+		const size = formatBytes(action.bytes).padStart(9);
+		lines.push(`  ${action.kind.padEnd(6)} ${size}  ${action.dbPath}`);
+		lines.push(`         ${action.reason}`);
+	}
+	lines.push(
+		`Reclaimable: ${formatBytes(plan.freedBytes)} (${
+			plan.actions.filter((action) => action.kind === "delete").length
+		} delete, ${
+			plan.actions.filter((action) => action.kind !== "delete").length
+		} migrate). Kept: ${plan.kept}.`
+	);
+	lines.push("Run /semsearch prune --yes to apply.");
+	return lines.join("\n");
+}
+
+export function formatPruneReport(report: PruneReport): string {
+	return (
+		`Pruned: removed ${report.deleted} database${
+			report.deleted === 1 ? "" : "s"
+		}, adopted ${report.adopted}, freed ${formatBytes(report.freedBytes)}.`
+	);
 }
 
 export function readFileLines(projectPath: string, filePath: string): string[] {

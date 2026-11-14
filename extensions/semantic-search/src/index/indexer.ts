@@ -1,58 +1,54 @@
 /**
- * Index orchestration, ported from lumen's `internal/index/index.go` (the
- * single-collection path): Merkle diff -> chunk changed files -> split/merge ->
- * embed in batches -> store -> metadata.
+ * Index orchestration, ported from lumen's `internal/index/index.go`: Merkle
+ * diff -> chunk changed files -> split/merge -> embed in batches -> store ->
+ * metadata.
  *
- * The shared/worktree collection model, donor seeding, and cross-process
- * locking are not ported.
+ * A run owns one *root* (the directory the session was started in) inside a
+ * *domain* (the repository, or the top-level root indexed first). Paths are
+ * stored domain-relative, so indexing a parent and then a child reuses every
+ * chunk instead of embedding it twice; the run only diffs, deletes, and records
+ * the slice belonging to its own root.
  */
 
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { extname, join } from "node:path";
+import { dirname, extname, join } from "node:path";
 import { SUPPORTED_EXTENSIONS, type ChunkerSet } from "../chunk/index.ts";
 import type { Chunk } from "../chunk/types.ts";
+import { joinPrefix, normalizePrefix, stripPrefix } from "../domains.ts";
 import type { Embedder } from "../embed/types.ts";
-import type { Store } from "../store/sqlite.ts";
+import type { RootRecord, Store } from "../store/sqlite.ts";
 import { makeSkip, type SkipFunc } from "./ignore.ts";
-import { buildTree, diffTrees, type Tree } from "./merkle.ts";
+import { withFileLock } from "./lock.ts";
+import { buildTree, diffFileMaps, type Tree } from "./merkle.ts";
 import { mergeUndersizedChunks, splitOversizedChunks } from "./split.ts";
-
-export const META_ROOT_HASH = "root_hash";
-export const META_EMBEDDING_MODEL = "embedding_model";
-export const META_PROJECT_PATH = "project_path";
-export const META_TOTAL_FILES = "total_files";
-export const META_LAST_INDEXED_AT = "last_indexed_at";
-export const META_LAST_INDEX_ERROR = "last_index_error";
 
 const CHUNK_BATCH_SIZE = 256;
 const SUPPORTED_EXT_SET = new Set(SUPPORTED_EXTENSIONS);
 
 /**
- * In-process serialization of index runs per project. Search, session startup,
+ * In-process serialization of index runs per database. Search, session startup,
  * and `/semsearch reindex` can all reach `ensureFresh`/`index` at once, and
  * interleaved runs against one store collide on the vec0 primary key. Keying by
- * project directory also serializes two manager instances in the same process.
- * Cross-process locking is still not ported.
+ * the store identity also serializes two roots sharing one domain database.
+ * Cross-process runs are serialized by {@link withFileLock}.
  */
-const projectLocks = new Map<string, Promise<unknown>>();
+const storeLocks = new Map<string, Promise<unknown>>();
 
-async function withProjectLock<T>(
-	projectDir: string,
-	fn: () => Promise<T>
-): Promise<T> {
-	const previous = projectLocks.get(projectDir) ?? Promise.resolve();
+async function withStoreLock<T>(identity: string, fn: () => Promise<T>): Promise<T> {
+	const previous = storeLocks.get(identity) ?? Promise.resolve();
 	const run = previous.then(fn, fn);
 	// Keep the chain alive without ever leaking a rejected promise.
 	const settled = run.then(
 		() => undefined,
 		() => undefined
 	);
-	projectLocks.set(projectDir, settled);
+	storeLocks.set(identity, settled);
 	try {
 		return await run;
 	} finally {
-		if (projectLocks.get(projectDir) === settled) {
-			projectLocks.delete(projectDir);
+		if (storeLocks.get(identity) === settled) {
+			storeLocks.delete(identity);
 		}
 	}
 }
@@ -76,8 +72,16 @@ export interface IndexerOptions {
 	embedder: Embedder;
 	chunkers: ChunkerSet;
 	maxChunkTokens: number;
+	/** Directory being indexed. */
 	projectDir: string;
+	/** Domain root that owns the database. Defaults to `projectDir`. */
+	domainDir?: string;
+	/** POSIX path of `projectDir` inside `domainDir`. Defaults to "". */
+	rootPrefix?: string;
 	skip?: SkipFunc;
+	/** Lock file next to the database for cross-process runs. */
+	lockPath?: string;
+	lockTimeoutMs?: number;
 }
 
 export interface EnsureFreshResult {
@@ -123,32 +127,68 @@ export class Indexer {
 	private readonly embedder: Embedder;
 	private readonly chunkers: ChunkerSet;
 	private readonly maxChunkTokens: number;
-	readonly projectDir: string;
+	/** Root being indexed; also the key of its row in the `roots` table. */
+	readonly rootDir: string;
+	/** Domain that owns the database. */
+	readonly domainDir: string;
+	/** Domain-relative prefix owned by this root ("" for the domain root). */
+	readonly rootPrefix: string;
 	private readonly skip: SkipFunc;
+	private readonly lockPath?: string;
+	private readonly lockTimeoutMs?: number;
 
 	constructor(options: IndexerOptions) {
 		this.store = options.store;
 		this.embedder = options.embedder;
 		this.chunkers = options.chunkers;
 		this.maxChunkTokens = options.maxChunkTokens;
-		this.projectDir = options.projectDir;
-		this.skip = options.skip ?? makeSkip(options.projectDir, SUPPORTED_EXTENSIONS);
+		this.rootDir = options.projectDir;
+		this.domainDir = options.domainDir ?? options.projectDir;
+		this.rootPrefix = normalizePrefix(options.rootPrefix ?? "");
+		this.skip = options.skip ?? makeSkip(this.domainDir, SUPPORTED_EXTENSIONS);
+		this.lockPath = options.lockPath;
+		this.lockTimeoutMs = options.lockTimeoutMs;
 	}
 
-	/** Build the tree and re-index only when the root hash changed. */
+	/** Backwards-compatible alias for {@link rootDir}. */
+	get projectDir(): string {
+		return this.rootDir;
+	}
+
+	/** Domain-relative path of a path relative to this root. */
+	domainPath(relPath: string): string {
+		return joinPrefix(this.rootPrefix, relPath);
+	}
+
+	private run<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+		return withStoreLock(this.store.identity, () =>
+			withFileLock(this.lockPath, fn, {
+				timeoutMs: this.lockTimeoutMs,
+				signal,
+			})
+		);
+	}
+
+	/** Build the tree and re-index only when this root's hash changed. */
 	async ensureFresh(
 		progress?: ProgressFunc,
 		signal?: AbortSignal
 	): Promise<EnsureFreshResult> {
-		return withProjectLock(this.projectDir, async () => {
-			const tree = await buildTree(this.projectDir, this.skip);
-			const storedHash = this.store.getMeta(META_ROOT_HASH) ?? "";
-			if (this.claimsFresh(tree, storedHash)) {
+		return this.run(async () => {
+			const tree = await buildTree(this.rootDir, this.skip, this.rootPrefix);
+			const stored = this.store.getRoot(this.rootDir);
+			if (this.claimsFresh(tree, stored)) {
 				return { reindexed: false, stats: emptyStats() };
 			}
-			const stats = await this.indexWithTree(tree, storedHash, false, progress, signal);
+			const stats = await this.indexWithTree(
+				tree,
+				stored?.rootHash ?? "",
+				false,
+				progress,
+				signal
+			);
 			return { reindexed: true, stats };
-		});
+		}, signal);
 	}
 
 	/** Index unconditionally; `force` reprocesses every file. */
@@ -157,11 +197,17 @@ export class Indexer {
 		progress?: ProgressFunc,
 		signal?: AbortSignal
 	): Promise<IndexStats> {
-		return withProjectLock(this.projectDir, async () => {
-			const tree = await buildTree(this.projectDir, this.skip);
-			const storedHash = this.store.getMeta(META_ROOT_HASH) ?? "";
-			return this.indexWithTree(tree, storedHash, force, progress, signal);
-		});
+		return this.run(async () => {
+			const tree = await buildTree(this.rootDir, this.skip, this.rootPrefix);
+			const stored = this.store.getRoot(this.rootDir);
+			return this.indexWithTree(
+				tree,
+				stored?.rootHash ?? "",
+				force,
+				progress,
+				signal
+			);
+		}, signal);
 	}
 
 	private async indexWithTree(
@@ -174,13 +220,22 @@ export class Indexer {
 		const stats = emptyStats();
 		try {
 			stats.totalFiles = tree.files.size;
-			const oldHashes = this.store.getFileHashes();
+			// The store holds every root of the domain; only this root's slice of
+			// it may be diffed, rewritten, or removed by this run.
+			const stored = this.store.getFileHashes(this.rootPrefix);
+			const oldHashes = new Map<string, string>();
+			for (const [path, hash] of stored) {
+				const rel = stripPrefix(this.rootPrefix, path);
+				if (rel !== "") {
+					oldHashes.set(rel, hash);
+				}
+			}
 
 			// Drop records for extensions we no longer index.
-			for (const path of [...oldHashes.keys()]) {
-				if (!SUPPORTED_EXT_SET.has(extname(path))) {
-					this.store.deleteFileChunks(path);
-					oldHashes.delete(path);
+			for (const [rel] of oldHashes) {
+				if (!SUPPORTED_EXT_SET.has(extname(rel))) {
+					this.store.deleteFileChunks(this.domainPath(rel));
+					oldHashes.delete(rel);
 				}
 			}
 
@@ -193,23 +248,25 @@ export class Indexer {
 				stats.filesRemoved = filesToRemove.length;
 				stats.reason = "force reindex requested";
 			} else {
-				const diff = diffTrees({ rootHash: "", files: oldHashes }, tree);
+				const diff = diffFileMaps(oldHashes, tree.files);
 				filesToIndex = [...diff.added, ...diff.modified];
 				filesToRemove = diff.removed;
 				stats.filesAdded = diff.added.length;
 				stats.filesModified = diff.modified.length;
 				stats.filesRemoved = diff.removed.length;
 				stats.reason =
-					oldRootHash === "" ? "fresh index (no previous root hash)" : "root hash changed";
+					oldRootHash === ""
+						? "fresh index (no previous root hash)"
+						: "root hash changed";
 			}
 			stats.filesChanged = filesToIndex.length + filesToRemove.length;
 
-			for (const path of filesToRemove) {
-				this.store.deleteFileChunks(path);
+			for (const rel of filesToRemove) {
+				this.store.deleteFileChunks(this.domainPath(rel));
 			}
 
 			let batch: Chunk[] = [];
-			let pendingFiles: Array<{ relPath: string; hash: string }> = [];
+			let pendingFiles: Array<{ path: string; hash: string }> = [];
 			let totalChunks = 0;
 
 			const flush = async (fileIndex: number): Promise<void> => {
@@ -258,7 +315,7 @@ export class Indexer {
 				}
 				let data: Buffer;
 				try {
-					data = await readFile(join(this.projectDir, relPath));
+					data = await readFile(join(this.rootDir, relPath));
 				} catch {
 					// Permission denied or vanished: skip.
 					stats.filesSkipped += 1;
@@ -269,11 +326,14 @@ export class Indexer {
 					continue;
 				}
 
-				this.store.deleteFileChunks(relPath);
+				// Chunk paths are domain-relative, so the same file gets the same
+				// chunk ids (and vectors) no matter which root indexed it last.
+				const domainPath = this.domainPath(relPath);
+				this.store.deleteFileChunks(domainPath);
 				// Sentinel hash keeps the chunk FK valid until the batch commits.
-				this.store.upsertFile(relPath, "");
+				this.store.upsertFile(domainPath, "");
 
-				let chunks = this.chunkers.chunk(relPath, data.toString("utf8"));
+				let chunks = this.chunkers.chunk(domainPath, data.toString("utf8"));
 				// Chunkers emit rule-major (grouped by pattern), not source order.
 				// Sort so splitting and merging see the file top to bottom.
 				chunks.sort(
@@ -285,12 +345,12 @@ export class Indexer {
 				chunks = splitOversizedChunks(chunks, this.maxChunkTokens);
 
 				batch.push(...chunks);
-				pendingFiles.push({ relPath, hash: tree.files.get(relPath) ?? "" });
+				pendingFiles.push({ path: domainPath, hash: tree.files.get(relPath) ?? "" });
 
 				if (batch.length >= CHUNK_BATCH_SIZE) {
 					await flush(index + 1);
 					for (const pending of pendingFiles) {
-						this.store.upsertFile(pending.relPath, pending.hash);
+						this.store.upsertFile(pending.path, pending.hash);
 					}
 					pendingFiles = [];
 				}
@@ -298,7 +358,7 @@ export class Indexer {
 
 			await flush(filesToIndex.length);
 			for (const pending of pendingFiles) {
-				this.store.upsertFile(pending.relPath, pending.hash);
+				this.store.upsertFile(pending.path, pending.hash);
 			}
 			if (filesToIndex.length > 0) {
 				this.store.analyze();
@@ -307,6 +367,14 @@ export class Indexer {
 			stats.indexedFiles = filesToIndex.length - stats.filesSkipped;
 			stats.chunksCreated = totalChunks;
 			this.saveMeta(tree, true);
+			// A root whose directory disappeared no longer covers anything; its
+			// rows go too unless another root still owns them. A root on an
+			// unmounted volume keeps its row: the parent is missing as well.
+			this.store.pruneMissingRoots(
+				this.rootDir,
+				(path) => existsSync(path) || !existsSync(dirname(path))
+			);
+			this.store.collectGarbage();
 			if (progress && filesToIndex.length > 0) {
 				progress(
 					filesToIndex.length,
@@ -325,46 +393,52 @@ export class Indexer {
 		// Only a completed run may advance the root hash. Otherwise ensureFresh
 		// would treat the tree as indexed and never retry the files whose batches
 		// aborted, silently leaving gaps while reporting the index as fresh.
-		this.store.setMeta(META_ROOT_HASH, success ? tree.rootHash : "");
-		this.store.setMeta(META_EMBEDDING_MODEL, this.embedder.modelName);
-		this.store.setMeta(META_PROJECT_PATH, this.projectDir);
-		this.store.setMeta(META_TOTAL_FILES, String(tree.files.size));
-		this.store.setMeta(
-			META_LAST_INDEX_ERROR,
-			success ? "" : error instanceof Error ? error.message : String(error ?? "")
-		);
-		if (success) {
-			this.store.setMeta(META_LAST_INDEXED_AT, new Date().toISOString());
-		}
+		const previous = this.store.getRoot(this.rootDir);
+		const record: RootRecord = {
+			rootPath: this.rootDir,
+			rootPrefix: this.rootPrefix,
+			rootHash: success ? tree.rootHash : "",
+			lastIndexedAt: success
+				? new Date().toISOString()
+				: previous?.lastIndexedAt,
+			lastIndexError: success
+				? ""
+				: error instanceof Error
+					? error.message
+					: String(error ?? ""),
+			embeddingModel: this.embedder.modelName,
+			totalFiles: tree.files.size,
+		};
+		this.store.upsertRoot(record);
 	}
 
 	/**
-	 * Whether the stored index is complete and matches the tree. A recorded
-	 * error means a previous run aborted, so treat it as stale even if the root
-	 * hash and file table look consistent (older versions advanced the hash on
-	 * failure, leaving silent gaps that this re-indexes away).
+	 * Whether the stored index for this root is complete and matches the tree. A
+	 * recorded error means a previous run aborted, so treat it as stale even if
+	 * the root hash and file table look consistent (older versions advanced the
+	 * hash on failure, leaving silent gaps that this re-indexes away).
 	 */
-	private claimsFresh(tree: Tree, storedHash: string): boolean {
+	private claimsFresh(tree: Tree, stored: RootRecord | undefined): boolean {
 		return (
-			storedHash === tree.rootHash &&
-			!this.store.hasSentinelFiles() &&
-			!this.store.getMeta(META_LAST_INDEX_ERROR)
+			stored !== undefined &&
+			stored.rootHash === tree.rootHash &&
+			!this.store.hasSentinelFiles(this.rootPrefix) &&
+			!stored.lastIndexError
 		);
 	}
 
 	async isFresh(): Promise<boolean> {
-		const tree = await buildTree(this.projectDir, this.skip);
-		const storedHash = this.store.getMeta(META_ROOT_HASH) ?? "";
-		return this.claimsFresh(tree, storedHash);
+		const tree = await buildTree(this.rootDir, this.skip, this.rootPrefix);
+		return this.claimsFresh(tree, this.store.getRoot(this.rootDir));
 	}
 
-	/** Resolve once no index run for this project is queued or running. */
+	/** Resolve once no index run for this database is queued or running. */
 	async whenIdle(): Promise<void> {
-		await (projectLocks.get(this.projectDir) ?? Promise.resolve());
+		await (storeLocks.get(this.store.identity) ?? Promise.resolve());
 	}
 
 	lastIndexedAt(): Date | undefined {
-		const raw = this.store.getMeta(META_LAST_INDEXED_AT);
+		const raw = this.store.getRoot(this.rootDir)?.lastIndexedAt;
 		if (!raw) {
 			return undefined;
 		}
@@ -372,14 +446,16 @@ export class Indexer {
 		return Number.isFinite(parsed) ? new Date(parsed) : undefined;
 	}
 
+	/** Status for this root (not the whole domain). */
 	status(): IndexerStatus {
-		const { totalFiles, totalChunks } = this.store.stats();
+		const root = this.store.getRoot(this.rootDir);
+		const { totalFiles, totalChunks } = this.store.stats(this.rootPrefix);
 		return {
 			totalFiles,
 			totalChunks,
-			embeddingModel: this.store.getMeta(META_EMBEDDING_MODEL),
-			lastIndexedAt: this.store.getMeta(META_LAST_INDEXED_AT),
-			lastIndexError: this.store.getMeta(META_LAST_INDEX_ERROR),
+			embeddingModel: root?.embeddingModel,
+			lastIndexedAt: root?.lastIndexedAt,
+			lastIndexError: root?.lastIndexError,
 		};
 	}
 }

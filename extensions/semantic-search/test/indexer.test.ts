@@ -6,8 +6,6 @@ import { buildChunkers, type ChunkerSet } from "../src/chunk/index.ts";
 import type { Embedder } from "../src/embed/types.ts";
 import {
 	Indexer,
-	META_LAST_INDEX_ERROR,
-	META_ROOT_HASH,
 } from "../src/index/indexer.ts";
 import { Store } from "../src/store/sqlite.ts";
 
@@ -165,7 +163,7 @@ describe("Indexer", () => {
 			projectDir: dir,
 		});
 		await expect(indexer.index(false)).rejects.toThrow("boom");
-		expect(store.getMeta(META_LAST_INDEX_ERROR)).toBe("boom");
+		expect(store.getRoot(dir)?.lastIndexError).toBe("boom");
 		store.close();
 	});
 
@@ -248,7 +246,7 @@ describe("Indexer", () => {
 
 		await expect(indexer.ensureFresh()).rejects.toThrow("boom");
 		// A failed run must not look fresh, or the aborted files are never retried.
-		expect(store.getMeta(META_ROOT_HASH)).toBe("");
+		expect(store.getRoot(dir)?.rootHash).toBe("");
 		expect(await indexer.isFresh()).toBe(false);
 
 		failNext = false;
@@ -266,12 +264,14 @@ describe("Indexer", () => {
 
 		// Simulate a database written by an older build that advanced the root
 		// hash on failure: the tree still matches, but the run had aborted.
-		store.setMeta(META_LAST_INDEX_ERROR, "UNIQUE constraint failed");
+		const root = store.getRoot(dir);
+		expect(root).toBeTruthy();
+		store.upsertRoot({ ...root!, lastIndexError: "UNIQUE constraint failed" });
 		expect(await indexer.isFresh()).toBe(false);
 
 		const result = await indexer.ensureFresh();
 		expect(result.reindexed).toBe(true);
-		expect(store.getMeta(META_LAST_INDEX_ERROR)).toBe("");
+		expect(store.getRoot(dir)?.lastIndexError).toBe("");
 		store.close();
 	});
 
@@ -290,7 +290,7 @@ describe("Indexer", () => {
 			/aborted/
 		);
 		// An aborted run must not advance the root hash.
-		expect(store.getMeta(META_ROOT_HASH)).toBe("");
+		expect(store.getRoot(dir)?.rootHash).toBe("");
 		store.close();
 	});
 

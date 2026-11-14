@@ -113,6 +113,28 @@ describe("Store upsert, search, delete", () => {
 		store.close();
 	});
 
+	it("does not treat a prefix as a LIKE wildcard", () => {
+		const store = Store.open(":memory:", 2);
+		// `_` is a single-character wildcard in LIKE: a raw prefix would also
+		// match `pkgXv2/...` and inflate stats or leak sibling results.
+		store.upsertFile("pkg_v2/a.ts", "h1");
+		store.upsertFile("pkgXv2/b.ts", "h2");
+		store.insertChunks(
+			[chunk("pkg_v2/a.ts", "A"), chunk("pkgXv2/b.ts", "B")],
+			[
+				[1, 0],
+				[1, 0],
+			]
+		);
+
+		expect(store.stats("pkg_v2")).toEqual({ totalFiles: 1, totalChunks: 1 });
+		expect(store.search([1, 0], 5, undefined, "pkg_v2").map((r) => r.filePath)).toEqual([
+			"pkg_v2/a.ts",
+		]);
+		expect(store.hasSentinelFiles("pkg_v2")).toBe(false);
+		store.close();
+	});
+
 	it("deletes a file's chunks and file record", () => {
 		const store = Store.open(":memory:", 2);
 		store.upsertFile("a.ts", "h");
