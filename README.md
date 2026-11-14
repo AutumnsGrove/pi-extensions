@@ -233,7 +233,7 @@ pnpm cost report                  # print the ledger without changing anything
 | Extension | Cost | Runs |
 | --- | --- | --- |
 | pi-review | $1.335 | 1 |
-| semantic-search | $0.590 | 3 |
+| semantic-search | $0.812 | 4 |
 | provider-pinning | $0.417 | 1 |
 | hooks + permissions + sounds | $0.379 | 1 |
 | opencode-go | $0.339 | 1 |
