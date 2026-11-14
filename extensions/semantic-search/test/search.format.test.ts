@@ -5,7 +5,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
 	describeSearchError,
 	fillSnippets,
+	formatBytes,
 	formatIndexStatus,
+	formatPrunePlan,
+	formatPruneReport,
 	formatSearchResults,
 	type SearchOutput,
 } from "../src/search/format.ts";
@@ -177,5 +180,74 @@ describe("fillSnippets", () => {
 		const items = [item({ filePath: "big.ts" })];
 		fillSnippets(root, items, 0);
 		expect(items[0]?.content).toBeUndefined();
+	});
+});
+
+describe("formatIndexStatus with a shared domain", () => {
+	it("names the domain and the slice this root owns", () => {
+		const text = formatIndexStatus({
+			projectPath: "/repo/pkg",
+			domainPath: "/repo",
+			rootPrefix: "pkg",
+			totalFiles: 4,
+			totalChunks: 9,
+		});
+		expect(text).toContain("Shared database: /repo");
+		expect(text).toContain('this root owns "pkg"');
+	});
+
+	it("stays quiet when the root is the domain", () => {
+		const text = formatIndexStatus({
+			projectPath: "/repo",
+			domainPath: "/repo",
+			rootPrefix: "",
+			totalFiles: 4,
+			totalChunks: 9,
+		});
+		expect(text).not.toContain("Shared database");
+	});
+});
+
+describe("prune output", () => {
+	it("formats sizes", () => {
+		expect(formatBytes(0)).toBe("0 B");
+		expect(formatBytes(1536)).toBe("1.5 KiB");
+		expect(formatBytes(582 * 1024 * 1024)).toBe("582 MiB");
+	});
+
+	it("explains a plan without applying it", () => {
+		const text = formatPrunePlan({
+			actions: [
+				{
+					kind: "delete",
+					dbPath: "/data/abc/index.db",
+					bytes: 82 * 1024 * 1024,
+					reason: "covered by the domain database for /repo",
+				},
+				{
+					kind: "adopt",
+					dbPath: "/data/def/index.db",
+					bytes: 582 * 1024 * 1024,
+					reason: "version-1 database for /repo",
+					domainPath: "/repo",
+				},
+			],
+			freedBytes: 82 * 1024 * 1024,
+			kept: 1,
+		});
+		expect(text).toContain("Reclaimable: 82 MiB (1 delete, 1 migrate)");
+		expect(text).toContain("Run /semsearch prune --yes to apply.");
+	});
+
+	it("says so when there is nothing to do", () => {
+		expect(formatPrunePlan({ actions: [], freedBytes: 0, kept: 3 })).toBe(
+			"Nothing to prune: 3 index databases in use."
+		);
+	});
+
+	it("summarizes an executed plan", () => {
+		expect(
+			formatPruneReport({ deleted: 2, adopted: 1, freedBytes: 456 * 1024 * 1024 })
+		).toBe("Pruned: removed 2 databases, adopted 1, freed 456 MiB.");
 	});
 });

@@ -5,6 +5,7 @@
 
 import { defaultMinScore } from "../embed/registry.ts";
 import type { Embedder } from "../embed/types.ts";
+import { joinPrefix, stripPrefix } from "../domains.ts";
 import type { Indexer, ProgressFunc } from "../index/indexer.ts";
 import type { Store } from "../store/sqlite.ts";
 import {
@@ -58,6 +59,8 @@ export async function runSearch(options: {
 	embedder: Embedder;
 	indexer: Indexer;
 	projectDir: string;
+	/** Domain-relative prefix owned by `projectDir`; defaults to "". */
+	rootPrefix?: string;
 	request: SearchRequest;
 	onProgress?: ProgressFunc;
 	ensureFresh?: boolean;
@@ -68,7 +71,10 @@ export async function runSearch(options: {
 		Math.max(Math.floor(request.limit ?? 8) || 8, 1),
 		MAX_SEARCH_LIMIT
 	);
-	const pathPrefix = request.pathPrefix ?? "";
+	const rootPrefix = options.rootPrefix ?? "";
+	// Search never leaves the invoking root: a session in `repo/pkg` reads only
+	// `pkg/...` rows, even though the database also holds the rest of the repo.
+	const scopePrefix = joinPrefix(rootPrefix, request.pathPrefix ?? "");
 
 	let reindexed = false;
 	let indexedFiles = 0;
@@ -98,16 +104,19 @@ export async function runSearch(options: {
 
 	// Over-fetch so merging overlapping chunks does not shrink below the limit.
 	// Cap the raw request to sqlite-vec's interior k limit (4096).
-	const raw = options.store.search(
-		queryVec,
-		Math.min(limit * 2, 1000),
-		maxDistance,
-		pathPrefix
-	);
+	const raw = options.store
+		.search(queryVec, Math.min(limit * 2, 1000), maxDistance, scopePrefix)
+		.map((result) => ({
+			...result,
+			// Hand callers paths relative to the root they asked about, so snippets
+			// and display stay unchanged for a session in a subdirectory.
+			filePath: stripPrefix(rootPrefix, result.filePath),
+		}))
+		.filter((result) => result.filePath !== "");
 
 	let filteredHint: string | undefined;
 	if (raw.length === 0 && maxDistance !== undefined) {
-		const unfiltered = options.store.search(queryVec, 1, undefined, pathPrefix);
+		const unfiltered = options.store.search(queryVec, 1, undefined, scopePrefix);
 		const best = unfiltered[0];
 		if (best) {
 			const bestScore = 1 - best.distance;

@@ -7,8 +7,12 @@ actually reaches for.
 
 Status: **phases 1–4 done** — chunker layer, embed/store/split, ignore + Merkle
 + indexer, and search/format + pi wiring, with configurable Ollama models
-(`/semsearch model`). 150 extension tests, verified end to end against local
+(`/semsearch model`). 215 extension tests, verified end to end against local
 Ollama. Phases 5–6 pending (eval harness, polish).
+
+Index storage moved to shared *domains* (`INDEX_VERSION` 2): one database per
+repository (or per top-level non-repo root) instead of one per invocation
+directory. See [Index domains](#index-domains-index_version-2).
 
 ## Decisions (locked)
 
@@ -25,11 +29,11 @@ Ollama. Phases 5–6 pending (eval harness, polish).
 
 ## Non-goals (deferred, not never)
 
-- Git-worktree shared collections and content-addressed vector dedup.
+- Cross-*domain* dedup: a root added *above* an already-indexed domain
+  re-embeds the subtree (no `ATTACH`-based seeding yet).
+- Content-addressed vectors shared across repositories.
 - The full 12-language matrix (Rust, Ruby, Java, PHP, C/C++, C#, Swift, Dart).
 - Int8 vector quantization and float32 fallback profiles.
-- `mattn/go-sqlite3`-class cross-process locking (use `proper-lockfile` only if
-  concurrent indexers actually happen).
 - Markdown chunking (lumen has it; low value for our work, easy to add later).
 
 ## Why native beats the MCP bridge
@@ -67,14 +71,16 @@ extensions/semantic-search/
     embed/
       registry.ts              # KnownModels, dims, context, min-score floor
       ollama.ts                # POST /api/embed, batched
+    domains.ts                 # index-domain resolution, markers, path prefixes
     store/
-      schema.ts                # tables + vec0 virtual table
-      sqlite.ts                # open, upsert, delete, meta, stats
-      search.ts                # KNN + path prefix
+      sqlite.ts                # tables + vec0, roots table, KNN + prefix
+      migrate.ts               # adopt a version-1 database for its domain
+      prune.ts                 # plan/execute removal of unused databases
     index/
       ignore.ts                # 6-layer filter (.gitignore, .pi-searchignore, linguist)
       merkle.ts                # SHA-256 tree + diff
-      indexer.ts               # EnsureFresh / Index / Status
+      indexer.ts               # EnsureFresh / Index / Status, per root
+      lock.ts                  # cross-process lock file around index runs
       split.ts                 # oversized chunk splitting at boundaries
     search/
       rank.ts                  # kind boost, test demotion, overlap merge
@@ -89,7 +95,7 @@ bench/                         # eval harness (phase 5)
 ```ts
 interface Chunk {
   id: string;        // sha256(filePath + symbol + startLine)[:16]
-  filePath: string;  // relative to project root
+  filePath: string;  // relative to the index domain root
   symbol: string;
   kind: "function" | "method" | "type" | "interface" | "const" | "var" | "package";
   startLine: number; // 1-based
@@ -108,17 +114,53 @@ walk → 6-layer filter → merkle diff → changed files only
      → XML snippets back to the model
 ```
 
-### Storage
+### Index domains (`INDEX_VERSION` 2)
 
-Same identity philosophy as lumen, simplified:
+One database per domain, not per directory. A domain is:
+
+1. the deepest **already-indexed ancestor** of the root (a marker file in
+   `~/.local/share/pi-semantic-search/domains/` records it), else
+2. the repository root from `git rev-parse --show-toplevel` (so linked
+   worktrees stay distinct), else
+3. the root itself, which makes `~/Documents/Projects` a domain that every
+   repository under it shares.
 
 ```
 ~/.local/share/pi-semantic-search/<hash>/index.db
-hash = sha256(git common dir | model | dims | maxChunkTokens | INDEX_VERSION)[:16]
+hash = sha256(domain realpath | model | dims | vectorStorage | maxChunkTokens | INDEX_VERSION)[:16]
 ```
 
+- `files`, `chunks`, and `vec_chunks` ids are **domain-relative**, so
+  `makeChunk()` is stable no matter which root indexed the file.
+- `roots(root_path PK, root_prefix, root_hash, last_indexed_at, last_index_error,
+  embedding_model, total_files)` replaces the single `project_meta.root_hash`.
+  Each root owns the slice at its `root_prefix` and diffs only that slice.
+- Deletion is scoped to the root's prefix; after a successful run, roots whose
+  directory disappeared are dropped and `collectGarbage()` removes rows no root
+  covers.
+- Ignore rules are evaluated against the domain root, so a parent and a child
+  cannot disagree about a file. `buildTree()` stores root-relative keys but
+  passes domain-relative paths to the filter.
+- Search is always scoped to the invoking root (`scope = rootPrefix +
+  pathPrefix`), and results are reported root-relative. A prefixed KNN
+  over-fetches (min 256, max 4096) because sqlite-vec applies the prefix filter
+  after the `k` limit.
+- Index runs take a `index.db.lock` file next to the database (pid + heartbeat
+  mtime, stale after 60 s, recoverable after a crash) and the database sets
+  `busy_timeout`, so two `pi` processes on one repo cannot interleave `vec0`
+  delete-then-inserts.
+- `/semsearch prune` lists unused databases; `--yes` adopts version-1 databases
+  whose root is its own domain, and deletes child databases the domain database
+  covers. It also drops a nested live domain when the outer database provably
+  holds rows for it.
+
 `INDEX_VERSION` is a hardcoded constant, bumped whenever chunker/embedder/schema
-changes make old indexes incompatible. Bump **without** re-using the git hash.
+changes make old indexes incompatible.
+
+Known limits: adding a root *above* an existing domain re-embeds that subtree
+(nothing migrates the other direction); version-1 databases never recorded
+`maxChunkTokens`, so adoption trusts the current value (chunk ids do not depend
+on it, only oversized-chunk splits do).
 
 ## Dependencies
 
@@ -130,7 +172,6 @@ changes make old indexes incompatible. Bump **without** re-using the git hash.
 | `ignore` | gitignore semantics | already a pi dependency |
 | `yaml` | JSON/YAML structured chunks | already a pi dependency |
 | `typebox` | tool schema | provided by pi |
-| `proper-lockfile` (optional) | index lock | only if needed |
 
 **Why `@vscode/tree-sitter-wasm` and not `web-tree-sitter` + `tree-sitter-wasms`:**
 the popular `tree-sitter-wasms` bundle is built for an old tree-sitter ABI and

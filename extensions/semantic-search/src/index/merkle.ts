@@ -7,18 +7,23 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { joinPrefix } from "../domains.ts";
 import type { SkipFunc } from "./ignore.ts";
 
 export interface Tree {
 	rootHash: string;
-	/** Relative POSIX path -> content SHA-256. */
+	/** Path relative to the indexed root. */
 	files: Map<string, string>;
 }
 
 export const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 const HASH_WORKERS = 8;
 
-async function collectFilePaths(rootDir: string, skip: SkipFunc): Promise<string[]> {
+async function collectFilePaths(
+	rootDir: string,
+	skip: SkipFunc,
+	prefix: string
+): Promise<string[]> {
 	const out: string[] = [];
 
 	async function walk(dirRel: string): Promise<void> {
@@ -34,16 +39,19 @@ async function collectFilePaths(rootDir: string, skip: SkipFunc): Promise<string
 		entries.sort((a, b) => a.name.localeCompare(b.name));
 		for (const entry of entries) {
 			const rel = dirRel === "" ? entry.name : `${dirRel}/${entry.name}`;
+			// Ignore rules are evaluated against the domain root, not the indexed
+			// root, so the same file is included or skipped by every root.
+			const skipPath = joinPrefix(prefix, rel);
 			if (entry.isSymbolicLink()) {
 				continue;
 			}
 			if (entry.isDirectory()) {
-				if (!skip(rel, true)) {
+				if (!skip(skipPath, true)) {
 					await walk(rel);
 				}
 				continue;
 			}
-			if (!entry.isFile() || skip(rel, false)) {
+			if (!entry.isFile() || skip(skipPath, false)) {
 				continue;
 			}
 			try {
@@ -93,8 +101,17 @@ async function hashWithLimit(
 	await Promise.all(workers);
 }
 
-export async function buildTree(rootDir: string, skip: SkipFunc): Promise<Tree> {
-	const relPaths = await collectFilePaths(rootDir, skip);
+/**
+ * Hash the tree under `rootDir`. `domainPrefix` is where that directory sits
+ * inside the index domain; it is used only for ignore-rule evaluation, so the
+ * stored keys stay relative to the indexed root.
+ */
+export async function buildTree(
+	rootDir: string,
+	skip: SkipFunc,
+	domainPrefix = ""
+): Promise<Tree> {
+	const relPaths = await collectFilePaths(rootDir, skip, domainPrefix);
 	const files = new Map<string, string>();
 	await hashWithLimit(rootDir, relPaths, files);
 	return { rootHash: buildDirHash(files), files };
@@ -116,19 +133,27 @@ export interface DiffResult {
 }
 
 export function diffTrees(oldTree: Tree, curTree: Tree): DiffResult {
+	return diffFileMaps(oldTree.files, curTree.files);
+}
+
+/** Diff two path -> hash maps (used for a root's slice of the store). */
+export function diffFileMaps(
+	oldFiles: ReadonlyMap<string, string>,
+	curFiles: ReadonlyMap<string, string>
+): DiffResult {
 	const added: string[] = [];
 	const modified: string[] = [];
 	const removed: string[] = [];
-	for (const [path, curHash] of curTree.files) {
-		const oldHash = oldTree.files.get(path);
+	for (const [path, curHash] of curFiles) {
+		const oldHash = oldFiles.get(path);
 		if (oldHash === undefined) {
 			added.push(path);
 		} else if (oldHash !== curHash) {
 			modified.push(path);
 		}
 	}
-	for (const path of oldTree.files.keys()) {
-		if (!curTree.files.has(path)) {
+	for (const path of oldFiles.keys()) {
+		if (!curFiles.has(path)) {
 			removed.push(path);
 		}
 	}

@@ -104,7 +104,16 @@ function setup(options: SetupOptions = {}) {
 				maxChunkTokens: 512,
 				vectorStorage: "float32",
 			},
-			ensure: async () => ({ store: store as never, indexer: indexer as never }),
+			ensure: async (dir: string) => ({
+				store: store as never,
+				indexer: indexer as never,
+				resolved: {
+					rootPath: dir,
+					domainPath: dir,
+					rootPrefix: "",
+					dbPath: ":memory:",
+				},
+			}),
 			search: options.search ?? (async (_dir, request) => ({
 				output: {
 					results: [
@@ -122,6 +131,9 @@ function setup(options: SetupOptions = {}) {
 				text: `Found 1 results for ${request.query}`,
 			})),
 			close: async () => {},
+			prune: async () => ({
+				plan: { actions: [], freedBytes: 0, kept: 1 },
+			}),
 		};
 	};
 

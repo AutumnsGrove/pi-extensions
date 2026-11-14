@@ -26,8 +26,14 @@ import {
 } from "./embed/registry.ts";
 import { DEFAULT_OLLAMA_HOST } from "./embed/ollama.ts";
 
-/** Bump whenever a chunker/embedder/schema change invalidates existing indexes. */
-export const INDEX_VERSION = 1;
+/**
+ * Bump whenever a chunker/embedder/schema change invalidates existing indexes.
+ *
+ * 2: databases are keyed by index domain (repository or top-level root) and
+ *    store domain-relative paths plus a `roots` table, so a parent root and a
+ *    child root share one database instead of duplicating every chunk.
+ */
+export const INDEX_VERSION = 2;
 
 export const DEFAULT_MAX_CHUNK_TOKENS = 512;
 /** Reserved for int8 quantization; float32 is the only implemented profile. */
@@ -221,11 +227,10 @@ export function dataDir(env: Env = process.env): string {
 }
 
 /**
- * Resolve a project path to a stable identity for index storage. Symlinks and
- * different spellings of the same directory collapse to one entry; different
- * directories (including git worktrees and subdirectories of one repository)
- * stay distinct. The index stores paths relative to the indexed root, so the
- * database key must be the indexed root itself, not the repository identity.
+ * Resolve a project path to a canonical absolute path. Symlinks and different
+ * spellings of the same directory collapse to one entry; different directories
+ * (including git worktrees) stay distinct. Which *database* a path uses is a
+ * separate question answered by `resolveIndexRoot()` in `domains.ts`.
  */
 export function resolveProjectRoot(projectPath: string): string {
 	return safeRealpath(resolve(projectPath));
@@ -239,31 +244,65 @@ function safeRealpath(path: string): string {
 	}
 }
 
-export interface ProfileKey {
-	projectPath: string;
+/** Everything that makes two vectors incompatible. */
+export interface EmbeddingProfile {
 	model: string;
 	dimensions: number;
 	vectorStorage: string;
 	maxChunkTokens: number;
 }
 
-/**
- * Content-addressed database path for an indexed root + embedding profile.
- *
- * The root is part of the key on purpose. Keying only on Git identity made
- * every subdirectory and worktree of one repository share a database, so
- * indexing one root deleted the chunks of the other (and two live connections
- * could write the same file).
- */
-export function dbPathForProject(key: ProfileKey, env: Env = process.env): string {
-	const profile = [
-		resolveProjectRoot(key.projectPath),
+export interface ProfileKey extends EmbeddingProfile {
+	/** The index domain, not necessarily the invoking root. */
+	projectPath: string;
+}
+
+/** Stable identity of an embedding profile; used for markers and databases. */
+export function profileSignature(key: EmbeddingProfile): string {
+	return [
 		canonicalModel(key.model),
 		String(key.dimensions),
 		key.vectorStorage,
 		String(key.maxChunkTokens),
-		String(INDEX_VERSION),
 	].join("\u0000");
-	const hash = createHash("sha256").update(profile).digest("hex").slice(0, 16);
+}
+
+/**
+ * Content-addressed database path for an index domain + embedding profile.
+ *
+ * The domain is a repository (for roots inside one) or the top-level root that
+ * was indexed first and now contains everything below it. Every root in a
+ * domain opens this one file, so a chunk is embedded and stored once.
+ */
+export function dbPathForProject(key: ProfileKey, env: Env = process.env): string {
+	return dbPathForDomain(resolveProjectRoot(key.projectPath), key, env, INDEX_VERSION);
+}
+
+export function dbPathForDomain(
+	domainPath: string,
+	key: EmbeddingProfile,
+	env: Env,
+	version: number = INDEX_VERSION
+): string {
+	const material = [
+		resolveProjectRoot(domainPath),
+		profileSignature(key),
+		String(version),
+	].join("\u0000");
+	const hash = createHash("sha256").update(material).digest("hex").slice(0, 16);
 	return join(dataDir(env), hash, "index.db");
 }
+
+/**
+ * Where version-1 stored the index for a root: one database per invocation
+ * root, with root-relative paths. Only the domain root's legacy database can be
+ * adopted (its paths are already domain-relative); the rest are covered by it.
+ */
+export function legacyDbPathForRoot(
+	rootPath: string,
+	key: EmbeddingProfile,
+	env: Env = process.env
+): string {
+	return dbPathForDomain(rootPath, key, env, 1);
+}
+

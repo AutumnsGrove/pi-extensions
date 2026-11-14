@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
 	mkdirSync,
 	mkdtempSync,
@@ -15,11 +16,17 @@ import {
 	dataDir,
 	dbPathForProject,
 	defaultConfigFile,
+	legacyDbPathForRoot,
 	loadConfig,
 	loadConfigSafe,
 	readConfigFile,
 	writeModelConfig,
 } from "../src/config.ts";
+import {
+	invalidateDomainCache,
+	resolveIndexRoot,
+	writeDomainMarker,
+} from "../src/domains.ts";
 
 const dirs: string[] = [];
 
@@ -33,6 +40,10 @@ function tempDir(): string {
 	const dir = mkdtempSync(join(tmpdir(), "semsearch-config-"));
 	dirs.push(dir);
 	return dir;
+}
+
+function gitInit(dir: string): void {
+	execFileSync("git", ["init", "-q", dir], { stdio: "ignore" });
 }
 
 function profile(overrides: Partial<Parameters<typeof dbPathForProject>[0]> = {}) {
@@ -211,21 +222,67 @@ describe("paths", () => {
 		expect(INDEX_VERSION).toBeGreaterThan(0);
 	});
 
-	it("keys the database by the indexed root, not the repository", () => {
-		// Regression: subdirectories and worktrees of one repository used to
-		// collapse to a single database, so indexing one deleted the other's
-		// chunks. Every distinct absolute root must own a distinct database.
+	it("shares one database across a repository and its subdirectories", () => {
+		// Regression: keying on the invocation root stored every chunk twice when
+		// a parent and a child of one repository were both indexed.
 		const repo = tempDir();
-		mkdirSync(join(repo, ".git"), { recursive: true });
+		gitInit(repo);
 		const subA = join(repo, "packages", "a");
 		const subB = join(repo, "packages", "b");
 		mkdirSync(subA, { recursive: true });
 		mkdirSync(subB, { recursive: true });
+		invalidateDomainCache();
 
-		const rootDb = dbPathForProject(profile({ projectPath: repo }), {});
-		const aDb = dbPathForProject(profile({ projectPath: subA }), {});
-		const bDb = dbPathForProject(profile({ projectPath: subB }), {});
-		expect(new Set([rootDb, aDb, bDb]).size).toBe(3);
+		const env = { XDG_DATA_HOME: join(repo, ".data") };
+		const root = resolveIndexRoot(repo, profile(), env);
+		const a = resolveIndexRoot(subA, profile(), env);
+		const b = resolveIndexRoot(subB, profile(), env);
+		expect(a.dbPath).toBe(root.dbPath);
+		expect(b.dbPath).toBe(root.dbPath);
+		expect(a.rootPrefix).toBe("packages/a");
+		expect(b.rootPrefix).toBe("packages/b");
+		expect(root.rootPrefix).toBe("");
+		expect(a.domainPath).toBe(root.rootPath);
+	});
+
+	it("reuses the nearest indexed ancestor outside a repository", () => {
+		const parent = tempDir();
+		const child = join(parent, "Lattice");
+		mkdirSync(child, { recursive: true });
+		invalidateDomainCache();
+
+		const env = { XDG_DATA_HOME: join(parent, ".data") };
+		const parentRoot = resolveIndexRoot(parent, profile(), env);
+		// Simulate the parent having been indexed: its marker makes it a domain.
+		writeDomainMarker(parentRoot.domainPath, profile(), env);
+
+		const childRoot = resolveIndexRoot(child, profile(), env);
+		expect(childRoot.domainPath).toBe(parentRoot.domainPath);
+		expect(childRoot.dbPath).toBe(parentRoot.dbPath);
+		expect(childRoot.rootPrefix).toBe("Lattice");
+	});
+
+	it("keeps a domain when the embedding model changes", () => {
+		const parent = tempDir();
+		const child = join(parent, "Lattice");
+		mkdirSync(child, { recursive: true });
+		const env = { XDG_DATA_HOME: join(parent, ".data") };
+		writeDomainMarker(parent, profile(), env);
+		invalidateDomainCache();
+
+		const otherModel = profile({ model: "nomic-embed-text" });
+		const before = resolveIndexRoot(child, profile(), env);
+		const after = resolveIndexRoot(child, otherModel, env);
+		// Same domain, different vectors, so a different database file.
+		expect(after.domainPath).toBe(before.domainPath);
+		expect(after.dbPath).not.toBe(before.dbPath);
+		expect(after.rootPrefix).toBe("Lattice");
+	});
+
+	it("keys version-1 databases by root, which is why they are adopted", () => {
+		const repo = tempDir();
+		const legacy = legacyDbPathForRoot(repo, profile(), {});
+		expect(legacy).not.toBe(dbPathForProject(profile({ projectPath: repo }), {}));
 	});
 
 	it("collapses symlinked spellings of the same root", () => {

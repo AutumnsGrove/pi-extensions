@@ -21,7 +21,7 @@ import { listKnownModels, modelDimensions } from "./src/embed/registry.ts";
 import { isRootUnindexable } from "./src/index/ignore.ts";
 import type { ProgressFunc } from "./src/index/indexer.ts";
 import { MAX_SEARCH_LIMIT } from "./src/search/service.ts";
-import { describeSearchError, formatIndexStatus } from "./src/search/format.ts";
+import { describeSearchError, formatIndexStatus, formatPrunePlan, formatPruneReport } from "./src/search/format.ts";
 
 const STATUS_KEY = "semsearch";
 
@@ -148,9 +148,9 @@ export function createSemanticSearchExtension(
 			void (async () => {
 				try {
 					setIndexStatus(ctx, "semsearch: indexing…");
-					const { store, indexer } = await manager.ensure(ctx.cwd);
+					const { store, indexer, resolved } = await manager.ensure(ctx.cwd);
 					const fresh = await indexer.ensureFresh();
-					const { totalChunks } = store.stats();
+					const { totalChunks } = store.stats(resolved.rootPrefix);
 					setIndexStatus(
 						ctx,
 						`semsearch: ${totalChunks} chunks${fresh.reindexed ? " (updated)" : ""}`
@@ -286,12 +286,14 @@ Use grep, find, or read only when you already know the exact literal string (a s
 						details: { stale: false },
 					};
 				}
-				const { store, indexer } = await manager.ensure(projectDir);
+				const { store, indexer, resolved } = await manager.ensure(projectDir);
 				const status = indexer.status();
 				const stale = !(await indexer.isFresh());
 				const text = formatIndexStatus({
 					projectPath: projectDir,
-					totalFiles: store.stats().totalFiles,
+					domainPath: resolved.domainPath,
+					rootPrefix: resolved.rootPrefix,
+					totalFiles: store.stats(resolved.rootPrefix).totalFiles,
 					totalChunks: status.totalChunks,
 					embeddingModel: status.embeddingModel,
 					lastIndexedAt: status.lastIndexedAt,
@@ -304,7 +306,8 @@ Use grep, find, or read only when you already know the exact literal string (a s
 		});
 
 		pi.registerCommand("semsearch", {
-			description: "Semantic search index: status | reindex | model [name] [dims]",
+			description:
+				"Semantic search index: status | reindex | prune [--yes] | model [name] [dims]",
 			handler: async (args, ctx) => {
 				const parts = args.trim().split(/\s+/).filter(Boolean);
 				const sub = parts[0] ?? "";
@@ -369,6 +372,25 @@ Use grep, find, or read only when you already know the exact literal string (a s
 							`A new index is built on the next search.${envNote}${fallbackNote}`,
 						"info"
 					);
+					return;
+				}
+
+				if (sub === "prune") {
+					// `prune` shows the plan; `prune --yes` moves and deletes files.
+					// Allowed from any directory: it cleans the data dir, not a root.
+					const apply = parts.includes("--yes") || parts.includes("-y");
+					try {
+						const { plan, report } = await manager.prune(apply);
+						ctx.ui.notify(
+							report ? formatPruneReport(report) : formatPrunePlan(plan),
+							plan.actions.length === 0 ? "info" : apply ? "info" : "warning"
+						);
+					} catch (error) {
+						ctx.ui.notify(
+							`Prune failed: ${error instanceof Error ? error.message : String(error)}`,
+							"error"
+						);
+					}
 					return;
 				}
 
