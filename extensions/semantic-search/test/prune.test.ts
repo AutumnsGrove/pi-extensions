@@ -251,6 +251,42 @@ describe("planPrune", () => {
 		expect(existsSync(livePath)).toBe(true);
 	});
 
+	it("adopts an inner domain when its ancestor does not cover it", () => {
+		const dataHome = tempDir();
+		const env = envFor(dataHome);
+		const projects = tempDir("semsearch-projects-");
+		const lattice = join(projects, "Lattice");
+		mkdirSync(lattice, { recursive: true });
+		execFileSync("git", ["init", "-q", lattice], { stdio: "ignore" });
+
+		// The parent was indexed, but its walk never contained Lattice.
+		legacyDatabase({ rootPath: projects, dataHome, files: { "own.ts": "h2" } });
+		const latticeDb = legacyDatabase({
+			rootPath: lattice,
+			dataHome,
+			files: { "a.ts": "h1" },
+		});
+
+		const plan = planPrune(PROFILE, env);
+		expect(plan.actions.find((action) => action.dbPath === latticeDb)).toMatchObject({
+			kind: "adopt",
+			domainPath: realpathSync(lattice),
+		});
+		expect(
+			plan.actions.some((action) => action.kind === "delete")
+		).toBe(false);
+
+		expect(executePrune(plan, PROFILE, env).adopted).toBe(2);
+		invalidateDomainCache();
+		// Deepest marker wins, so the surviving child serves its own subtree.
+		expect(resolveIndexRoot(lattice, PROFILE, env).domainPath).toBe(
+			realpathSync(lattice)
+		);
+		expect(
+			resolveIndexRoot(projects, PROFILE, env).domainPath
+		).toBe(realpathSync(projects));
+	});
+
 	it("keeps another profile's database when only the dimensions match", () => {
 		const dataHome = tempDir();
 		const env = envFor(dataHome);

@@ -165,7 +165,9 @@ changes make old indexes incompatible.
 Known limits: adding a root *above* an existing domain re-embeds that subtree
 (nothing migrates the other direction); version-1 databases never recorded
 `maxChunkTokens`, so adoption trusts the current value (chunk ids do not depend
-on it, only oversized-chunk splits do).
+on it, only oversized-chunk splits do); stale-lock recovery is a compare-and-
+delete on the judged token, so the read/`unlink` pair is not atomic — a peer
+that acquires in that microsecond window could still lose its lock file.
 
 ## Dependencies
 

@@ -263,11 +263,18 @@ export function planPrune(
 		});
 		return false;
 	});
-	const keptAdoptions: Array<{ dbPath: string; domainPath: string }> = [];
-	for (const candidate of existing) {
+	const keepers: Array<{ dbPath: string; domainPath: string }> = keptLive.map((entry) => ({
+		dbPath: entry.marker.dbPath,
+		domainPath: entry.marker.domainPath,
+	}));
+	// Ancestors first, so a survivor can already be tested as a keeper.
+	const sortedCandidates = [...existing].sort(
+		(a, b) => a.domainPath.length - b.domainPath.length
+	);
+	for (const candidate of sortedCandidates) {
 		// This profile already has a current database for the same domain: the
 		// version-1 file is superseded, not adopting it.
-		if (keptLive.some((entry) => entry.marker.domainPath === candidate.domainPath)) {
+		if (keepers.some((keeper) => keeper.domainPath === candidate.domainPath)) {
 			actions.push({
 				kind: "delete",
 				dbPath: candidate.entry.dbPath,
@@ -277,25 +284,22 @@ export function planPrune(
 			});
 			continue;
 		}
-		const coveredByAdoption = existing.some(
-			(other) =>
-				other !== candidate && isPathInside(candidate.domainPath, other.domainPath)
+		// A surviving domain above it only wins when it provably holds rows under
+		// this root. Otherwise this database is the only copy of those vectors, so
+		// it is adopted as its own domain instead of deleted.
+		const cover = keepers.find(
+			(keeper) =>
+				keeper.domainPath !== candidate.domainPath &&
+				isPathInside(candidate.domainPath, keeper.domainPath) &&
+				databaseCovers(keeper.dbPath, keeper.domainPath, candidate.domainPath)
 		);
-		const coveredByLive = keptLive.some(
-			(entry) =>
-				isPathInside(candidate.domainPath, entry.marker.domainPath) &&
-				databaseCovers(
-					entry.marker.dbPath,
-					entry.marker.domainPath,
-					candidate.domainPath
-				)
-		);
-		if (coveredByAdoption || coveredByLive) {
+		if (cover) {
 			actions.push({
 				kind: "delete",
 				dbPath: candidate.entry.dbPath,
 				bytes: candidate.entry.bytes,
-				reason: `covered by a domain database above ${candidate.domainPath}`,
+				reason: `${candidate.domainPath} is covered by ${cover.domainPath}`,
+				domainPath: cover.domainPath,
 			});
 			continue;
 		}
@@ -306,7 +310,7 @@ export function planPrune(
 			reason: `version-1 database for ${candidate.domainPath}`,
 			domainPath: candidate.domainPath,
 		});
-		keptAdoptions.push({
+		keepers.push({
 			dbPath: candidate.entry.dbPath,
 			domainPath: candidate.domainPath,
 		});
@@ -315,13 +319,6 @@ export function planPrune(
 	// Child roots: delete only when a surviving domain database provably holds
 	// the subtree. Otherwise adopt the child as its own domain — its paths are
 	// already relative to that root, so nothing is re-embedded.
-	const keepers: Array<{ dbPath: string; domainPath: string }> = [
-		...keptLive.map((entry) => ({
-			dbPath: entry.marker.dbPath,
-			domainPath: entry.marker.domainPath,
-		})),
-		...keptAdoptions,
-	];
 	for (const child of legacyChildren) {
 		const cover = keepers.find(
 			(keeper) =>
@@ -347,9 +344,9 @@ export function planPrune(
 			reason: `version-1 database for ${child.rootPath} (${child.domain} does not cover it)`,
 			domainPath: child.rootPath,
 		});
+		keepers.push({ dbPath: child.entry.dbPath, domainPath: child.rootPath });
 	}
 
-	const migrated = actions.filter((action) => action.kind !== "delete");
 	const freedBytes = actions
 		.filter((action) => action.kind === "delete")
 		.reduce((sum, action) => sum + action.bytes, 0);
@@ -357,7 +354,7 @@ export function planPrune(
 		actions,
 		freedBytes,
 		// Databases that survive as live domains after the prune runs.
-		kept: keptLive.length + migrated.length,
+		kept: keepers.length,
 	};
 }
 

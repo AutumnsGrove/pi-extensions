@@ -1,6 +1,8 @@
+import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { withFileLock } from "../src/index/lock.ts";
 
@@ -108,4 +110,70 @@ describe("withFileLock", () => {
 			withFileLock(undefined, async () => "done")
 		).resolves.toBe("done");
 	});
+
+	it(
+		"serializes across processes and recovers a killed holder",
+		async () => {
+			const path = lockPath();
+			const moduleUrl = new URL("../src/index/lock.ts", import.meta.url).href;
+			const child = spawn(
+				process.execPath,
+				[
+					"-e",
+					`import(${JSON.stringify(moduleUrl)}).then((m) =>
+						m.withFileLock(${JSON.stringify(path)}, async () => {
+							process.stdout.write("held\\n");
+							await new Promise((resolve) => setTimeout(resolve, 60000));
+						})
+					).catch((error) => {
+						console.error(error.message);
+						process.exit(1);
+					});`,
+				],
+				{ stdio: ["ignore", "pipe", "pipe"] }
+			);
+
+			try {
+				await new Promise<void>((resolve, reject) => {
+					const timer = setTimeout(
+						() => reject(new Error("child never acquired the lock")),
+						10000
+					);
+					child.stdout.on("data", (chunk: Buffer) => {
+						if (chunk.toString().includes("held")) {
+							clearTimeout(timer);
+							resolve();
+						}
+					});
+					child.once("exit", (code) => {
+						clearTimeout(timer);
+						reject(new Error(`child exited early (${code})`));
+					});
+				});
+
+				// A different process holds a live lock (fresh heartbeat, live pid).
+				await expect(
+					withFileLock(path, async () => undefined, {
+						timeoutMs: 150,
+						pollMs: 10,
+					})
+				).rejects.toThrow(/another pi process/);
+			} finally {
+				child.kill("SIGKILL");
+			}
+			await new Promise<void>((resolve) => child.once("exit", () => resolve()));
+
+			// The holder died mid-run: its lock has a fresh mtime but a dead pid.
+			let ran = false;
+			await withFileLock(
+				path,
+				async () => {
+					ran = true;
+				},
+				{ timeoutMs: 5000 }
+			);
+			expect(ran).toBe(true);
+		},
+		15000
+	);
 });
