@@ -150,9 +150,14 @@ hash = sha256(domain realpath | model | dims | vectorStorage | maxChunkTokens | 
   `busy_timeout`, so two `pi` processes on one repo cannot interleave `vec0`
   delete-then-inserts.
 - `/semsearch prune` lists unused databases; `--yes` adopts version-1 databases
-  whose root is its own domain, and deletes child databases the domain database
-  covers. It also drops a nested live domain when the outer database provably
-  holds rows for it.
+  whose root is its own domain and deletes child databases the domain database
+  provably covers (a surviving root, and at least one stored file under the
+  child). A child database nothing covers is adopted as its own domain instead
+  of deleted — its paths are already relative to that root. Deleting a database
+  removes its marker in the same step, so a pruned nested domain cannot come
+  back as an empty nested index. Databases that belong to another embedding
+  profile are recognised by path identity (`legacyDbPathForRoot`), never by
+  matching dimensions alone.
 
 `INDEX_VERSION` is a hardcoded constant, bumped whenever chunker/embedder/schema
 changes make old indexes incompatible.

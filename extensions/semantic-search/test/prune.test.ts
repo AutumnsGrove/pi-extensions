@@ -158,6 +158,19 @@ describe("planPrune", () => {
 			dbPath: innerPath,
 		});
 		expect(plan.kept).toBe(1);
+
+		// Applying the plan must remove the inner marker too, or the next session
+		// in Lattice recreates an empty nested index instead of sharing outer rows.
+		expect(executePrune(plan, PROFILE, env).deleted).toBe(1);
+		expect(existsSync(innerPath)).toBe(false);
+		invalidateDomainCache();
+		expect(readDomainMarkers(env).map((marker) => marker.domainPath)).toEqual([
+			realpathSync(projects),
+		]);
+		const resolved = resolveIndexRoot(lattice, PROFILE, env);
+		expect(resolved.domainPath).toBe(realpathSync(projects));
+		expect(resolved.rootPrefix).toBe("Lattice");
+		expect(resolved.dbPath).toBe(outerPath);
 	});
 
 	it("keeps a nested database the outer one does not cover", () => {
@@ -198,6 +211,105 @@ describe("planPrune", () => {
 
 		// `own.ts` is the only row, so the outer root does not cover Lattice.
 		expect(planPrune(PROFILE, env).actions).toEqual([]);
+	});
+
+	it("deletes a version-1 database a live domain already superseded", () => {
+		const dataHome = tempDir();
+		const env = envFor(dataHome);
+		const repo = tempDir("semsearch-repo-");
+		execFileSync("git", ["init", "-q", repo], { stdio: "ignore" });
+
+		// A version-2 database plus its marker (as a session would create).
+		const livePath = dbPathForDomain(repo, PROFILE, env);
+		mkdirSync(join(livePath, ".."), { recursive: true });
+		const live = Store.open(livePath, PROFILE.dimensions);
+		live.upsertRoot({
+			rootPath: realpathSync(repo),
+			rootPrefix: "",
+			rootHash: "live",
+			lastIndexError: "",
+			totalFiles: 1,
+		});
+		live.upsertFile("a.ts", "h1");
+		live.close();
+		writeDomainMarker(repo, PROFILE, env);
+
+		// The old file for the same root and profile is still around.
+		const legacyPath = legacyDatabase({
+			rootPath: repo,
+			dataHome,
+			files: { "a.ts": "h1" },
+		});
+
+		const plan = planPrune(PROFILE, env);
+		const action = plan.actions.find((entry) => entry.dbPath === legacyPath);
+		expect(action).toMatchObject({ kind: "delete" });
+		expect(action?.reason).toContain("superseded");
+
+		executePrune(plan, PROFILE, env);
+		expect(existsSync(legacyPath)).toBe(false);
+		expect(existsSync(livePath)).toBe(true);
+	});
+
+	it("keeps another profile's database when only the dimensions match", () => {
+		const dataHome = tempDir();
+		const env = envFor(dataHome);
+		const repo = tempDir("semsearch-repo-");
+		execFileSync("git", ["init", "-q", repo], { stdio: "ignore" });
+
+		const currentPath = legacyDatabase({ rootPath: repo, dataHome, files: { "a.ts": "h1" } });
+		// Same root, same dimensions, different model: its own v1 database.
+		const otherPath = legacyDbPathForRoot(
+			repo,
+			{ ...PROFILE, model: "another-model" },
+			env
+		);
+		mkdirSync(join(otherPath, ".."), { recursive: true });
+		const other = Store.open(otherPath, PROFILE.dimensions);
+		other.setMeta("project_path", repo);
+		other.setMeta("root_hash", "other");
+		other.setMeta("embedding_model", "another-model");
+		other.close();
+
+		const plan = planPrune(PROFILE, env);
+		expect(plan.actions.map((action) => ({ kind: action.kind, dbPath: action.dbPath }))).toEqual([
+			{ kind: "adopt", dbPath: currentPath },
+		]);
+
+		executePrune(plan, PROFILE, env);
+		// The other model's index survives, and the current one moved into place.
+		expect(existsSync(otherPath)).toBe(true);
+		expect(existsSync(currentPath)).toBe(false);
+	});
+
+	it("adopts a child root database when nothing above it covers the subtree", () => {
+		const dataHome = tempDir();
+		const env = envFor(dataHome);
+		const repo = tempDir("semsearch-repo-");
+		execFileSync("git", ["init", "-q", repo], { stdio: "ignore" });
+		const pkg = join(repo, "pkg");
+		mkdirSync(pkg, { recursive: true });
+
+		// Only the subdirectory was ever indexed, so the parent has no rows for it.
+		const childPath = legacyDatabase({
+			rootPath: pkg,
+			dataHome,
+			files: { "a.ts": "h1" },
+		});
+
+		const plan = planPrune(PROFILE, env);
+		const adopt = plan.actions.find((action) => action.kind === "adopt");
+		expect(adopt?.domainPath).toBe(realpathSync(pkg));
+		expect(
+			plan.actions.some((action) => action.kind === "delete")
+		).toBe(false);
+
+		expect(executePrune(plan, PROFILE, env).adopted).toBe(1);
+		const moved = dbPathForDomain(pkg, PROFILE, env);
+		expect(existsSync(moved)).toBe(true);
+		expect(existsSync(childPath)).toBe(false);
+		invalidateDomainCache();
+		expect(resolveIndexRoot(pkg, PROFILE, env).domainPath).toBe(realpathSync(pkg));
 	});
 });
 

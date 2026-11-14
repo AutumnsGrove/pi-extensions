@@ -83,6 +83,15 @@ export function isPathUnder(path: string, prefix: string): boolean {
 	return path === clean || path.startsWith(`${clean}/`);
 }
 
+/**
+ * Escape `%`, `_`, and `\` for a SQLite `LIKE ? ESCAPE '\'` clause. Directory
+ * names routinely contain `_`, which is a wildcard otherwise, so a prefix
+ * filter must not pass a raw path into LIKE.
+ */
+export function escapeLikePattern(prefix: string): string {
+	return normalizePrefix(prefix).replace(/[\\%_]/g, (char) => `\\${char}`);
+}
+
 /** Remove a prefix from a domain-relative path; returns "" when it does not match. */
 export function stripPrefix(prefix: string, path: string): string {
 	const clean = normalizePrefix(prefix);

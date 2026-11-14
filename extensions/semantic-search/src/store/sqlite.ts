@@ -13,7 +13,7 @@ import { createRequire } from "node:module";
 // createRequire; the type-only import keeps full typing.
 import type { DatabaseSync, StatementSync } from "node:sqlite";
 import type { Chunk } from "../chunk/types.ts";
-import { isPathUnder, normalizePrefix } from "../domains.ts";
+import { escapeLikePattern, isPathUnder, normalizePrefix } from "../domains.ts";
 
 const require = createRequire(import.meta.url);
 const sqliteVec = require("sqlite-vec") as { getLoadablePath(): string };
@@ -444,8 +444,8 @@ export class Store {
 			args.push(maxDistance);
 		}
 		if (prefix) {
-			where.push("(c.file_path = ? OR c.file_path LIKE ? || '/%')");
-			args.push(prefix, prefix);
+			where.push("(c.file_path = ? OR c.file_path LIKE ? || '/%' ESCAPE '\\')");
+			args.push(prefix, escapeLikePattern(prefix));
 		}
 		args.push(limit);
 		const rows = this.db
@@ -497,15 +497,16 @@ export class Store {
 				totalChunks: rowNumber(row, "chunks"),
 			};
 		}
-		const args = [clean, clean];
-		void args;
+		const like = escapeLikePattern(clean);
 		const row = this.db
 			.prepare(
 				`SELECT
-					(SELECT count(*) FROM files WHERE path = ? OR path LIKE ? || '/%') AS files,
-					(SELECT count(*) FROM chunks WHERE file_path = ? OR file_path LIKE ? || '/%') AS chunks`
+					(SELECT count(*) FROM files
+					 WHERE path = ? OR path LIKE ? || '/%' ESCAPE '\\') AS files,
+					(SELECT count(*) FROM chunks
+					 WHERE file_path = ? OR file_path LIKE ? || '/%' ESCAPE '\\') AS chunks`
 			)
-			.get(clean, clean, clean, clean) as Record<string, unknown>;
+			.get(clean, like, clean, like) as Record<string, unknown>;
 		return {
 			totalFiles: rowNumber(row, "files"),
 			totalChunks: rowNumber(row, "chunks"),
@@ -517,10 +518,11 @@ export class Store {
 		const rows = clean
 			? (this.db
 					.prepare(
-						`SELECT symbol FROM chunks WHERE file_path = ? OR file_path LIKE ? || '/%'
+						`SELECT symbol FROM chunks
+						 WHERE file_path = ? OR file_path LIKE ? || '/%' ESCAPE '\\'
 						 GROUP BY symbol ORDER BY count(*) DESC LIMIT ?`
 					)
-					.all(clean, clean, limit) as Record<string, unknown>[])
+					.all(clean, escapeLikePattern(clean), limit) as Record<string, unknown>[])
 			: (this.db
 					.prepare(
 						"SELECT symbol FROM chunks GROUP BY symbol ORDER BY count(*) DESC LIMIT ?"
@@ -536,10 +538,11 @@ export class Store {
 					.prepare(
 						`SELECT EXISTS(
 							SELECT 1 FROM files
-							WHERE hash = '' AND (path = ? OR path LIKE ? || '/%')
+							WHERE hash = ''
+							  AND (path = ? OR path LIKE ? || '/%' ESCAPE '\\')
 						) AS present`
 					)
-					.get(clean, clean) as Record<string, unknown>)
+					.get(clean, escapeLikePattern(clean)) as Record<string, unknown>)
 			: (this.db
 					.prepare("SELECT EXISTS(SELECT 1 FROM files WHERE hash = '') AS present")
 					.get() as Record<string, unknown>);

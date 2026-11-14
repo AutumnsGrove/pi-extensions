@@ -19,11 +19,13 @@ import {
 	INDEX_VERSION,
 	dataDir,
 	dbPathForDomain,
+	legacyDbPathForRoot,
 	profileSignature,
 	resolveProjectRoot,
 	type EmbeddingProfile,
 } from "../config.ts";
 import {
+	escapeLikePattern,
 	invalidateDomainCache,
 	isPathInside,
 	listDomainMarkers,
@@ -124,10 +126,13 @@ function databaseCovers(
 		const row = db
 			.prepare(
 				`SELECT EXISTS(
-					SELECT 1 FROM files WHERE path = ? OR path LIKE ? || '/%'
+					SELECT 1 FROM files
+					 WHERE path = ? OR path LIKE ? || '/%' ESCAPE '\\'
 				) AS present`
 			)
-			.all(innerPrefix, innerPrefix) as Array<Record<string, unknown>>;
+			.all(innerPrefix, escapeLikePattern(innerPrefix)) as Array<
+				Record<string, unknown>
+			>;
 		return row.some((entry) => Number(entry.present ?? 0) === 1);
 	} catch {
 		return false;
@@ -149,19 +154,21 @@ export function planPrune(
 	env: Env = process.env
 ): PrunePlan {
 	const signature = profileSignature(profile);
-	const markers = listDomainMarkers(env);
 	const actions: PruneAction[] = [];
 	const databases = listIndexDatabases(env);
 
 	const markerByDb = new Map<string, { path: string; marker: DomainMarker }>();
-	for (const entry of markers) {
+	for (const entry of listDomainMarkers(env)) {
 		markerByDb.set(entry.marker.dbPath, entry);
 	}
 
-	const live: Array<{ path: string; marker: DomainMarker; bytes: number }> = [];
-	const adoptionCandidates: Array<{
+	const live: Array<{ marker: DomainMarker; bytes: number }> = [];
+	const adoptionCandidates: Array<{ entry: DatabaseEntry; domainPath: string }> = [];
+	/** Version-1 databases for a root inside a domain (repo subdirectory). */
+	const legacyChildren: Array<{
 		entry: DatabaseEntry;
-		domainPath: string;
+		rootPath: string;
+		domain: string;
 	}> = [];
 
 	for (const entry of databases) {
@@ -172,7 +179,7 @@ export function planPrune(
 				continue;
 			}
 			if (known.marker.indexVersion === INDEX_VERSION) {
-				live.push({ path: known.path, marker: known.marker, bytes: entry.bytes });
+				live.push({ marker: known.marker, bytes: entry.bytes });
 				continue;
 			}
 			// Stale marker for this profile: the domain survives, the file does
@@ -197,67 +204,91 @@ export function planPrune(
 			});
 			continue;
 		}
-		if (meta.vecDimensions !== undefined && meta.vecDimensions !== profile.dimensions) {
-			// Another model's database; the user may switch back to it.
+		const rootPath = resolveProjectRoot(meta.projectPath);
+		// Identity, not similarity: only the exact version-1 path this profile
+		// would have written is ours to move or delete. Another model that
+		// happens to share the dimensionality lives at a different path and
+		// must be left alone.
+		if (entry.dbPath !== legacyDbPathForRoot(rootPath, profile, env)) {
 			continue;
 		}
-		const rootPath = resolveProjectRoot(meta.projectPath);
+		if (meta.vecDimensions !== undefined && meta.vecDimensions !== profile.dimensions) {
+			continue;
+		}
 		const domain = naturalDomain(rootPath);
 		if (domain !== rootPath) {
-			// A child root's old database: its rows belong to the domain database,
-			// which either exists already or is rebuilt on the next run.
-			actions.push({
-				kind: "delete",
-				dbPath: entry.dbPath,
-				bytes: entry.bytes,
-				reason: `${rootPath} lives inside its domain ${domain}`,
-				domainPath: domain,
-			});
+			legacyChildren.push({ entry, rootPath, domain });
 			continue;
 		}
 		adoptionCandidates.push({ entry, domainPath: rootPath });
 	}
 
-	const liveDomains = live.map((entry) => entry.marker.domainPath);
-
-	// Never adopt a database whose directory is gone, and keep at most one
-	// database per domain (the largest, since the list is size-sorted).
-	const seenDomains = new Set<string>();
-	const adoptable: typeof adoptionCandidates = [];
-	for (const candidate of adoptionCandidates) {
-		if (!existsSync(candidate.domainPath)) {
+	// Nested live domains: keep the outermost one when it provably covers the
+	// inner one, otherwise leave both alone.
+	const sortedLive = [...live].sort(
+		(a, b) => a.marker.domainPath.length - b.marker.domainPath.length
+	);
+	const keptLive: typeof live = [];
+	for (const entry of sortedLive) {
+		const outer = keptLive.find((candidate) =>
+			isPathInside(entry.marker.domainPath, candidate.marker.domainPath)
+		);
+		if (
+			outer &&
+			databaseCovers(outer.marker.dbPath, outer.marker.domainPath, entry.marker.domainPath)
+		) {
 			actions.push({
 				kind: "delete",
-				dbPath: candidate.entry.dbPath,
-				bytes: candidate.entry.bytes,
-				reason: `${candidate.domainPath} no longer exists`,
+				dbPath: entry.marker.dbPath,
+				bytes: entry.bytes,
+				reason: `covered by the domain database for ${outer.marker.domainPath}`,
+				domainPath: outer.marker.domainPath,
 			});
 			continue;
 		}
-		if (seenDomains.has(candidate.domainPath)) {
-			actions.push({
-				kind: "delete",
-				dbPath: candidate.entry.dbPath,
-				bytes: candidate.entry.bytes,
-				reason: `duplicate database for ${candidate.domainPath}`,
-			});
-			continue;
-		}
-		seenDomains.add(candidate.domainPath);
-		adoptable.push(candidate);
+		keptLive.push(entry);
 	}
 
-	// Keep only the outermost adoptable domain: an inner one is covered by it.
-	for (const candidate of adoptable) {
-		const coveredByAdoption = adoptable.some(
+	// Version-1 domains: never adopt one whose directory is gone, and keep only
+	// the outermost (an inner one is covered by it).
+	const existing = adoptionCandidates.filter((candidate) => {
+		if (existsSync(candidate.domainPath)) {
+			return true;
+		}
+		actions.push({
+			kind: "delete",
+			dbPath: candidate.entry.dbPath,
+			bytes: candidate.entry.bytes,
+			reason: `${candidate.domainPath} no longer exists`,
+		});
+		return false;
+	});
+	const keptAdoptions: Array<{ dbPath: string; domainPath: string }> = [];
+	for (const candidate of existing) {
+		// This profile already has a current database for the same domain: the
+		// version-1 file is superseded, not adopting it.
+		if (keptLive.some((entry) => entry.marker.domainPath === candidate.domainPath)) {
+			actions.push({
+				kind: "delete",
+				dbPath: candidate.entry.dbPath,
+				bytes: candidate.entry.bytes,
+				reason: `superseded by the current database for ${candidate.domainPath}`,
+				domainPath: candidate.domainPath,
+			});
+			continue;
+		}
+		const coveredByAdoption = existing.some(
 			(other) =>
 				other !== candidate && isPathInside(candidate.domainPath, other.domainPath)
 		);
-		const coveredByLive = liveDomains.some(
-			(domain) =>
-				domain !== candidate.domainPath &&
-				isPathInside(candidate.domainPath, domain) &&
-				databaseCovers(dbPathForDomain(domain, profile, env), domain, candidate.domainPath)
+		const coveredByLive = keptLive.some(
+			(entry) =>
+				isPathInside(candidate.domainPath, entry.marker.domainPath) &&
+				databaseCovers(
+					entry.marker.dbPath,
+					entry.marker.domainPath,
+					candidate.domainPath
+				)
 		);
 		if (coveredByAdoption || coveredByLive) {
 			actions.push({
@@ -275,45 +306,58 @@ export function planPrune(
 			reason: `version-1 database for ${candidate.domainPath}`,
 			domainPath: candidate.domainPath,
 		});
+		keptAdoptions.push({
+			dbPath: candidate.entry.dbPath,
+			domainPath: candidate.domainPath,
+		});
 	}
 
-	// Nested live domains: keep the outermost one when it provably covers the
-	// inner one, otherwise leave both alone.
-	const sorted = [...live].sort(
-		(a, b) => a.marker.domainPath.length - b.marker.domainPath.length
-	);
-	const keptDomains: DomainMarker[] = [];
-	for (const entry of sorted) {
-		const outer = keptDomains.find((candidate) =>
-			isPathInside(entry.marker.domainPath, candidate.domainPath)
+	// Child roots: delete only when a surviving domain database provably holds
+	// the subtree. Otherwise adopt the child as its own domain — its paths are
+	// already relative to that root, so nothing is re-embedded.
+	const keepers: Array<{ dbPath: string; domainPath: string }> = [
+		...keptLive.map((entry) => ({
+			dbPath: entry.marker.dbPath,
+			domainPath: entry.marker.domainPath,
+		})),
+		...keptAdoptions,
+	];
+	for (const child of legacyChildren) {
+		const cover = keepers.find(
+			(keeper) =>
+				keeper.domainPath !== child.rootPath &&
+				isPathInside(child.rootPath, keeper.domainPath) &&
+				databaseCovers(keeper.dbPath, keeper.domainPath, child.rootPath)
 		);
-		const outerDb = outer ? dbPathForDomain(outer.domainPath, profile, env) : undefined;
-		if (
-			outer &&
-			outerDb &&
-			databaseCovers(outerDb, outer.domainPath, entry.marker.domainPath)
-		) {
+		if (cover) {
 			actions.push({
 				kind: "delete",
-				dbPath: entry.marker.dbPath,
-				bytes: entry.bytes,
-				reason: `covered by the domain database for ${outer.domainPath}`,
-				domainPath: outer.domainPath,
+				dbPath: child.entry.dbPath,
+				bytes: child.entry.bytes,
+				reason: `${child.rootPath} is covered by ${cover.domainPath}`,
+				domainPath: cover.domainPath,
 			});
 			continue;
 		}
-		keptDomains.push(entry.marker);
+		// Nothing above it holds these rows: keep them as their own domain.
+		actions.push({
+			kind: "adopt",
+			dbPath: child.entry.dbPath,
+			bytes: child.entry.bytes,
+			reason: `version-1 database for ${child.rootPath} (${child.domain} does not cover it)`,
+			domainPath: child.rootPath,
+		});
 	}
 
+	const migrated = actions.filter((action) => action.kind !== "delete");
 	const freedBytes = actions
 		.filter((action) => action.kind === "delete")
 		.reduce((sum, action) => sum + action.bytes, 0);
-	const migrated = actions.filter((action) => action.kind !== "delete").length;
 	return {
 		actions,
 		freedBytes,
 		// Databases that survive as live domains after the prune runs.
-		kept: keptDomains.length + migrated,
+		kept: keptLive.length + migrated.length,
 	};
 }
 
@@ -328,6 +372,14 @@ export function executePrune(
 	let freedBytes = 0;
 	for (const action of plan.actions) {
 		if (action.kind === "delete") {
+			// Drop the marker first: a database without a marker is an orphan the
+			// next prune deletes, while a marker without a database would make
+			// resolveIndexRoot() recreate a fresh nested index and re-embed.
+			for (const entry of listDomainMarkers(env)) {
+				if (entry.marker.dbPath === action.dbPath) {
+					removeDomainMarker(entry.path);
+				}
+			}
 			removeDatabaseDir(action.dbPath);
 			deleted += 1;
 			freedBytes += action.bytes;
@@ -336,7 +388,13 @@ export function executePrune(
 		if (action.kind === "adopt" && action.domainPath) {
 			const dbPath = dbPathForDomain(action.domainPath, profile, env);
 			if (!adoptLegacyDatabase({ dbPath, domainPath: action.domainPath, profile, env })) {
-				// The move failed (or a racing process won); leave the old file.
+				if (existsSync(dbPath)) {
+					// A current database already exists for this domain; the old file
+					// is superseded rather than adopted.
+					removeDatabaseDir(action.dbPath);
+					deleted += 1;
+					freedBytes += action.bytes;
+				}
 				continue;
 			}
 			writeDomainMarker(action.domainPath, profile, env);

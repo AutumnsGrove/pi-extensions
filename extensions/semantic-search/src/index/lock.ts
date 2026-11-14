@@ -70,9 +70,8 @@ function pidAlive(pid: number): boolean {
 	}
 }
 
-function isStale(path: string, staleMs: number): boolean {
-	const contents = readLock(path);
-	if (contents && !pidAlive(contents.pid)) {
+function isStaleContents(path: string, contents: LockContents, staleMs: number): boolean {
+	if (!pidAlive(contents.pid)) {
 		return true;
 	}
 	try {
@@ -80,6 +79,30 @@ function isStale(path: string, staleMs: number): boolean {
 	} catch {
 		// Vanished between the read and the stat: the next attempt wins.
 		return true;
+	}
+}
+
+/**
+ * Remove a lock file judged stale — but only the exact file we judged. Two
+ * waiters can both see the same stale token; the winner unlinks it and acquires
+ * its own lock, and the loser must not delete that fresh lock. Re-reading and
+ * comparing the token makes the delete a compare-and-delete.
+ */
+function recoverStaleLock(path: string, staleMs: number): void {
+	const judged = readLock(path);
+	if (!judged || !isStaleContents(path, judged, staleMs)) {
+		return;
+	}
+	const current = readLock(path);
+	if (!current || current.token !== judged.token) {
+		// A peer already recovered and re-acquired; leave its lock alone.
+		return;
+	}
+	try {
+		unlinkSync(path);
+	} catch {
+		// Unremovable (permissions, a directory in its place): the caller's next
+		// attempt or its timeout handles it.
 	}
 }
 
@@ -156,20 +179,14 @@ export async function withFileLock<T>(
 		if (tryAcquire(lockPath, contents)) {
 			break;
 		}
-		if (isStale(lockPath, staleMs)) {
-			// Recover: the holder is gone or wedged. Only removes the file if its
-			// contents still match what we judged stale.
-			const stale = readLock(lockPath);
-			if (stale) {
-				release(lockPath, stale.token);
-			}
-			continue;
-		}
+		recoverStaleLock(lockPath, staleMs);
 		if (Date.now() >= deadline) {
 			throw new Error(
 				`another pi process is indexing this repository (${lockPath}); retry in a moment`
 			);
 		}
+		// Always yield: a stale lock we cannot unlink must end in the timeout
+		// above, not in an empty spin.
 		await sleep(pollMs, options.signal);
 	}
 

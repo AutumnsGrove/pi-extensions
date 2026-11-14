@@ -403,11 +403,14 @@ Use grep, find, or read only when you already know the exact literal string (a s
 					return;
 				}
 
-				const { store, indexer } = await manager.ensure(ctx.cwd);
+				const { store, indexer, resolved } = await manager.ensure(ctx.cwd);
 				if (sub === "reindex") {
 					ctx.ui.notify("Re-indexing…", "info");
 					const stats = await indexer.index(true, undefined, ctx.signal);
-					setIndexStatus(ctx, `semsearch: ${store.stats().totalChunks} chunks`);
+					setIndexStatus(
+						ctx,
+						`semsearch: ${store.stats(resolved.rootPrefix).totalChunks} chunks`
+					);
 					ctx.ui.notify(
 						`Re-indexed ${stats.indexedFiles} files (${stats.chunksCreated} chunks).`,
 						"info"
