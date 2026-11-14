@@ -163,6 +163,8 @@ export function planPrune(
 	}
 
 	const live: Array<{ marker: DomainMarker; bytes: number }> = [];
+	/** Stale-format databases whose domain survives in a fresh file. */
+	let remapped = 0;
 	const adoptionCandidates: Array<{ entry: DatabaseEntry; domainPath: string }> = [];
 	/** Version-1 databases for a root inside a domain (repo subdirectory). */
 	const legacyChildren: Array<{
@@ -191,6 +193,7 @@ export function planPrune(
 				reason: `database format v${known.marker.indexVersion} (current: v${INDEX_VERSION})`,
 				domainPath: known.marker.domainPath,
 			});
+			remapped += 1;
 			continue;
 		}
 
@@ -354,7 +357,7 @@ export function planPrune(
 		actions,
 		freedBytes,
 		// Databases that survive as live domains after the prune runs.
-		kept: keepers.length,
+		kept: keepers.length + remapped,
 	};
 }
 
