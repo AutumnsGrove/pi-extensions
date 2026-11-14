@@ -57,7 +57,8 @@ function legacyDatabase(options: {
 	const dbPath = legacyDbPathForRoot(options.rootPath, PROFILE, env);
 	mkdirSync(join(dbPath, ".."), { recursive: true });
 	const store = Store.open(dbPath, PROFILE.dimensions);
-	store.setMeta("project_path", options.rootPath);
+	// Version 1 recorded the resolved realpath, exactly like the new domain key.
+	store.setMeta("project_path", realpathSync(options.rootPath));
 	store.setMeta("root_hash", options.rootHash ?? "abc123");
 	store.setMeta("embedding_model", PROFILE.model);
 	store.setMeta("total_files", String(Object.keys(options.files ?? {}).length));
@@ -431,10 +432,13 @@ describe("executePrune", () => {
 		expect(existsSync(latticeDb)).toBe(false);
 		expect(existsSync(join(orphan, "index.db"))).toBe(false);
 
-		// The adopted file still knows which directory it describes.
+		// Adoption imports the root row itself: without it the first run from a
+		// child root would treat the domain as empty and collect these rows.
 		const store = Store.open(adopted, PROFILE.dimensions);
-		expect(store.adoptLegacyRoot(projects)).toBe(true);
-		expect(store.getRoot(projects)).toMatchObject({ rootHash: "abc123", rootPrefix: "" });
+		expect(store.getRoot(realpathSync(projects))).toMatchObject({
+			rootHash: "abc123",
+			rootPrefix: "",
+		});
 		expect(store.getFileHashes().size).toBe(2);
 		store.close();
 

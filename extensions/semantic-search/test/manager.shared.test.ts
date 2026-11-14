@@ -1,10 +1,23 @@
 import { createServer, type Server } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { SemanticSearchManager } from "../src/manager.ts";
+import { SUPPORTED_EXTENSIONS, buildChunkers } from "../src/chunk/index.ts";
+import { legacyDbPathForRoot } from "../src/config.ts";
 import { invalidateDomainCache } from "../src/domains.ts";
+import { makeSkip } from "../src/index/ignore.ts";
+import { buildTree } from "../src/index/merkle.ts";
+import { SemanticSearchManager } from "../src/manager.ts";
+import { executePrune, planPrune } from "../src/store/prune.ts";
+import { Store } from "../src/store/sqlite.ts";
 
 const KEYWORDS = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"];
 const dirs: string[] = [];
@@ -176,6 +189,57 @@ describe("SemanticSearchManager domain integration", () => {
 		expect(result.stats.filesModified).toBe(1);
 		// Sibling files outside the root were not touched.
 		expect(parent.store.getFileHashes().has("other/c.ts")).toBe(true);
+		await manager.close();
+	});
+
+	it("keeps adopted rows when the first run comes from a child root", async () => {
+		const dataHome = tempDir();
+		const env = { XDG_DATA_HOME: dataHome };
+		const repo = project({
+			"pkg/a.ts": "export function alpha() {\n  return 'alpha';\n}\n",
+			"other/c.ts": "export function gamma() {\n  return 'gamma';\n}\n",
+		});
+		const pkg = join(repo, "pkg");
+		const profile = {
+			model: "keyword",
+			dimensions: KEYWORDS.length,
+			vectorStorage: "float32",
+			maxChunkTokens: 512,
+		};
+
+		// A version-1 database for the repo root, with the real tree hashes.
+		const tree = await buildTree(repo, makeSkip(repo, SUPPORTED_EXTENSIONS));
+		const legacyPath = legacyDbPathForRoot(repo, profile, env);
+		mkdirSync(join(legacyPath, ".."), { recursive: true });
+		const legacy = Store.open(legacyPath, KEYWORDS.length);
+		legacy.setMeta("project_path", realpathSync(repo));
+		legacy.setMeta("root_hash", tree.rootHash);
+		legacy.setMeta("embedding_model", profile.model);
+		legacy.setMeta("total_files", String(tree.files.size));
+		legacy.setMeta("last_indexed_at", new Date().toISOString());
+		for (const [path, hash] of tree.files) {
+			legacy.upsertFile(path, hash);
+		}
+		legacy.close();
+
+		const plan = planPrune(profile, env);
+		expect(plan.actions.map((action) => action.kind)).toEqual(["adopt"]);
+		expect(executePrune(plan, profile, env).adopted).toBe(1);
+
+		// The first session after pruning is in a subdirectory, not the domain
+		// root. If adoption had not imported the root row, this run would see an
+		// empty domain and collect every sibling row as garbage.
+		const manager = newManager(dataHome);
+		const child = await manager.ensure(pkg);
+		expect(child.resolved.domainPath).toBe(realpathSync(repo));
+		expect(child.resolved.rootPrefix).toBe("pkg");
+		expect(child.store.getRoot(realpathSync(repo))).toBeTruthy();
+
+		const result = await child.indexer.ensureFresh();
+		expect(result.stats.chunksCreated).toBe(0);
+		const hashes = child.store.getFileHashes();
+		expect(hashes.has("other/c.ts")).toBe(true);
+		expect(hashes.has("pkg/a.ts")).toBe(true);
 		await manager.close();
 	});
 });

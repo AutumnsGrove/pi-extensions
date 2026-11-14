@@ -163,7 +163,7 @@ export class SemanticSearchManager implements SearchManager {
 			return existing;
 		}
 		mkdirSync(dirname(resolved.dbPath), { recursive: true });
-		const adopted = adoptLegacyDatabase({
+		adoptLegacyDatabase({
 			dbPath: resolved.dbPath,
 			domainPath: resolved.domainPath,
 			profile: this.profile(),
@@ -171,11 +171,12 @@ export class SemanticSearchManager implements SearchManager {
 		});
 		const store = Store.open(resolved.dbPath, this.config.dimensions);
 		this.stores.set(resolved.dbPath, store);
-		if (adopted) {
-			// The old root hash still describes this directory, so the first run
-			// only walks the tree instead of re-embedding anything.
-			store.adoptLegacyRoot(resolved.domainPath);
-		}
+		// Import the root row whenever this store is opened, not only when the
+		// move happened here: `/semsearch prune` moves databases into place and
+		// a version-1 file may already sit at the new path. Without the root row
+		// the first run from a child root would treat the domain as empty and
+		// collect every sibling row as garbage. Idempotent when already present.
+		store.adoptLegacyRoot(resolved.domainPath);
 		writeDomainMarker(resolved.domainPath, this.profile(), this.env);
 		return store;
 	}

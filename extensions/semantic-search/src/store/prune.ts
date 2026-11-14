@@ -36,6 +36,7 @@ import {
 	type DomainMarker,
 } from "../domains.ts";
 import { adoptLegacyDatabase, readLegacyMeta, removeDatabaseDir } from "./migrate.ts";
+import { Store } from "./sqlite.ts";
 
 type Env = Record<string, string | undefined>;
 
@@ -398,6 +399,12 @@ export function executePrune(
 				continue;
 			}
 			writeDomainMarker(action.domainPath, profile, env);
+			// Leave the moved database usable immediately: create the current
+			// schema and import the old root row, so a later run from a child root
+			// cannot see an empty domain and collect the adopted rows.
+			const store = Store.open(dbPath, profile.dimensions);
+			store.adoptLegacyRoot(resolveProjectRoot(action.domainPath));
+			store.close();
 			adopted += 1;
 			// Drop the marker that pointed at the now-moved file, if any.
 			for (const entry of listDomainMarkers(env)) {
