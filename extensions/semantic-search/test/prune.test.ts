@@ -4,11 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	INDEX_VERSION,
 	dbPathForDomain,
 	legacyDbPathForRoot,
+	profileSignature,
 	type EmbeddingProfile,
 } from "../src/config.ts";
-import { invalidateDomainCache, readDomainMarkers, resolveIndexRoot, writeDomainMarker } from "../src/domains.ts";
+import {
+	domainMarkerPath,
+	invalidateDomainCache,
+	readDomainMarkers,
+	resolveIndexRoot,
+	writeDomainMarker,
+} from "../src/domains.ts";
 import { executePrune, planPrune } from "../src/store/prune.ts";
 import { Store } from "../src/store/sqlite.ts";
 
@@ -211,6 +219,46 @@ describe("planPrune", () => {
 
 		// `own.ts` is the only row, so the outer root does not cover Lattice.
 		expect(planPrune(PROFILE, env).actions).toEqual([]);
+	});
+
+	it("remaps a stale-format database and counts the domain as kept", () => {
+		const dataHome = tempDir();
+		const env = envFor(dataHome);
+		const repo = tempDir("semsearch-repo-");
+		execFileSync("git", ["init", "-q", repo], { stdio: "ignore" });
+		const domain = realpathSync(repo);
+
+		// A database with a marker from an older format for the same profile.
+		const stalePath = join(dataHome, "pi-semantic-search", "stale00deadbeef", "index.db");
+		mkdirSync(join(stalePath, ".."), { recursive: true });
+		Store.open(stalePath, PROFILE.dimensions).close();
+		const markerPath = domainMarkerPath(domain, PROFILE, env);
+		mkdirSync(join(markerPath, ".."), { recursive: true });
+		writeFileSync(
+			markerPath,
+			JSON.stringify({
+				domainPath: domain,
+				profile: profileSignature(PROFILE),
+				dbPath: stalePath,
+				indexVersion: INDEX_VERSION - 1,
+				updatedAt: "",
+			})
+		);
+		invalidateDomainCache();
+
+		const plan = planPrune(PROFILE, env);
+		expect(plan.actions).toHaveLength(1);
+		expect(plan.actions[0]?.kind).toBe("remap");
+		// The domain survives the format bump, so it belongs in the kept total.
+		expect(plan.kept).toBe(1);
+
+		executePrune(plan, PROFILE, env);
+		expect(existsSync(stalePath)).toBe(false);
+		invalidateDomainCache();
+		expect(readDomainMarkers(env)[0]?.indexVersion).toBe(INDEX_VERSION);
+		expect(resolveIndexRoot(repo, PROFILE, env).dbPath).toBe(
+			dbPathForDomain(domain, PROFILE, env)
+		);
 	});
 
 	it("deletes a version-1 database a live domain already superseded", () => {
