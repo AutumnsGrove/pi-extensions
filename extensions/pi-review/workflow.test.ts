@@ -24,6 +24,7 @@ interface Workflow {
 		review: {
 			if: string;
 			"timeout-minutes": number;
+			env?: Record<string, string>;
 			steps: {
 				name?: string;
 				uses?: string;
@@ -228,6 +229,23 @@ describe("renderWorkflow", () => {
 		expect(names).not.toContain("Mint the App token");
 		const review = workflow.jobs.review.steps.find((step) => step.name === "Review")!;
 		expect(review.env?.GH_TOKEN).toBe("${{ steps.app-token.outputs.token || github.token }}");
+	});
+
+	it("mints the App token only when the App secrets are configured", () => {
+		const workflow = render();
+		// Step-level `if:` cannot read `secrets`, so the check is computed once in
+		// the job's environment and the step reads that. Without it, a repository
+		// that chose the App identity but has no App secrets fails at the mint
+		// step, and the `github.token` fallback below can never take effect.
+		expect(workflow.jobs.review.env?.PI_REVIEW_APP_CONFIGURED).toBe(
+			"${{ secrets.PI_REVIEW_APP_ID != '' && secrets.PI_REVIEW_APP_PRIVATE_KEY != '' }}",
+		);
+		const mint = workflow.jobs.review.steps.find((step) => step.name === "Mint the App token")!;
+		expect(mint.if).toBe("env.PI_REVIEW_APP_CONFIGURED == 'true'");
+	});
+
+	it("declares no App check when the identity is a plain token", () => {
+		expect(render({ identity: "token" }).jobs.review.env).toBeUndefined();
 	});
 
 	it("filters paths with a single list of negations when excludes are set", () => {
