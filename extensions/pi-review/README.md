@@ -293,7 +293,7 @@ disables only that repository. To stop reusing the App on this machine, delete
 (read-only vs +bash), strictness, verdict, dependency install, stale-thread
 resolution, and the `@pi` mention trigger. Each entry shows the current value;
 **Save and continue** commits the result, and **Edit raw JSON…** opens the
-committed file for provider, path filters, triggers, and pins.
+committed file for provider, path filters, triggers, and timeouts.
 
 On save the JSON is validated (unknown enums are refused, numbers are clamped),
 the workflow is regenerated from it, and both files are committed to
@@ -303,28 +303,28 @@ default branch is untouched.
 `/pi-review status` shows the effective settings, whether the workflow file is
 present, and whether `PI_REVIEW_API_KEY` is set.
 
-## Updating the pinned version
+## Updating pi-review
 
-CI does not run whatever is on `main`: the workflow fetches this package at the
-exact commit in `.github/pi-review.json` → `pi.packageRef`, and installs the pi
-version in `pi.version`. Changes to the extension therefore do **not** reach PR
-reviews until you re-pin.
+CI does not run this repository's working tree. The committed workflow is a
+small caller that points at
+`AutumnsGrove/pi-extensions/.github/workflows/pi-review-reusable.yml@main`, where
+the job lives once. A change to that file reaches every project that installed
+pi-review on its next run, with no commit in the project (issue #34).
+
+The pi CLI version stays in the project: `.github/pi-review.json` → `pi.version`.
+
+What still needs a local change is the caller, and only when a setting that
+GitHub has to know before the job starts changes: the triggers, the path filter,
+the mention trigger, or the timeout. Regenerate it with:
 
 ```sh
-git push                      # the ref must exist on GitHub first
-pnpm pi-review:pin            # pin to the current HEAD (or: pnpm pi-review:pin <sha|tag>)
-pnpm pi-review:pin --check    # verify the workflow matches the settings (exit 1 if stale)
-git commit -am "Re-pin pi-review"
+pnpm pi-review:sync           # rewrite .github/workflows/pi-review.yml
+pnpm pi-review:sync --check   # exit 1 if the caller is out of date
 ```
 
-`pin` rewrites only `pi.packageRef` and regenerates `.github/workflows/pi-review.yml`
-from the settings. To change anything else, edit `.github/pi-review.json` (or
-`/pi-review settings`) and run `pnpm pi-review:pin <current ref>` to regenerate.
-To change the pi version, edit `pi.version` the same way.
-
-Use a **merge commit** (not squash/rebase) when merging a branch you pinned to,
-or the pinned SHA becomes unreachable and the workflow cannot fetch it. A tag is
-the most durable ref.
+`/pi-review settings` regenerates it when it saves. Nothing here re-pins a
+commit, and there is no package ref in the settings any more; an older file's
+`packageRef` is ignored.
 
 ## Uninstall
 
@@ -336,32 +336,31 @@ the summary links the pages to uninstall it and delete it.
 
 ## The generated workflow
 
-`/pi-review install` writes `.github/workflows/pi-review.yml`:
+`/pi-review install` writes `.github/workflows/pi-review.yml`, a caller of about
+thirty lines:
 
-- triggers: `pull_request` `opened` / `synchronize` / `ready_for_review` /
-  `reopened`, plus optional `paths` filters from `paths.include` / `paths.exclude`
-  (rendered as one `paths` list with `!` negations, because GitHub rejects
-  `paths` and `paths-ignore` together);
-- skips drafts (unless configured), fork PRs (secrets are unavailable), and
-  optionally bot authors;
-- one job, `contents: read`, `pull-requests: write`, `issues: write`,
-  `concurrency` cancel-in-progress, job timeout = review timeout + 5 minutes so
-  the failure step can run. The concurrency group is the pull request number
-  *only for runs that will review*: the group expression repeats the job `if:`
-  and falls back to `github.run_id` otherwise, because GitHub evaluates
-  `concurrency` when the run is created — before the job `if:` is considered —
-  so an ignored `issue_comment` (or a draft push) sharing the group would
-  cancel the review already in flight;
-- checks out the PR with full history, installs a pinned pi, fetches this
-  package at `settings.pi.packageRef`, mints the App token when
-  `identity: "app"` and the App secrets are present (otherwise it uses
-  `GITHUB_TOKEN`), then runs one headless pi with the review extension;
-- fails the step if the run wrote no artifact or the artifact says
-  `incomplete`, so the next step posts a "could not complete this review"
-  comment instead of ending silently;
-- always writes a step summary (verdict, inline comment count, review URL).
+- the `pull_request` trigger with the configured types and path filter, plus
+  `issue_comment` when the `@pi` mention is on;
+- the concurrency group, which is the pull request number *only for runs that
+  will review*. The group expression repeats the job `if:` and falls back to
+  `github.run_id` otherwise, because GitHub evaluates `concurrency` when the run
+  is created — before the job `if:` is considered — so an ignored comment (or a
+  draft push) sharing the group would cancel the review already in flight;
+- `permissions` (contents read, pull requests and issues write);
+- the job condition, and `uses: .../pi-review-reusable.yml@main` with the
+  settings path, the two timeouts, and whether to install dependencies.
 
-Edit `.github/pi-review.json`, not the YAML; re-running install regenerates it.
+Everything else lives in the reusable workflow, which checks out the PR with
+full history, checks the same-repo guard first, installs the caller's
+dependencies with no secret in reach, installs a pinned pi, fetches this package
+at the commit that defined the job (`github.job_workflow_sha`, falling back to
+`main`), reads `.github/pi-review.json`, mints the App token when the secrets
+are present (otherwise `GITHUB_TOKEN`), runs one headless pi, and reports the
+result. It fails the step if the run wrote no artifact or the artifact says
+`incomplete`, so the failure step posts a "could not complete this review"
+comment instead of ending silently, and it always writes a step summary.
+
+Edit `.github/pi-review.json`, not either YAML.
 
 ## Running in CI
 

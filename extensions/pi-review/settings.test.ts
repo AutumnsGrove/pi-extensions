@@ -13,7 +13,6 @@ describe("defaultSettings", () => {
 			provider: "opencode-go",
 			model: "deepseek-v4.1-flash",
 			piVersion: "1.5.0",
-			packageRef: "abc123",
 		});
 		expect(settings).toMatchObject({
 			version: 1,
@@ -25,7 +24,7 @@ describe("defaultSettings", () => {
 			tools: { bash: false },
 			review: { event: "COMMENT", maxInlineComments: DEFAULT_MAX_INLINE_COMMENTS },
 			timeoutMinutes: DEFAULT_TIMEOUT_MINUTES,
-			pi: { version: "1.5.0", packageRef: "abc123" },
+			pi: { version: "1.5.0" },
 		});
 		expect(settings.triggers.types).toEqual(["opened", "synchronize", "ready_for_review", "reopened"]);
 		expect(settings.triggers.skipDrafts).toBe(true);

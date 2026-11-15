@@ -387,9 +387,11 @@ describe("installPiReview create path", () => {
 			thinking: "medium",
 			tools: { bash: false },
 			review: { event: "COMMENT" },
-			pi: { version: "1.5.0", packageRef: "abc123" },
+			pi: { version: "1.5.0" },
 		});
-		expect(writer.calls[0]!.files[1]!.content).toContain("actions/create-github-app-token@v1");
+		expect(writer.calls[0]!.files[1]!.content).toContain(
+			"uses: AutumnsGrove/pi-extensions/.github/workflows/pi-review-reusable.yml@main"
+		);
 		expect(writer.calls[0]!.message).toBe("Add pi-review workflow and settings");
 	});
 
@@ -405,8 +407,10 @@ describe("installPiReview create path", () => {
 		expect(settings.verify.installDependencies).toBe(true);
 		expect(settings.review.event).toBe("REQUEST_CHANGES");
 		expect(settings.thinking).toBe("high");
-		expect(writer.calls[0]!.files[1]!.content).toContain("--tools read,grep,find,ls,bash,submit_review");
-		expect(writer.calls[0]!.files[1]!.content).toContain('PI_REVIEW_REQUEST_CHANGES: "1"');
+		// The caller carries the settings the reusable job needs before it starts;
+		// the review flags themselves are read from settings at run time (#34).
+		expect(writer.calls[0]!.files[1]!.content).toContain("install-dependencies: true");
+		expect(writer.calls[0]!.files[1]!.content).toContain("secrets: inherit");
 		expect(outcome.workflow?.committed).toBe(true);
 	});
 
@@ -698,7 +702,7 @@ describe("installPiReview re-install", () => {
 				resolveStaleThreads: true,
 			},
 			paths: { include: ["src/**"], exclude: ["**/*.md"] },
-			pi: { version: "1.5.0", packageRef: "old" },
+			pi: { version: "1.5.0" },
 			timeoutMinutes: 45,
 		};
 		await writeFile(join(dir, ".github", "pi-review.json"), JSON.stringify(existing), "utf8");

@@ -487,7 +487,7 @@ async function describeReviewSetup(
 		}`,
 		`- verdict: ${settings.review.event} · max ${settings.review.maxInlineComments} inline comments`,
 		`- strictness: ${settings.review.strictness}`,
-		`- package ref: \`${settings.pi.packageRef}\` · pi ${settings.pi.version}`,
+		`- pi: ${settings.pi.version}`,
 	];
 
 	if (repo) {

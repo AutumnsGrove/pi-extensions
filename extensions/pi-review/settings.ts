@@ -57,7 +57,7 @@ export interface ReviewSettings {
 		resolveStaleThreads: boolean;
 	};
 	paths: { include: string[]; exclude: string[] };
-	pi: { version: string; packageRef: string };
+	pi: { version: string };
 	/** Wall-clock ceiling for the review step. */
 	timeoutMinutes: number;
 }
@@ -72,7 +72,6 @@ export interface SettingsDefaults {
 	model?: string;
 	thinking?: ThinkingLevel;
 	piVersion?: string;
-	packageRef?: string;
 }
 
 export function defaultSettings(overrides: SettingsDefaults = {}): ReviewSettings {
@@ -101,7 +100,6 @@ export function defaultSettings(overrides: SettingsDefaults = {}): ReviewSetting
 		paths: { include: [], exclude: [] },
 		pi: {
 			version: overrides.piVersion ?? DEFAULT_PI_VERSION,
-			packageRef: overrides.packageRef ?? "main",
 		},
 		timeoutMinutes: DEFAULT_TIMEOUT_MINUTES,
 	};
@@ -201,9 +199,10 @@ export function parseSettings(value: unknown, defaults = defaultSettings()): Rev
 			include: stringList(paths.include, defaults.paths.include),
 			exclude: stringList(paths.exclude, defaults.paths.exclude),
 		},
+		// `packageRef` from an older settings file is ignored: the job runs from
+		// the pi-extensions repository at main, so there is nothing to pin (#34).
 		pi: {
 			version: stringValue(pi.version, defaults.pi.version),
-			packageRef: stringValue(pi.packageRef, defaults.pi.packageRef),
 		},
 		timeoutMinutes:
 			Number.isFinite(timeout) && timeout >= 5 && timeout <= 120
