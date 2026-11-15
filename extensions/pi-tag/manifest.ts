@@ -79,12 +79,15 @@ export interface Manifest {
 }
 
 export class ManifestError extends Error {
-	constructor(readonly problems: string[]) {
+	readonly problems: string[];
+
+	constructor(problems: string[]) {
 		super(
 			`labels.yml has ${problems.length} problem${problems.length === 1 ? "" : "s"}:\n` +
 				problems.map((p) => `  • ${p}`).join("\n")
 		);
 		this.name = "ManifestError";
+		this.problems = problems;
 	}
 }
 

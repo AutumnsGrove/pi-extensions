@@ -78,12 +78,12 @@ export interface ProposalInput {
 }
 
 export class ProposalError extends Error {
-	constructor(
-		message: string,
-		readonly excerpt: string
-	) {
+	readonly excerpt: string;
+
+	constructor(message: string, excerpt: string) {
 		super(message);
 		this.name = "ProposalError";
+		this.excerpt = excerpt;
 	}
 }
 
