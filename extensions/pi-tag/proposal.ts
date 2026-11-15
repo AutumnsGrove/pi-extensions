@@ -294,30 +294,42 @@ export function buildProposal(input: ProposalInput): Proposal {
 
 	/**
 	 * The cap was checked while each reclaimable label was still assumed to be
-	 * leaving. If one ends up left in place, applying the replacement anyway would
-	 * leave the group over its cap — the one state the manifest forbids. So the
-	 * addition loses, and says what it would take to win.
+	 * leaving. Now that removals are settled, re-count every group from what the
+	 * issue will actually carry -- the labels staying plus the additions kept so
+	 * far -- and drop additions until each group fits. Additions lose, never the
+	 * labels that were already there.
 	 */
-	if (input.fix && leftInPlace.length > 0) {
-		const staying = new Map<Group, string[]>();
-		for (const name of issue.labels) {
-			if (removed.some((entry) => entry.name === name)) continue;
-			const label = labelByName(manifest, name);
-			if (!label) continue;
-			const current = staying.get(label.group) ?? [];
-			current.push(name);
-			staying.set(label.group, current);
-		}
-		for (const entry of [...applied]) {
-			const current = (staying.get(entry.group) ?? []).filter((name) => name !== entry.name);
-			if (current.length >= capFor(manifest, entry.group)) {
-				const held = current.map((name) => `\`${name}\``).join(", ");
-				rejected.push({
-					name: entry.name,
-					reason: `\`${held}\` would stay, which leaves that group over its cap — ask for \`${held}\` to be removed`,
-				});
-				applied.splice(applied.indexOf(entry), 1);
-			}
+	const staying = new Map<Group, string[]>();
+	for (const name of issue.labels) {
+		if (removed.some((entry) => entry.name === name)) continue;
+		if (appliedNames.has(name)) continue;
+		const label = labelByName(manifest, name);
+		if (!label) continue;
+		staying.set(label.group, [...(staying.get(label.group) ?? []), name]);
+	}
+
+	const keptByGroup = new Map<Group, string[]>();
+	for (const entry of applied) {
+		keptByGroup.set(entry.group, [...(keptByGroup.get(entry.group) ?? []), entry.name]);
+	}
+
+	for (const [group, additions] of keptByGroup) {
+		const kept = staying.get(group) ?? [];
+		const cap = capFor(manifest, group);
+		let over = kept.length + additions.length - cap;
+		while (over > 0) {
+			const dropped = additions.pop();
+			if (dropped === undefined) break;
+			const held = kept.map((name) => `\`${name}\``).join(", ");
+			rejected.push({
+				name: dropped,
+				reason: held
+					? `\`${held}\` would stay, which leaves that group over its cap — ask for \`${held}\` to be removed`
+					: `at most ${cap} in \`${group}\``,
+			});
+			const at = applied.findIndex((entry) => entry.name === dropped);
+			if (at !== -1) applied.splice(at, 1);
+			over -= 1;
 		}
 	}
 

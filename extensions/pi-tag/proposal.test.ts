@@ -56,6 +56,14 @@ retired:
 
 const manifest = parseManifest(MANIFEST);
 
+/** Component cap of two, so the post-check has to count what it keeps. */
+const roomy = parseManifest(
+	MANIFEST.replace("    component: 1", "    component: 2")
+);
+
+const ROOMY_TREE = new Set(["libs/x.ts", "apps/clearing/x.ts", "apps/aspen/x.ts"]);
+const roomyEvidence = { title: "a title", exists: (p: string) => ROOMY_TREE.has(p) };
+
 const TREE = new Set([
 	"libs/shutter/src/index.ts",
 	"apps/clearing/src/routes/status.ts",
@@ -292,6 +300,28 @@ describe("buildProposal on an @pi fix run", () => {
 			{ issue, previous: ["clearing", "size/S"], fix: { note: "drop `size/S` and `clearing`" } }
 		);
 		expect(result.removed.map((entry) => entry.name)).toEqual(["clearing"]);
+	});
+
+	it("counts the additions it keeps against a cap above one", () => {
+		// old stays (nothing explained removing it), and two additions are claimed:
+		// the group has a cap of two, so only one of them may land.
+		const result = buildProposal({
+			reply: JSON.stringify({
+				labels: [
+					{ name: "lattice", evidence: [{ kind: "path", path: "libs/x.ts" }] },
+					{ name: "clearing", evidence: [{ kind: "path", path: "apps/clearing/x.ts" }] },
+				],
+			}),
+			manifest: roomy,
+			issue: { title: "a title", labels: ["aspen"] },
+			evidence: roomyEvidence,
+			previous: ["aspen"],
+			fix: { note: "something" },
+		});
+		expect(result.applied.map((entry) => entry.name)).toEqual(["lattice"]);
+		expect(result.leftInPlace).toEqual([{ name: "aspen", reason: "nothing explained removing it" }]);
+		expect(result.rejected.map((entry) => entry.name)).toEqual(["clearing"]);
+		expect(result.rejected[0]?.reason).toContain("would stay");
 	});
 
 	it("never removes a label that is not on the issue", () => {
