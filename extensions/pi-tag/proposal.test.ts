@@ -31,6 +31,11 @@ labels:
     description: Status page
     path: apps/clearing/
     when: What we tell people when something is down.
+  - name: aspen
+    group: component
+    description: Tenant sites
+    path: apps/aspen/
+    when: A tenant can see the difference.
   - name: priority-high
     group: priority
     description: Do it now
@@ -147,6 +152,17 @@ describe("buildProposal", () => {
 		);
 		expect(result.applied).toEqual([]);
 		expect(result.rejected[0]?.reason).toBe("that group already has a label (`clearing`)");
+	});
+
+	it("says so when a group is already over its cap", () => {
+		// The old labeler left #1628 with two components. Nothing may be added to
+		// that group now, and the reason should say why rather than repeat itself.
+		const result = propose(
+			{ labels: [{ name: "lattice", evidence: [{ kind: "path", path: "libs/shutter/src/index.ts" }] }] },
+			{ issue: { title: evidence.title, labels: ["clearing", "aspen"] } }
+		);
+		expect(result.applied).toEqual([]);
+		expect(result.rejected[0]?.reason).toBe("`component` is already over its cap of 1 (`clearing`, `aspen`)");
 	});
 
 	it("applies only one of two components and reports the other", () => {

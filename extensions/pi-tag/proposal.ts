@@ -302,10 +302,10 @@ export function buildProposal(input: ProposalInput): Proposal {
 }
 
 function fullGroup(group: Group, current: string[], cap: number): string {
-	if (cap === 1) {
-		return `that group already has a label (${current.map((name) => `\`${name}\``).join(", ")})`;
-	}
-	return `\`${group}\` is full — ${current.length} of ${cap} (${current.map((name) => `\`${name}\``).join(", ")})`;
+	const names = current.map((name) => `\`${name}\``).join(", ");
+	if (current.length === 1) return `that group already has a label (${names})`;
+	if (cap === 1) return `\`${group}\` is already over its cap of 1 (${names})`;
+	return `\`${group}\` is full — ${current.length} of ${cap} (${names})`;
 }
 
 /** The one line the comment shows for a label that needed evidence. */

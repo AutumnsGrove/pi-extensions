@@ -424,9 +424,36 @@ Settings file, committed in the target repo:
 The YAML is generated from this, byte-for-byte, with a test that regenerating
 produces no diff — the property `workflow.test.ts` already enforces.
 
+## Phase 0 result — the premise holds
+
+Run on 2026-11-15 against `lattice` at 8 open issues plus one `@pi fix` run.
+Fifteen to sixty seconds each, 20–40 tool calls, and no wrong label anywhere in
+the set.
+
+| Issue | Old labeler | pi-tag |
+| --- | --- | --- |
+| #1657 `libs/shutter` | `tech-debt`, `pattern:songbird` | `+ lattice` — read `libs/shutter/cloudflare/package.json` |
+| #1657 with `@pi fix` | — | `- pattern:songbird` (named), `+ lattice` |
+| #1648 fonts | proposed `amber`, applied nothing, said nothing | nothing, and named the exact directories it checked |
+| #1625 NCMEC | `pattern:threshold` | refused it: the queue is not request shaping, quoting the doc |
+| #1626 Porch | `ivy` in its history | nothing: `apps/aspen/.../arbor/` is under no `arbor` path |
+| #1632 Rings | — | `+ pattern:loom` after reading the loom doc |
+| #1628 hot/warm/cold | `amber` **and** `patina` | refused `lattice`: that group is already over its cap |
+| #1666, #1636, #1637 | — | nothing, with the reason each time |
+
+Two of these are the failures that caused the previous rewrite, now avoided by
+reading instead of by a prompt rule: #1625's queue labelled as a rate limit, and
+#1626's product named from the body. The difference is that the refusal names
+the file or the doc rather than being a silent "applied nothing".
+
+One bug found and fixed on the way: `execFile` hands the child an open stdin
+pipe, and `pi --print` reads stdin when it is not a terminal, so every run hung
+until the timeout with no output. `spawn` with `stdio: ["ignore", …]` is the fix,
+and `nodeExec` now reports a timeout as a timeout.
+
 ## Milestones
 
-### Phase 0 — baseline, local only (half a session)
+### Phase 0 — baseline, local only (done)
 
 `/pi-tag run --issue N` first: fetch the issue with `gh`, run the agent with tools,
 print the proposal and the validator's verdict, write nothing. No CI, no App. This
