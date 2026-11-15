@@ -5,9 +5,15 @@ Actions as its own App bot, reads the checkout, verifies every label it proposes
 against the repository's label manifest, and leaves one comment on the issue that
 explains what it applied and what it rejected.
 
-Status: **planned, not started.** Phase 0 is a go/no-go: a local dry run over the
-last 40 issues of the target repo. If it does not change any decisions, the
-premise is wrong and the plan is dropped rather than built.
+Status: **phases 0, 1 and 3 built; phase 2 needs one browser session.** The
+premise held: eight open issues and a fix run, no wrong label, every refusal
+naming a file or a doc. What is left is the App identity (phase 2), the installer
+(phase 4), the backfill (phase 5), and retiring the old workflow (phase 6).
+
+Everything that decides anything is a pure module with tests: `manifest`,
+`evidence`, `proposal`, `prompt`, `markers`, `comment`, `gate`, `settings`,
+`workflow`. `cli.ts` is the one entry point, and the workflow calls it — a local
+run and a CI run cannot drift.
 
 First target: [`AutumnsGrove/Lattice`](../../../lattice), whose `.github/labels.yml`
 already carries the vocabulary, the `policy:` block, and the `path:`/`doc:`
