@@ -25,8 +25,6 @@ export interface CommentInput {
 	runUrl?: string;
 	model: string;
 	now?: Date;
-	/** `comment.always`: false posts only when something changed. */
-	always?: boolean;
 	/** `comment.considered`: false drops the collapsed reasoning block. */
 	considered?: boolean;
 }
@@ -39,7 +37,15 @@ export function ownedAfter(previous: string[], proposal: Proposal): string[] {
 	return [...owned].sort();
 }
 
-/** Whether this run changed anything a reader would want to see. */
+/**
+ * Whether this run changed anything a reader would want to see.
+ *
+ * `comment.always: false` means exactly this: no labels changed, no comment. It
+ * ignores `rejected` and `leftInPlace` on purpose — a run that refused
+ * everything did not change the issue, and the log still has it. A fix run that
+ * wants its refusals on the record keeps `comment.always: true`, which is the
+ * default.
+ */
 export function worthPosting(proposal: Proposal): boolean {
 	return proposal.applied.length > 0 || proposal.removed.length > 0;
 }

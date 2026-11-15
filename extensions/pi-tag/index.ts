@@ -34,7 +34,7 @@ function helpText(): string {
 		"/pi-tag status                                     what this repo would use",
 		"/pi-tag generate                                   write the workflow from the settings",
 		"",
-		`Settings: ${SETTINGS_PATH} · Vocabulary: ${MANIFEST_PATH}`,
+		`Settings: ${SETTINGS_PATH} · Vocabulary: the manifest it names`,
 	].join("\n");
 }
 
@@ -46,23 +46,25 @@ async function show(ctx: Ctx, text: string): Promise<void> {
 
 function statusText(cwd: string): string {
 	const lines: string[] = [];
+	let manifestPath = MANIFEST_PATH;
 	let settings;
 	try {
 		settings = readSettings(resolve(cwd, SETTINGS_PATH));
 		lines.push(`${SETTINGS_PATH}: ${settings.identity} identity · ${settings.provider}/${settings.model}`);
 		lines.push(`  thinking ${settings.thinking} · timeout ${settings.timeoutMinutes}m · remove ${settings.labels.remove}`);
 		lines.push(`  triggers ${settings.triggers.mention} · ${settings.triggers.fix} · who ${settings.triggers.who.join(", ")}`);
+		manifestPath = settings.labels.manifest;
 	} catch (error) {
 		lines.push(`${SETTINGS_PATH}: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);
 	}
 
 	try {
-		const manifest = readManifest(resolve(cwd, MANIFEST_PATH));
+		const manifest = readManifest(resolve(cwd, manifestPath));
 		const auto = manifest.labels.filter((label) => manifest.policy.auto_groups.includes(label.group));
-		lines.push(`${MANIFEST_PATH}: ${manifest.labels.length} labels, ${auto.length} assignable by a machine`);
+		lines.push(`${manifestPath}: ${manifest.labels.length} labels, ${auto.length} assignable by a machine`);
 		lines.push(`  auto groups: ${manifest.policy.auto_groups.join(", ")}`);
 	} catch (error) {
-		lines.push(`${MANIFEST_PATH}: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);
+		lines.push(`${manifestPath}: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`);
 	}
 
 	const workflowFile = resolve(cwd, WORKFLOW_PATH);

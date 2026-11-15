@@ -63,7 +63,6 @@ export function generateWorkflow(options: GenerateOptions): string {
 	const ref = options.ref ?? settings.pi.packageRef ?? "main";
 	const botLogin = options.botLogin ?? botLoginFor(undefined);
 	const mention = settings.triggers.mention;
-	const alwaysComment = settings.comment.always || settings.comment.considered;
 
 	const appToken =
 		settings.identity === "app"

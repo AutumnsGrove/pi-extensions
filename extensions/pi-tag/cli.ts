@@ -173,7 +173,7 @@ function settingsDefaults(root: string): {
  * Tell the workflow this run reported itself, so the `failure()` fallback stays
  * quiet instead of posting a second comment on top of the sticky.
  */
-function noteHandled(): void {
+export function noteHandled(): void {
 	if (process.env.GITHUB_OUTPUT) {
 		try {
 			appendFileSync(process.env.GITHUB_OUTPUT, "handled=true\n");
@@ -311,7 +311,6 @@ async function main(): Promise<number> {
 		previous,
 		...(args.runUrl ? { runUrl: args.runUrl } : {}),
 		model: args.model,
-		...(defaults.always === false ? { always: false } : {}),
 		...(defaults.considered === false ? { considered: false } : {}),
 	});
 

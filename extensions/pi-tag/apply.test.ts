@@ -1,6 +1,9 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { applyLabels, resolveRepo } from "./apply.ts";
-import { parseArgs } from "./cli.ts";
+import { noteHandled, parseArgs } from "./cli.ts";
 import type { Exec } from "./github.ts";
 
 const repo = { owner: "o", repo: "r" };
@@ -66,6 +69,34 @@ describe("resolveRepo", () => {
 	it("returns nothing rather than guessing when gh fails", async () => {
 		const exec: Exec = async () => ({ stdout: "", stderr: "no auth", code: 1 });
 		expect(await resolveRepo(exec, "/r")).toBeUndefined();
+	});
+});
+
+describe("noteHandled", () => {
+	it("tells the workflow the failure was already reported", () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-tag-out-"));
+		const file = join(dir, "output");
+		writeFileSync(file, "");
+		const before = process.env.GITHUB_OUTPUT;
+		process.env.GITHUB_OUTPUT = file;
+		try {
+			noteHandled();
+			expect(readFileSync(file, "utf8")).toBe("handled=true\n");
+		} finally {
+			if (before === undefined) delete process.env.GITHUB_OUTPUT;
+			else process.env.GITHUB_OUTPUT = before;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("does nothing outside a workflow", () => {
+		const before = process.env.GITHUB_OUTPUT;
+		delete process.env.GITHUB_OUTPUT;
+		try {
+			expect(() => noteHandled()).not.toThrow();
+		} finally {
+			if (before !== undefined) process.env.GITHUB_OUTPUT = before;
+		}
 	});
 });
 
