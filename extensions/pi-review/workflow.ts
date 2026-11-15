@@ -1,11 +1,15 @@
 /**
  * Generate `.github/workflows/pi-review.yml` from the committed settings.
  *
- * The workflow is deliberately thin: it checks out the PR with full history,
- * installs a pinned pi, fetches this package at a pinned ref, mints the review
- * identity (App token or `GITHUB_TOKEN`), runs one headless pi with the review
- * extension, and reports the result. Everything policy-shaped lives in
- * `.github/pi-review.json`, so regenerating this file from settings is safe.
+ * The generated file is a caller, not the job. The job itself lives once, in
+ * `AutumnsGrove/pi-extensions/.github/workflows/pi-review-reusable.yml`, and
+ * every project calls it at `@main`, so a fix there reaches an installed
+ * project without a commit in that project (decision in issue #34). What the
+ * caller decides is what GitHub has to know before the job starts: the
+ * triggers, the path filter, the concurrency group, the permissions, and the
+ * condition under which a run actually reviews something. Everything else is
+ * read from `.github/pi-review.json` by the reusable workflow at run time, so
+ * model, provider, tools, limits and the review's shape stay local.
  *
  * No YAML library: the extension must run from a bare git checkout in CI where
  * this package's `node_modules` is not installed.
@@ -13,25 +17,20 @@
 
 import { type ReviewSettings, WORKFLOW_PATH } from "./settings.ts";
 
-export const PACKAGE_REPO = "https://github.com/AutumnsGrove/pi-extensions.git";
-export const PACKAGE_SUBDIR = "extensions/pi-review";
+export const PACKAGE_REPO = "AutumnsGrove/pi-extensions";
+export const REUSABLE_WORKFLOW_PATH = ".github/workflows/pi-review-reusable.yml";
+/** Where a project's copy of the reusable workflow points. */
+export const REUSABLE_REF = "main";
 export const EXTENSION_NAME = "pi-review";
 
 /** The pull request a run is about, whichever event started it. */
 const PR_NUMBER = "github.event.pull_request.number || github.event.issue.number";
 
+/** Time reserved for the dependency install step inside the reusable job. */
+export const INSTALL_BUDGET_MINUTES = 8;
+
 function quote(value: string): string {
 	return `'${value.replace(/'/g, "''")}'`;
-}
-
-function toolList(settings: ReviewSettings): string {
-	const tools = ["read", "grep", "find", "ls"];
-	if (settings.tools.bash) tools.push("bash");
-	tools.push("submit_review");
-	// `--tools` is an allowlist: an extension tool not named here is not
-	// declared to the model, even though the runner registered it.
-	if (settings.review.resolveStaleThreads) tools.push("resolve_review_threads");
-	return tools.join(",");
 }
 
 /**
@@ -76,67 +75,23 @@ export function concurrencyGroup(settings: ReviewSettings): string[] {
 	];
 }
 
-/**
- * Shell for the dependency step. Without an override, install every ecosystem
- * a lockfile/manifest says is present; a repo can be polyglot. One failure does
- * not stop the others, but the step fails so `PI_REVIEW_DEPS` stays
- * `unavailable` and the prompt tells the reviewer not to claim it ran tests.
- */
-export function installRunLines(settings: ReviewSettings): string[] {
-	if (settings.verify.installCommand) {
-		return [
-			"set -euo pipefail",
-			'echo "PI_REVIEW_DEPS=unavailable" >> "$GITHUB_ENV"',
-			...settings.verify.installCommand.split("\n"),
-			'echo "PI_REVIEW_DEPS=installed" >> "$GITHUB_ENV"',
-		];
-	}
-	return [
-		"set -uo pipefail",
-		'echo "PI_REVIEW_DEPS=unavailable" >> "$GITHUB_ENV"',
-		"failed=0",
-		"found=0",
-		'run() { if ! "$@"; then failed=1; fi; }',
-		// Node managers are mutually exclusive: running two of them leaves the
-		// tree from whichever ran last (npm ci deletes node_modules).
-		"if [ -f pnpm-lock.yaml ]; then",
-		"  found=1; run corepack pnpm install --frozen-lockfile --prefer-offline",
-		"elif [ -f package-lock.json ]; then",
-		"  found=1; run npm ci --prefer-offline --no-audit --no-fund",
-		"elif [ -f yarn.lock ]; then",
-		"  found=1",
-		"  if corepack yarn --version | grep -q '^1\\.'; then",
-		"    run corepack yarn install --frozen-lockfile",
-		"  else",
-		"    run corepack yarn install --immutable",
-		"  fi",
-		"elif [ -f bun.lock ] || [ -f bun.lockb ]; then",
-		"  found=1; run npm install -g bun; run bun install --frozen-lockfile",
-		"fi",
-		"if [ -f uv.lock ]; then",
-		"  found=1",
-		'  if ! command -v uv >/dev/null 2>&1; then curl -LsSf https://astral.sh/uv/install.sh | sh; export PATH="$HOME/.local/bin:$PATH"; fi',
-		"  run uv sync --frozen",
-		"fi",
-		"if [ -f poetry.lock ]; then found=1; run python3 -m pip install --user --quiet poetry; run poetry install --no-interaction; fi",
-		"if [ -f Pipfile.lock ]; then found=1; run python3 -m pip install --user --quiet pipenv; run pipenv sync; fi",
-		'if [ -f requirements.txt ]; then found=1; run python3 -m pip install -r requirements.txt; fi',
-		'if [ -f pyproject.toml ] && [ ! -f uv.lock ] && [ ! -f poetry.lock ]; then found=1; run python3 -m pip install -e .; fi',
-		'if [ -f go.mod ]; then found=1; run go mod download; fi',
-		'if [ -f Cargo.toml ]; then found=1; run cargo fetch; fi',
-		'if [ -f Gemfile.lock ]; then found=1; run bundle install; fi',
-		'if [ -f composer.lock ]; then found=1; run composer install --no-interaction; fi',
-		'if ls *.sln >/dev/null 2>&1; then found=1; run dotnet restore; fi',
-		'if [ "$failed" -ne 0 ]; then',
-		'  echo "::warning::Some dependency installs failed; the reviewer will be told tests may not run."',
-		"  exit 1",
-		"fi",
-		'if [ "$found" -eq 0 ]; then',
-		'  echo "PI_REVIEW_DEPS=none" >> "$GITHUB_ENV"',
-		"  exit 0",
-		"fi",
-		'echo "PI_REVIEW_DEPS=installed" >> "$GITHUB_ENV"',
+/** The `with:` block handed to the reusable workflow. */
+function withLines(settings: ReviewSettings): string[] {
+	const verifyDeps = settings.tools.bash && settings.verify.installDependencies;
+	const lines = [
+		"    with:",
+		`      settings-path: ${quote(".github/pi-review.json")}`,
+		`      review-timeout-minutes: ${settings.timeoutMinutes}`,
+		`      job-timeout-minutes: ${settings.timeoutMinutes + 5 + (verifyDeps ? INSTALL_BUDGET_MINUTES : 0)}`,
+		`      install-dependencies: ${verifyDeps}`,
 	];
+	if (verifyDeps && settings.verify.installCommand) {
+		lines.push(
+			"      install-command: |",
+			...settings.verify.installCommand.split("\n").map((line) => `        ${line}`)
+		);
+	}
+	return lines;
 }
 
 /** Render the workflow YAML. Deterministic: same settings, same bytes. */
@@ -144,112 +99,23 @@ export function renderWorkflow(settings: ReviewSettings): string {
 	const trigger = settings.triggers.types.join(", ");
 	// GitHub rejects `paths` and `paths-ignore` on the same event, so excludes
 	// become negation patterns in a single list.
-	const include = settings.paths.include.length > 0 ? settings.paths.include : settings.paths.exclude.length > 0 ? ["**"] : [];
+	const include =
+		settings.paths.include.length > 0
+			? settings.paths.include
+			: settings.paths.exclude.length > 0
+				? ["**"]
+				: [];
 	const pathPatterns = [...include, ...settings.paths.exclude.map((pattern) => `!${pattern}`)];
 	const paths: string[] =
 		pathPatterns.length > 0
 			? ["    paths:", ...pathPatterns.map((pattern) => `      - ${quote(pattern)}`)]
 			: [];
 
-	const piArgs = [
-		"-p",
-		"--mode json",
-		"--no-session",
-		"-na",
-		"-nc",
-		"--offline",
-		"-ne",
-		`-e "$RUNNER_TEMP/pi-review-src/${PACKAGE_SUBDIR}/index.ts"`,
-		"-ns",
-		"-np",
-		"--no-themes",
-		"--no-mcp",
-		`--tools ${toolList(settings)}`,
-		...(settings.provider ? [`--provider ${settings.provider}`] : []),
-		...(settings.model ? [`--model ${settings.model}`] : []),
-		`--thinking ${settings.thinking}`,
-	];
-
-	const prNumberExpression = `\${{ ${PR_NUMBER} }}`;
-	const envLines = [
-		'          PI_REVIEW: "1"',
-		`          PR_NUMBER: ${prNumberExpression}`,
-		'          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}',
-	];
-	if (settings.providerEnv) {
-		envLines.push(`          ${settings.providerEnv}: \${{ secrets.PI_REVIEW_API_KEY }}`);
-	}
-	if (settings.triggers.mention) {
-		envLines.push("          PI_REVIEW_REQUEST: ${{ github.event.comment.body }}");
-	}
-	envLines.push(
-		"          PI_REVIEW_OUTPUT: ${{ runner.temp }}/pi-review/review.json",
-		`          PI_REVIEW_MAX_COMMENTS: "${settings.review.maxInlineComments}"`,
-		`          PI_REVIEW_REQUEST_CHANGES: "${settings.review.event === "REQUEST_CHANGES" ? "1" : "0"}"`,
-		`          PI_REVIEW_STRICTNESS: "${settings.review.strictness}"`,
-		`          PI_REVIEW_RESOLVE_THREADS: "${settings.review.resolveStaleThreads ? "1" : "0"}"`
-	);
-
-	const tokenStep =
-		settings.identity === "app"
-			? `      - name: Mint the App token
-        if: env.PI_REVIEW_APP_CONFIGURED == 'true'
-        id: app-token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: \${{ secrets.PI_REVIEW_APP_ID }}
-          private-key: \${{ secrets.PI_REVIEW_APP_PRIVATE_KEY }}
-`
-			: "";
-
-	const reviewCommand = [
-		"          pi \\",
-		...piArgs.map((arg) => `            ${arg} \\`),
-	].join("\n");
-
-	const verifyDeps = settings.tools.bash && settings.verify.installDependencies;
-	/** Time reserved for the dependency install step. */
-	const installBudgetMinutes = 8;
-	const dependencySteps = verifyDeps
-		? [
-				"      - name: Restore the dependency cache",
-				"        uses: actions/cache@v4",
-				"        with:",
-				"          path: |",
-				"            ~/.npm",
-				"            ~/.local/share/pnpm/store",
-				"            ~/.cache/pip",
-				"            ~/.cache/uv",
-				"            ~/go/pkg/mod",
-				"            ~/.cargo/registry",
-				"            ~/.cargo/git",
-				"            ~/.bundle",
-				"            ~/.nuget/packages",
-				"            ~/.composer/cache",
-				`          key: ${EXTENSION_NAME}-deps-\${{ runner.os }}-\${{ hashFiles('pnpm-lock.yaml', 'package-lock.json', 'yarn.lock', 'bun.lock', 'bun.lockb', 'uv.lock', 'poetry.lock', 'Pipfile.lock', 'requirements.txt', 'go.sum', 'Cargo.lock', 'Gemfile.lock', 'composer.lock') }}`,
-				"          restore-keys: |",
-				`            ${EXTENSION_NAME}-deps-\${{ runner.os }}-`,
-				"      - name: Install dependencies",
-				"        id: deps",
-				"        continue-on-error: true",
-				`        timeout-minutes: ${installBudgetMinutes}`,
-				"        run: |",
-				...installRunLines(settings).map((line) => `          ${line}`),
-			]
-		: [];
-
-	// A step's `if:` cannot read `secrets`, so the presence of the App key is
-	// decided once in the job's environment instead. Without this the mint step
-	// is unconditional, a repository with the App identity but no secrets fails
-	// there, and the `github.token` fallback can never be reached.
-	const appConfigured = [
-		"    env:",
-		"      PI_REVIEW_APP_CONFIGURED: ${{ secrets.PI_REVIEW_APP_ID != '' && secrets.PI_REVIEW_APP_PRIVATE_KEY != '' }}",
-	];
-
 	const lines = [
 		`# Generated by ${EXTENSION_NAME} from .github/pi-review.json`,
-		"# Edit the settings file, not this workflow.",
+		"# Edit the settings file, not this workflow. The job lives once, in",
+		`# ${PACKAGE_REPO}/${REUSABLE_WORKFLOW_PATH}, and runs from @${REUSABLE_REF},`,
+		"# so a fix there reaches this repository without a commit here.",
 		`name: ${EXTENSION_NAME}`,
 		"",
 		"on:",
@@ -271,88 +137,11 @@ export function renderWorkflow(settings: ReviewSettings): string {
 		"jobs:",
 		"  review:",
 		`    if: ${reviewCondition(settings)}`,
-		"    runs-on: ubuntu-latest",
-		...(settings.identity === "app" ? appConfigured : []),
-		`    timeout-minutes: ${settings.timeoutMinutes + 5 + (verifyDeps ? installBudgetMinutes : 0)}`,
-		"    steps:",
-		"      - uses: actions/checkout@v4",
-		"        with:",
-		`          ref: refs/pull/${prNumberExpression}/merge`,
-		"          fetch-depth: 0",
-		"          persist-credentials: false",
-		"      - uses: actions/setup-node@v4",
-		"        with:",
-		'          node-version: "22"',
-		...dependencySteps,
-		"      - name: Install pi",
-		`        run: npm install -g @earendil-works/pi-coding-agent@${settings.pi.version}`,
-		"      - name: Check out pi-review",
-		"        run: |",
-		"          set -euo pipefail",
-		'          git init "$RUNNER_TEMP/pi-review-src"',
-		`          git -C "$RUNNER_TEMP/pi-review-src" remote add origin ${PACKAGE_REPO}`,
-		`          git -C "$RUNNER_TEMP/pi-review-src" fetch --depth 1 origin ${quote(settings.pi.packageRef)}`,
-		'          git -C "$RUNNER_TEMP/pi-review-src" checkout --detach FETCH_HEAD',
-		...(settings.triggers.mention
-			? [
-					"      - name: Require a same-repo pull request",
-					"        if: github.event_name == 'issue_comment'",
-					"        env:",
-					"          GH_TOKEN: ${{ github.token }}",
-					"          PR_NUMBER: ${{ github.event.issue.number }}",
-					"        run: |",
-					"          set -euo pipefail",
-					"          head=$(gh pr view \"$PR_NUMBER\" --json headRepository --jq '.headRepository.nameWithOwner')",
-					'          if [ "$head" != "${{ github.repository }}" ]; then',
-					'            echo "::error::pi-review only reviews pull requests from this repository"',
-					"            exit 1",
-					"          fi",
-				]
-			: []),
-		...(tokenStep ? tokenStep.replace(/\n$/, "").split("\n") : []),
-		"      - name: Review",
-		`        timeout-minutes: ${settings.timeoutMinutes}`,
-		"        env:",
-		...envLines,
-		"        run: |",
-		"          set -euo pipefail",
-		'          mkdir -p "$(dirname "$PI_REVIEW_OUTPUT")"',
-		reviewCommand,
-		'            "Review pull request #$PR_NUMBER." \\',
-		'            | tee "$RUNNER_TEMP/pi-review/events.jsonl"',
-		'          if [ ! -f "$PI_REVIEW_OUTPUT" ]; then',
-		'            echo "::error::pi-review wrote no review artifact"',
-		"            exit 1",
-		"          fi",
-		`          if grep -q '"incomplete": true' "$PI_REVIEW_OUTPUT"; then`,
-		'            echo "::error::pi-review finished without submitting a review"',
-		"            exit 1",
-		"          fi",
-		"      - name: Step summary",
-		"        if: always()",
-		"        env:",
-		"          PI_REVIEW_OUTPUT: ${{ runner.temp }}/pi-review/review.json",
-		"        run: |",
-		"          {",
-		`            echo "## ${EXTENSION_NAME}"`,
-		"            echo",
-		'            if [ -f "$PI_REVIEW_OUTPUT" ]; then',
-		`              jq -r '"**" + (.review.event // "incomplete") + "** · inline comments: " + (((.review.comments // []) | length) | tostring) + (if .url then " · " + .url else "" end) + (if .error then " · error: " + .error else "" end)' "$PI_REVIEW_OUTPUT" || echo "Unreadable artifact."`,
-		"            else",
-		'              echo "No review artifact: the review did not complete."',
-		"            fi",
-		'          } >> "$GITHUB_STEP_SUMMARY"',
-		"      - name: Report an incomplete review",
-		"        if: failure()",
-		"        env:",
-		"          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}",
-		`          PR_NUMBER: ${prNumberExpression}`,
-		"          PI_REVIEW_OUTPUT: ${{ runner.temp }}/pi-review/review.json",
-		"        run: |",
-		'          if [ -f "$PI_REVIEW_OUTPUT" ] && ! grep -q \'"incomplete": true\' "$PI_REVIEW_OUTPUT"; then',
-		"            exit 0",
-		"          fi",
-		`          gh pr comment "$PR_NUMBER" --body "${EXTENSION_NAME} could not complete this review: the job failed or timed out. Fix the cause and re-run the workflow." || true`,
+		`    uses: ${PACKAGE_REPO}/${REUSABLE_WORKFLOW_PATH}@${REUSABLE_REF}`,
+		...withLines(settings),
+		// The reusable workflow declares the App secrets it may use; inherit is
+		// what lets a project keep owning the credential instead of copying it.
+		"    secrets: inherit",
 		"",
 	];
 	return lines.join("\n");

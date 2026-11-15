@@ -753,26 +753,10 @@ async function detectPiVersion(exec: Exec, cwd: string): Promise<string> {
 	return clean && /^\d+\.\d+\.\d+/.test(clean) ? clean : DEFAULT_PI_VERSION;
 }
 
-/**
- * Ref of this package to check out in the workflow. Defaults to the local
- * pi-extensions commit; `PI_REVIEW_PACKAGE_REF` overrides it (use a tag for a
- * real install).
- */
-async function detectPackageRef(exec: Exec, cwd: string, env: Record<string, string | undefined>): Promise<string> {
-	const override = env.PI_REVIEW_PACKAGE_REF;
-	if (override) return override;
-	const root = fileURLToPath(new URL("../../", import.meta.url));
-	const origin = await run(exec, "git", ["-C", root, "remote", "get-url", "origin"], { cwd });
-	if (!origin || !/pi-extensions/.test(origin)) return "main";
-	const sha = await run(exec, "git", ["-C", root, "rev-parse", "HEAD"], { cwd });
-	return sha ?? "main";
-}
-
 async function collectReviewSettings(
 	options: InstallOptions,
 	identity: IdentityMode,
 	piVersion: string,
-	packageRef: string,
 	base?: ReviewSettings
 ): Promise<ReviewSettings | undefined> {
 	const { ui } = options;
@@ -787,10 +771,9 @@ async function collectReviewSettings(
 				...(defaults.model ? { model: defaults.model } : {}),
 				...(defaults.thinking ? { thinking: defaults.thinking } : {}),
 				piVersion,
-				packageRef,
 			});
 	settings.identity = identity;
-	settings.pi = { version: piVersion, packageRef };
+	settings.pi = { version: piVersion };
 
 	if (!settings.model) {
 		const model = await ui.input("Model id for reviews (provider/model)", "provider/model");
@@ -1022,7 +1005,6 @@ export async function installPiReview(options: InstallOptions): Promise<InstallO
 	if (identity.status === "aborted") return identity;
 
 	const piVersion = await detectPiVersion(exec, cwd);
-	const packageRef = await detectPackageRef(exec, cwd, env);
 	let baseSettings: ReviewSettings | undefined;
 	try {
 		baseSettings = parseSettings(JSON.parse(await readFile(join(cwd, SETTINGS_PATH), "utf8")));
@@ -1033,7 +1015,6 @@ export async function installPiReview(options: InstallOptions): Promise<InstallO
 		options,
 		identity.identity,
 		piVersion,
-		packageRef,
 		baseSettings
 	);
 	if (!settings) {
