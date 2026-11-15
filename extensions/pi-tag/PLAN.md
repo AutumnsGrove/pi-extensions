@@ -117,15 +117,14 @@ dependency install — nothing runs.
 {
   "labels": [
     { "name": "bug", "rule": "It worked before and now it does not: …" },
-    { "name": "clearing",
-      "evidence": [{ "kind": "title", "phrase": "Clearing" }] },
     { "name": "lattice",
       "evidence": [{ "kind": "path", "path": "libs/shutter/cloudflare/src/index.ts" }] },
     { "name": "pattern:prism",
       "evidence": [{ "kind": "doc", "path": "docs/patterns/prism-pattern.md" }] }
   ],
   "considered": [
-    { "name": "amber", "why_not": "files are in apps/amber and apps/landing; landing is already applied" }
+    { "name": "clearing", "why_not": "the title names Clearing, but the work is in libs/shutter, which is lattice's path; one component only" },
+    { "name": "amber", "why_not": "no file under its path is involved" }
   ]
 }
 ```
@@ -149,6 +148,10 @@ Then the manifest rules the repo's `sync.ts` already enforces on the other side:
 | `pattern` → doc evidence present | drop, "pattern doc not read" |
 | duplicates | dedupe |
 
+A proposal is checked one label at a time, never as a set: a model that offers two
+components gets one applied and the other reported as *that group already has a
+label*, which is why the sample above picks one and says why in `considered`.
+
 Every drop is recorded and rendered into the comment. Nothing disappears
 silently — the principle `review.ts` already applies by folding unattachable
 comments into the summary. This is what makes the output *checkable*: a component
@@ -160,14 +163,16 @@ data rather than inferred from a diff.
 
 ### `@pi fix`: correcting its own work
 
-Removal is allowed, but only on request and only for labels it put there.
+Removal is allowed, but only on request, only for labels in
+`policy.auto_groups`, and only for a label it can **attribute to itself** — or one
+you name in the request. Nothing else is ever taken off.
 
 **Two markers, not one.** The sticky comment carries a human-facing body and a
 machine-facing line:
 
 ```html
 <!-- pi-tag:summary -->
-<!-- pi-tag:applied ["bug","clearing","pattern:prism"] -->
+<!-- pi-tag:applied ["bug","lattice","pattern:prism"] -->
 ```
 
 A later run reads **only** the `applied` marker. That keeps the rule that model
@@ -175,14 +180,26 @@ prose is never fed back as input, while still letting the tagger know exactly wh
 it did last time — the same trick as `REVIEW_MARKER`, which lets an incremental
 re-review find the last commit it saw.
 
+The marker is **attribution, not truth**. It is read only from a comment the bot
+authored, and every removal is intersected with the labels the issue actually
+carries at apply time. Two consequences, both deliberate:
+
+- A marker forged in someone else's comment is ignored. The sticky lookup filters
+  on `user.login == '<slug>[bot]'`; it is not enough that the HTML comment exists.
+- A run cancelled between the label write and the comment write leaves a stale
+  marker, and that is harmless: the intersection can only *under*-remove, never
+  remove something the issue does not have, and never remove a human's label.
+
 Rules for `@pi fix`:
 
 1. The token must be `@pi fix` — `@pi` alone still only adds.
-2. Removal candidates are labels in the previous `applied` marker that the new
-   validated proposal does not include, plus any label the request names
-   explicitly (backticked, or a bare word equal to a label name).
-3. Only `policy.auto_groups` labels are eligible. A human's `priority-high` is not
-   pi-tag's to touch, named or not.
+2. Removal candidates are labels that are, at once: currently on the issue, in
+   `policy.auto_groups`, and either present in the bot's `applied` marker or named
+   explicitly in the request (backticked, or a bare word equal to a label name).
+   Naming is the escape hatch for labels the old labeler applied, which have no
+   marker and cannot be attributed.
+3. A label outside `policy.auto_groups` is never removed. A human's
+   `priority-high` is not pi-tag's to touch, named or not.
 4. If the `applied` marker is missing or unparseable, remove nothing that was not
    named explicitly, and say why in the comment.
 5. If nothing in the manifest explains the removal, it does not happen. "The model
@@ -199,19 +216,21 @@ One comment per issue, edited in place, found by marker. Never a second one.
 
 ```markdown
 <!-- pi-tag:summary -->
-<!-- pi-tag:applied ["bug","clearing","lattice"] -->
-**pi-tag** tagged this issue: `bug` · `clearing` · `lattice` — [run 1234](…)
+<!-- pi-tag:applied ["bug","lattice","pattern:prism"] -->
+**pi-tag** tagged this issue: `bug` · `lattice` · `pattern:prism` — [run 1234](…)
 
 | label | why |
 | --- | --- |
 | `bug` | It worked before and now it does not: the status page reports outages that never happened. |
-| `clearing` | Title names Clearing. |
 | `lattice` | Read `libs/shutter/cloudflare/src/index.ts`, under `lattice`'s `libs/`. |
+| `pattern:prism` | Read `docs/patterns/prism-pattern.md`; the work is the shared token layer. |
 
 <details><summary>Considered, not applied (2)</summary>
 
-- `amber` — already has a `component` label (`landing`).
-- `pattern:songbird` — `docs/patterns/songbird-pattern.md` was not read.
+- `clearing` — that group already has a label (`lattice`); the title names Clearing
+  but the work is in `libs/shutter/`.
+- `pattern:songbird` — `docs/patterns/songbird-pattern.md` was not read, and it
+  scopes itself to Wisp and Thorn.
 
 </details>
 
@@ -319,6 +338,12 @@ the same field, which also gives a clean escape hatch if the App ever fails.
 Labels are applied and removed in **one** `gh issue edit --add-label …
 --remove-label …` after validation passes, never incrementally. Half-applied is
 the one state we will not produce.
+
+The comment is written after the labels, and a cancellation between the two leaves
+a stale `applied` marker. That is recoverable by design rather than by luck: the
+marker only ever supplies attribution, and every removal is intersected with what
+the issue actually carries (see `@pi fix` above). Ordering it the other way would
+be worse — a marker claiming labels the issue does not have.
 
 ### Prompt shape
 
@@ -492,7 +517,11 @@ before those are green.
   `<!-- pi-tag:applied … -->`; a body that quotes the whole comment.
 - `@pi fix`: removes an `applied` label the new proposal drops; refuses to remove
   a human's `priority-high` even when named; refuses to remove anything when the
-  marker is absent; refuses with no stated reason.
+  marker is absent; refuses with no stated reason; ignores a forged marker in
+  another author's comment; and under-removes rather than over-removes when the
+  marker lists a label the issue no longer carries.
+- A proposal offering two components: one applied, one reported as "that group
+  already has a label".
 - Mention gate: `@pi-tag`, `@pi` inside a fence, `@pineapple`, a comment from
   `<slug>[bot]`, a comment from another bot, a stranger, and a comment on a PR.
 - Upsert against a paginated comment list; two runs, one comment.
