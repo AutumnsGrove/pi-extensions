@@ -158,10 +158,10 @@ export interface Checkout {
 }
 
 /** The target repository's vocabulary and tree, as one object. */
-export function readCheckout(root: string): Checkout {
-	const manifestPath = join(root, MANIFEST_PATH);
+export function readCheckout(root: string, manifestRelative: string = MANIFEST_PATH): Checkout {
+	const manifestPath = join(root, manifestRelative);
 	if (!existsSync(manifestPath)) {
-		throw new Error(`no ${MANIFEST_PATH} in ${root} — pi-tag has no vocabulary to work from`);
+		throw new Error(`no ${manifestRelative} in ${root} — pi-tag has no vocabulary to work from`);
 	}
 	return { root, manifest: readManifest(manifestPath), evidence: { title: "", exists: treeAt(root) } };
 }

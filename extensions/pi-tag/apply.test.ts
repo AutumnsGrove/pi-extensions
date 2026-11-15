@@ -104,6 +104,19 @@ describe("parseArgs", () => {
 		});
 	});
 
+	it("knows which flags it was actually given", () => {
+		expect(parseArgs(["--issue", "1"]).provided.size).toBe(1);
+		expect(parseArgs(["--issue", "1", "--model", "x", "--thinking", "low"]).provided).toEqual(
+			new Set(["--issue", "--model", "--thinking"])
+		);
+	});
+
+	it("keeps an empty --fix, which is still a fix run", () => {
+		const args = parseArgs(["--issue", "1", "--fix", ""]);
+		expect(args.fix).toBe("");
+		expect(args.fix !== undefined).toBe(true);
+	});
+
 	it("rejects a flag with no value and an unknown flag", () => {
 		expect(() => parseArgs(["--issue"])).toThrow(/needs a value/);
 		expect(() => parseArgs(["--nonsense"])).toThrow(/unknown option/);

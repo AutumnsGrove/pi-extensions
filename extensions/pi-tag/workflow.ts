@@ -127,6 +127,11 @@ jobs:
       note: \${{ steps.gate.outputs.note }}
       dry_run: \${{ steps.gate.outputs.dry_run }}
     steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+          persist-credentials: false
       - name: Check out the tool
         run: |
           set -euo pipefail
@@ -194,15 +199,20 @@ ${appToken}      - name: Tag the issue
           fi
           node "$RUNNER_TEMP/pi-tag-src/extensions/pi-tag/cli.ts" "\${args[@]}"
       - name: Report a run that never finished
-        if: failure() && needs.gate.outputs.dry_run != 'true'
+        # The CLI reports its own failures in the sticky comment and sets this
+        # output. Only a run that died before it could (timeout, OOM) lands here.
+        if: >-
+          failure() && needs.gate.outputs.dry_run != 'true' &&
+          steps.tag.outputs.handled != 'true'
         env:
           GH_TOKEN: ${token}
           ISSUE: \${{ needs.gate.outputs.issue }}
         run: |
           set -euo pipefail
           gh issue comment "$ISSUE" --body "$(cat <<'BODY'
-          pi-tag could not finish: the job failed or timed out, so the labels
-          were not changed. Re-run the workflow, or comment ${mention} to try again.
+          pi-tag could not finish: the job failed or timed out before it could
+          say why. Check the labels on this issue, then comment ${mention} to
+          try again.
           BODY
           )"
 `;

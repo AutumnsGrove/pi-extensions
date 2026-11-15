@@ -25,6 +25,10 @@ export interface CommentInput {
 	runUrl?: string;
 	model: string;
 	now?: Date;
+	/** `comment.always`: false posts only when something changed. */
+	always?: boolean;
+	/** `comment.considered`: false drops the collapsed reasoning block. */
+	considered?: boolean;
 }
 
 /** What pi-tag owns after this run: what it had, minus what it took off, plus what it added. */
@@ -33,6 +37,11 @@ export function ownedAfter(previous: string[], proposal: Proposal): string[] {
 	const owned = new Set(previous.filter((name) => !removed.has(name)));
 	for (const entry of proposal.applied) owned.add(entry.name);
 	return [...owned].sort();
+}
+
+/** Whether this run changed anything a reader would want to see. */
+export function worthPosting(proposal: Proposal): boolean {
+	return proposal.applied.length > 0 || proposal.removed.length > 0;
 }
 
 export function renderComment(input: CommentInput): string {
@@ -66,7 +75,7 @@ export function renderComment(input: CommentInput): string {
 		}
 	}
 
-	const details = detailLines(proposal);
+	const details = input.considered === false ? [] : detailLines(proposal);
 	if (details.length > 0) {
 		lines.push("", `<details><summary>Considered, not applied (${details.length})</summary>`, "");
 		lines.push(...details);

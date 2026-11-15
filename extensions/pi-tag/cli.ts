@@ -13,9 +13,10 @@
  * comment, in that order, and says so in the comment if anything failed.
  */
 
+import { appendFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { applyLabels, resolveRepo } from "./apply.ts";
-import { findSummary, renderComment, renderFailure, upsertComment } from "./comment.ts";
+import { findSummary, renderComment, renderFailure, upsertComment, worthPosting } from "./comment.ts";
 import { GhError, type Issue, evidenceFor, nodeExec, readCheckout, readIssue } from "./github.ts";
 import { buildProposal, ProposalError } from "./proposal.ts";
 import { buildPrompt } from "./prompt.ts";
@@ -38,6 +39,8 @@ interface Args {
 	note?: string;
 	fix?: string;
 	previous: string[];
+	/** Flags the caller actually passed, so the settings file can supply the rest. */
+	provided: Set<string>;
 	help: boolean;
 }
 
@@ -73,14 +76,16 @@ export function parseArgs(argv: string[]): Args {
 		apply: false,
 		author: "github-actions[bot]",
 		previous: [],
+		provided: new Set(),
 		help: false,
 	};
 	for (let index = 0; index < argv.length; index += 1) {
-		const flag = argv[index];
+		const flag = argv[index] ?? "";
 		const next = (): string => {
 			const value = argv[index + 1];
 			if (value === undefined) throw new Error(`${flag} needs a value`);
 			index += 1;
+			args.provided.add(flag);
 			return value;
 		};
 		switch (flag) {
@@ -140,13 +145,41 @@ export function parseArgs(argv: string[]): Args {
 	return args;
 }
 
-/** Model and thinking from the repository's settings, overridden by a flag. */
-function settingsDefaults(root: string): { provider?: string; model?: string; thinking?: Args["thinking"] } {
+/** Everything the repository's settings can decide, overridden by a flag. */
+function settingsDefaults(root: string): {
+	provider?: string;
+	model?: string;
+	thinking?: Args["thinking"];
+	manifest?: string;
+	always?: boolean;
+	considered?: boolean;
+} {
 	try {
 		const settings = readSettings(resolve(root, SETTINGS_PATH));
-		return { provider: settings.provider, model: settings.model, thinking: settings.thinking };
+		return {
+			provider: settings.provider,
+			model: settings.model,
+			thinking: settings.thinking,
+			manifest: settings.labels.manifest,
+			always: settings.comment.always,
+			considered: settings.comment.considered,
+		};
 	} catch {
 		return {};
+	}
+}
+
+/**
+ * Tell the workflow this run reported itself, so the `failure()` fallback stays
+ * quiet instead of posting a second comment on top of the sticky.
+ */
+function noteHandled(): void {
+	if (process.env.GITHUB_OUTPUT) {
+		try {
+			appendFileSync(process.env.GITHUB_OUTPUT, "handled=true\n");
+		} catch {
+			// Not being able to say so only costs a duplicate comment on failure.
+		}
 	}
 }
 
@@ -170,19 +203,21 @@ async function main(): Promise<number> {
 	}
 
 	const root = resolve(args.repo);
-	let checkout;
-	try {
-		checkout = readCheckout(root);
-	} catch (error) {
-		console.error(error instanceof Error ? error.message : String(error));
-		return 2;
-	}
 
 	// The settings in the target repository win over the built-in defaults, and a
 	// flag wins over both.
 	const defaults = settingsDefaults(root);
-	args.provider = args.provider !== "opencode-go" ? args.provider : (defaults.provider ?? args.provider);
-	args.model = args.model !== "glm-5.3-flash" ? args.model : (defaults.model ?? args.model);
+	if (!args.provided.has("--provider") && defaults.provider) args.provider = defaults.provider;
+	if (!args.provided.has("--model") && defaults.model) args.model = defaults.model;
+	if (!args.provided.has("--thinking") && defaults.thinking) args.thinking = defaults.thinking;
+
+	let checkout;
+	try {
+		checkout = readCheckout(root, defaults.manifest);
+	} catch (error) {
+		console.error(error instanceof Error ? error.message : String(error));
+		return 2;
+	}
 
 	let issue: Issue;
 	try {
@@ -217,8 +252,8 @@ async function main(): Promise<number> {
 	const prompt = buildPrompt({
 		manifest: checkout.manifest,
 		issue: { number: issue.number, title: issue.title, body: issue.body, labels: issue.labels },
-		...(args.note && !args.fix ? { note: args.note } : {}),
-		...(args.fix ? { fix: { note: args.fix, previous } } : {}),
+		...(args.note && args.fix === undefined ? { note: args.note } : {}),
+		...(args.fix !== undefined ? { fix: { note: args.fix, previous } } : {}),
 	});
 
 	if (args.showPrompt) {
@@ -234,9 +269,11 @@ async function main(): Promise<number> {
 				cwd: root,
 				author: args.author,
 				existingId,
-			}).catch((error: unknown) => {
-				console.error(`could not record the failure: ${error instanceof Error ? error.message : String(error)}`);
-			});
+			})
+				.then(() => noteHandled())
+				.catch((error: unknown) => {
+					console.error(`could not record the failure: ${error instanceof Error ? error.message : String(error)}`);
+				});
 		}
 		return 1;
 	};
@@ -260,7 +297,7 @@ async function main(): Promise<number> {
 			issue: { title: issue.title, labels: issue.labels },
 			evidence: evidenceFor(checkout, issue.title),
 			...(previous.length > 0 ? { previous } : {}),
-			...(args.fix ? { fix: { note: args.fix } } : {}),
+			...(args.fix !== undefined ? { fix: { note: args.fix } } : {}),
 		});
 	} catch (error) {
 		if (error instanceof ProposalError) {
@@ -274,6 +311,8 @@ async function main(): Promise<number> {
 		previous,
 		...(args.runUrl ? { runUrl: args.runUrl } : {}),
 		model: args.model,
+		...(defaults.always === false ? { always: false } : {}),
+		...(defaults.considered === false ? { considered: false } : {}),
 	});
 
 	if (prompt.truncated && !args.json) {
@@ -289,6 +328,14 @@ async function main(): Promise<number> {
 	}
 
 	if (!repo) return 2;
+
+	// A run that changes nothing and is configured to stay quiet leaves the
+	// previous comment alone rather than bumping its date.
+	if (defaults.always === false && !worthPosting(proposal)) {
+		console.log(formatReport(issue, proposal));
+		console.log("\nnothing changed, and comment.always is false: leaving the comment alone");
+		return 0;
+	}
 
 	// Labels first, then the comment: a cancellation between them leaves a stale
 	// marker, which can only under-remove. The other order would claim labels the

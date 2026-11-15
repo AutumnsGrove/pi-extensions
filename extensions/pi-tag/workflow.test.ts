@@ -86,6 +86,17 @@ describe("the generated workflow", () => {
 		});
 	});
 
+	it("gives the gate the repository, so it reads the real settings", () => {
+		const checkout = (jobs.gate?.steps ?? []).find((step) => step.uses === "actions/checkout@v5");
+		expect(checkout).toBeDefined();
+		expect(checkout?.with).toMatchObject({ "persist-credentials": false });
+	});
+
+	it("only reports a failure the CLI could not report itself", () => {
+		const report = (jobs.label?.steps ?? []).find((step) => step.name === "Report a run that never finished");
+		expect(report?.if).toContain("steps.tag.outputs.handled != 'true'");
+	});
+
 	it("never refers to a step that only exists in the other job", () => {
 		const gateRuns = (jobs.gate?.steps ?? []).map((step) => `${step.run ?? ""}${JSON.stringify(step.env ?? {})}`).join("\n");
 		expect(gateRuns).not.toContain("steps.app-token");

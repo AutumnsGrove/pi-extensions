@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findSummary, ownedAfter, renderComment, renderFailure, upsertComment } from "./comment.ts";
+import { findSummary, ownedAfter, renderComment, renderFailure, upsertComment, worthPosting } from "./comment.ts";
 import { appliedMarker, SUMMARY_MARKER, parseApplied } from "./markers.ts";
 import type { Proposal } from "./proposal.ts";
 import type { Exec } from "./github.ts";
@@ -108,8 +108,26 @@ describe("renderComment", () => {
 		expect(text).toContain("· glm-5.3-flash · 2026-11-15");
 	});
 
+	it("can be told not to show what it weighed", () => {
+		const text = renderComment({
+			...base,
+			considered: false,
+			proposal: { ...empty, considered: [{ name: "amber", whyNot: "no path under it" }] },
+		});
+		expect(text).not.toContain("<details>");
+	});
+
 	it("tells the reader how to re-run", () => {
 		expect(renderComment(base)).toContain("@pi fix <what you know that it didn't>");
+	});
+});
+
+describe("worthPosting", () => {
+	it("is false only when nothing changed", () => {
+		expect(worthPosting(empty)).toBe(false);
+		expect(worthPosting({ ...empty, rejected: [{ name: "x", reason: "y" }] })).toBe(false);
+		expect(worthPosting({ ...empty, applied: [{ name: "bug", group: "type", why: "w" }] })).toBe(true);
+		expect(worthPosting({ ...empty, removed: [{ name: "bug", why: "w" }] })).toBe(true);
 	});
 });
 
