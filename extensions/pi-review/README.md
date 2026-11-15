@@ -354,7 +354,8 @@ the summary links the pages to uninstall it and delete it.
   cancel the review already in flight;
 - checks out the PR with full history, installs a pinned pi, fetches this
   package at `settings.pi.packageRef`, mints the App token when
-  `identity: "app"`, then runs one headless pi with the review extension;
+  `identity: "app"` and the App secrets are present (otherwise it uses
+  `GITHUB_TOKEN`), then runs one headless pi with the review extension;
 - fails the step if the run wrote no artifact or the artifact says
   `incomplete`, so the next step posts a "could not complete this review"
   comment instead of ending silently;
