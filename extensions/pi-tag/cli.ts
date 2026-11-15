@@ -1,23 +1,27 @@
 #!/usr/bin/env node
 /**
- * The dry run: what would pi-tag do to this issue, and why.
+ * pi-tag, end to end: read an issue, run the agent, check what it proposed,
+ * print it — and, only with `--apply`, write it.
  *
  *   node extensions/pi-tag/cli.ts --repo ../lattice --issue 1657
  *   node extensions/pi-tag/cli.ts --repo ../lattice --issue 1657 --json
- *   node extensions/pi-tag/cli.ts --repo ../lattice --issue 1648 --fix "the fonts also live in \`landing\`"
+ *   node extensions/pi-tag/cli.ts --repo ../lattice --issue 1648 \
+ *     --fix "the fonts also live in \`landing\`"
  *
- * Writes nothing, anywhere. It reads the target's manifest and tree, fetches the
- * issue through `gh`, runs the same agent the workflow will run, and prints the
- * proposal the validator produced. Phase 0 is this command over the last 40
- * issues: if it does not change any decisions, the premise is wrong.
+ * Without `--apply`, nothing is written anywhere: it is the dry run that phase 0
+ * gates on and the tool for prompt work. With `--apply`, it writes labels and one
+ * comment, in that order, and says so in the comment if anything failed.
  */
 
 import { resolve } from "node:path";
-import { GhError, evidenceFor, nodeExec, readCheckout, readIssue } from "./github.ts";
+import { applyLabels, resolveRepo } from "./apply.ts";
+import { findSummary, renderComment, renderFailure, upsertComment } from "./comment.ts";
+import { GhError, type Issue, evidenceFor, nodeExec, readCheckout, readIssue } from "./github.ts";
 import { buildProposal, ProposalError } from "./proposal.ts";
 import { buildPrompt } from "./prompt.ts";
-import { jsonReport, formatReport } from "./report.ts";
+import { formatReport, jsonReport } from "./report.ts";
 import { runPi } from "./runner.ts";
+import { SETTINGS_PATH, readSettings } from "./settings.ts";
 
 interface Args {
 	repo: string;
@@ -25,40 +29,50 @@ interface Args {
 	provider: string;
 	model: string;
 	thinking: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+	timeoutMs: number;
 	json: boolean;
+	showPrompt: boolean;
+	apply: boolean;
+	author: string;
+	runUrl?: string;
+	note?: string;
 	fix?: string;
 	previous: string[];
-	timeoutMs: number;
-	showPrompt: boolean;
 	help: boolean;
 }
 
-const USAGE = `pi-tag dry run — writes nothing
+const USAGE = `pi-tag — read the tree, check the evidence, tag the issue
 
   node extensions/pi-tag/cli.ts [options]
 
   --repo <path>        checkout to read (default: .)
   --issue <number>     issue to label (required)
+  --apply              write labels and the comment (default: print only)
+  --author <login>     the bot's login, for finding its own comment
+  --run-url <url>      link to put in the comment
+  --note <text>        a maintainer's request, as a steer
   --fix <text>         an @pi fix request; enables removals
-  --previous <a,b>     labels from a previous run's applied marker
+  --previous <a,b>     labels from a previous run, when not applying
   --provider <name>    (default: opencode-go)
   --model <id>         (default: glm-5.3-flash)
   --thinking <level>   off|minimal|low|medium|high|xhigh|max (default: medium)
   --timeout <seconds>  how long to let pi work (default: 300)
-  --json               machine-readable output
+  --json               machine-readable output, including the comment
   --show-prompt        print the system prompt and context first
   --help               this text`;
 
-function parseArgs(argv: string[]): Args {
+export function parseArgs(argv: string[]): Args {
 	const args: Args = {
 		repo: ".",
 		provider: "opencode-go",
 		model: "glm-5.3-flash",
 		thinking: "medium",
-		json: false,
-		previous: [],
 		timeoutMs: 300_000,
+		json: false,
 		showPrompt: false,
+		apply: false,
+		author: "github-actions[bot]",
+		previous: [],
 		help: false,
 	};
 	for (let index = 0; index < argv.length; index += 1) {
@@ -75,6 +89,18 @@ function parseArgs(argv: string[]): Args {
 				break;
 			case "--issue":
 				args.issue = Number(next());
+				break;
+			case "--apply":
+				args.apply = true;
+				break;
+			case "--author":
+				args.author = next();
+				break;
+			case "--run-url":
+				args.runUrl = next();
+				break;
+			case "--note":
+				args.note = next();
 				break;
 			case "--fix":
 				args.fix = next();
@@ -114,6 +140,16 @@ function parseArgs(argv: string[]): Args {
 	return args;
 }
 
+/** Model and thinking from the repository's settings, overridden by a flag. */
+function settingsDefaults(root: string): { provider?: string; model?: string; thinking?: Args["thinking"] } {
+	try {
+		const settings = readSettings(resolve(root, SETTINGS_PATH));
+		return { provider: settings.provider, model: settings.model, thinking: settings.thinking };
+	} catch {
+		return {};
+	}
+}
+
 async function main(): Promise<number> {
 	let args: Args;
 	try {
@@ -142,7 +178,13 @@ async function main(): Promise<number> {
 		return 2;
 	}
 
-	let issue;
+	// The settings in the target repository win over the built-in defaults, and a
+	// flag wins over both.
+	const defaults = settingsDefaults(root);
+	args.provider = args.provider !== "opencode-go" ? args.provider : (defaults.provider ?? args.provider);
+	args.model = args.model !== "glm-5.3-flash" ? args.model : (defaults.model ?? args.model);
+
+	let issue: Issue;
 	try {
 		issue = await readIssue(nodeExec, root, args.issue);
 	} catch (error) {
@@ -157,20 +199,47 @@ async function main(): Promise<number> {
 		return 2;
 	}
 
+	const repo = args.apply ? await resolveRepo(nodeExec, root) : undefined;
+	if (args.apply && !repo) {
+		console.error("cannot resolve owner/repo for this checkout; set up gh or run without --apply");
+		return 2;
+	}
+
+	// Attribution comes from the bot's own comment, and only when writing.
+	let previous = args.previous;
+	let existingId: number | undefined;
+	if (args.apply && repo) {
+		const found = await findSummary(nodeExec, repo, issue.number, { cwd: root, author: args.author });
+		existingId = found.id;
+		previous = found.previous ?? [];
+	}
+
 	const prompt = buildPrompt({
 		manifest: checkout.manifest,
-		issue: {
-			number: issue.number,
-			title: issue.title,
-			body: issue.body,
-			labels: issue.labels,
-		},
-		...(args.fix ? { fix: { note: args.fix, previous: args.previous } } : {}),
+		issue: { number: issue.number, title: issue.title, body: issue.body, labels: issue.labels },
+		...(args.note && !args.fix ? { note: args.note } : {}),
+		...(args.fix ? { fix: { note: args.fix, previous } } : {}),
 	});
 
 	if (args.showPrompt) {
-		process.stderr.write(`--- system (${prompt.system.length} chars) ---\n${prompt.system}\n\n--- context (${prompt.context.length} chars) ---\n${prompt.context}\n\n`);
+		process.stderr.write(
+			`--- system (${prompt.system.length} chars) ---\n${prompt.system}\n\n--- context (${prompt.context.length} chars) ---\n${prompt.context}\n\n`
+		);
 	}
+
+	const fail = async (reason: string): Promise<number> => {
+		console.error(reason);
+		if (args.apply && repo) {
+			await upsertComment(nodeExec, repo, issue.number, renderFailure(reason, previous, args.runUrl), {
+				cwd: root,
+				author: args.author,
+				existingId,
+			}).catch((error: unknown) => {
+				console.error(`could not record the failure: ${error instanceof Error ? error.message : String(error)}`);
+			});
+		}
+		return 1;
+	};
 
 	const run = await runPi({
 		cwd: root,
@@ -181,12 +250,7 @@ async function main(): Promise<number> {
 		thinking: args.thinking,
 		timeoutMs: args.timeoutMs,
 	});
-
-	if (!run.ok) {
-		console.error(`pi failed: ${run.error ?? "unknown error"}`);
-		if (run.output) console.error(run.output.slice(0, 2_000));
-		return 1;
-	}
+	if (!run.ok) return fail(run.error ?? "pi failed");
 
 	let proposal;
 	try {
@@ -195,30 +259,74 @@ async function main(): Promise<number> {
 			manifest: checkout.manifest,
 			issue: { title: issue.title, labels: issue.labels },
 			evidence: evidenceFor(checkout, issue.title),
-			...(args.previous.length > 0 ? { previous: args.previous } : {}),
+			...(previous.length > 0 ? { previous } : {}),
 			...(args.fix ? { fix: { note: args.fix } } : {}),
 		});
 	} catch (error) {
 		if (error instanceof ProposalError) {
-			console.error(`${error.message}\n\n--- reply ---\n${error.excerpt.slice(0, 2_000)}`);
-			return 1;
+			return fail(`${error.message}\n\n${error.excerpt.slice(0, 1_500)}`);
 		}
 		throw error;
 	}
+
+	const body = renderComment({
+		proposal,
+		previous,
+		...(args.runUrl ? { runUrl: args.runUrl } : {}),
+		model: args.model,
+	});
 
 	if (prompt.truncated && !args.json) {
 		console.error("note: the issue body was truncated to the prompt budget\n");
 	}
 
-	console.log(args.json ? JSON.stringify(jsonReport(issue, proposal), null, 2) : formatReport(issue, proposal));
+	if (!args.apply) {
+		console.log(args.json ? JSON.stringify(jsonReport(issue, proposal, body), null, 2) : formatReport(issue, proposal));
+		if (!args.json) {
+			console.log(`\n--- comment that would be posted ---\n${body}`);
+		}
+		return 0;
+	}
+
+	if (!repo) return 2;
+
+	// Labels first, then the comment: a cancellation between them leaves a stale
+	// marker, which can only under-remove. The other order would claim labels the
+	// issue does not have.
+	let applied;
+	try {
+		applied = await applyLabels(
+			nodeExec,
+			issue.number,
+			repo,
+			{ add: proposal.applied.map((entry) => entry.name), remove: proposal.removed.map((entry) => entry.name) },
+			{ cwd: root }
+		);
+	} catch (error) {
+		return fail(error instanceof Error ? error.message : String(error));
+	}
+
+	try {
+		await upsertComment(nodeExec, repo, issue.number, body, { cwd: root, author: args.author, existingId });
+	} catch (error) {
+		console.error(`labels were written but the comment was not: ${error instanceof Error ? error.message : String(error)}`);
+		return 1;
+	}
+
+	console.log(formatReport(issue, proposal));
+	console.log(
+		`\napplied to #${issue.number}: +${applied.added.join(",") || "none"} -${applied.removed.join(",") || "none"}`
+	);
 	return 0;
 }
 
-main()
-	.then((code) => {
-		process.exitCode = code;
-	})
-	.catch((error) => {
-		console.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
-		process.exitCode = 1;
-	});
+if (import.meta.url === `file://${process.argv[1]}`) {
+	main()
+		.then((code) => {
+			process.exitCode = code;
+		})
+		.catch((error) => {
+			console.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
+			process.exitCode = 1;
+		});
+}

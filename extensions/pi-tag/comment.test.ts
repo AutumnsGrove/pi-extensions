@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ownedAfter, renderComment, upsertComment } from "./comment.ts";
+import { findSummary, ownedAfter, renderComment, renderFailure, upsertComment } from "./comment.ts";
 import { appliedMarker, SUMMARY_MARKER, parseApplied } from "./markers.ts";
 import type { Proposal } from "./proposal.ts";
 import type { Exec } from "./github.ts";
@@ -113,6 +113,20 @@ describe("renderComment", () => {
 	});
 });
 
+describe("renderFailure", () => {
+	it("keeps the labels it already owned", () => {
+		const text = renderFailure("pi was still working after 300s", ["landing", "bug"], "https://x/1");
+		expect(parseApplied(text)).toEqual(["bug", "landing"]);
+		expect(text).toContain("**pi-tag** could not tag this issue");
+		expect(text).toContain("> pi was still working after 300s");
+		expect(text).toContain("[run](https://x/1)");
+	});
+
+	it("says the labels were not changed", () => {
+		expect(renderFailure("boom", [])).toContain("The labels were not changed.");
+	});
+});
+
 describe("upsertComment", () => {
 	const repo = { owner: "o", repo: "r" };
 	const author = "pi-tag-o[bot]";
@@ -138,9 +152,11 @@ describe("upsertComment", () => {
 			return { stdout: '{"html_url":"https://x/1"}', stderr: "", code: 0 };
 		};
 
-		const result = await upsertComment(exec, repo, 42, "new body", options);
+		const found = await findSummary(exec, repo, 42, options);
+		expect(found.previous).toEqual(["landing"]);
+
+		const result = await upsertComment(exec, repo, 42, "new body", { ...options, existingId: found.id });
 		expect(result.created).toBe(false);
-		expect(result.previous).toEqual(["landing"]);
 		expect(calls.some((args) => args.includes("PATCH"))).toBe(true);
 		expect(calls.some((args) => args.includes("POST"))).toBe(false);
 	});
@@ -171,9 +187,10 @@ describe("upsertComment", () => {
 			}
 			return { stdout: "{}", stderr: "", code: 0 };
 		};
+		const found = await findSummary(exec, repo, 42, options);
+		expect(found).toEqual({});
 		const result = await upsertComment(exec, repo, 42, "body", options);
 		expect(result.created).toBe(true);
-		expect(result.previous).toBeUndefined();
 		expect(calls.some((args) => args.includes("PATCH"))).toBe(false);
 	});
 

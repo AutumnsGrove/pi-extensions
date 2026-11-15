@@ -125,6 +125,13 @@ describe("buildPrompt on an @pi fix run", () => {
 		expect(context).toContain("(nothing recorded)");
 	});
 
+	it("carries a plain note as a request, without enabling removals", () => {
+		const { context } = buildPrompt({ manifest, issue, note: "the fonts live in landing" });
+		expect(context).toContain("A request from the maintainer");
+		expect(context).toContain("the fonts live in landing");
+		expect(context).not.toContain("You applied these last time");
+	});
+
 	it("adds nothing to a plain run", () => {
 		const { context } = buildPrompt({ manifest, issue });
 		expect(context).not.toContain("@pi fix");

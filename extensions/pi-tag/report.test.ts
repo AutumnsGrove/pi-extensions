@@ -72,9 +72,10 @@ describe("formatReport", () => {
 
 describe("jsonReport", () => {
 	it("carries the issue and the whole proposal", () => {
-		const report = jsonReport(issue, { ...empty, applied: [{ name: "bug", group: "type", why: "w" }] });
+		const report = jsonReport(issue, { ...empty, applied: [{ name: "bug", group: "type", why: "w" }] }, "body");
 		expect(report.issue.number).toBe(1657);
 		expect(report.issue.url).toBe("https://github.com/o/r/issues/1657");
 		expect(report.proposal.applied).toHaveLength(1);
+		expect(report.comment).toBe("body");
 	});
 });

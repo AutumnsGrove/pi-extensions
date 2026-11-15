@@ -82,6 +82,23 @@ export function renderComment(input: CommentInput): string {
 	return lines.join("\n");
 }
 
+/**
+ * A run that failed says so in the same comment, and keeps the `applied` marker
+ * it found: a failure is not a reason to forget which labels pi-tag owns.
+ */
+export function renderFailure(reason: string, previous: string[], runUrl?: string): string {
+	const lines = [
+		SUMMARY_MARKER,
+		appliedMarker(previous),
+		`**pi-tag** could not tag this issue${runUrl ? ` — [run](${runUrl})` : ""}`,
+		"",
+		`> ${oneLine(sanitize(reason)) || "the run failed"}`,
+		"",
+		"The labels were not changed. Re-run the workflow, or comment `@pi` to try again.",
+	];
+	return lines.join("\n");
+}
+
 /** One line, so a model that writes a paragraph cannot break the table. */
 function oneLine(text: string): string {
 	return text.replace(/\s+/g, " ").trim();
@@ -107,6 +124,14 @@ export interface UpsertOptions {
 	/** The bot's login, `pi-tag-<owner>[bot]`. Only its comments are ours. */
 	author: string;
 	timeoutMs?: number;
+	/** Skip the lookup when the caller already found it. */
+	existingId?: number;
+}
+
+export interface FoundComment {
+	id?: number;
+	/** The labels the previous run owned, or undefined when there is no marker. */
+	previous?: string[];
 }
 
 export interface UpsertResult {
@@ -123,11 +148,51 @@ interface IssueComment {
 }
 
 /**
- * Find the bot's own summary comment, page through to the newest one, and edit
- * it in place; create it when there is none.
+ * The bot's own summary comment on this issue, newest first.
  *
- * `--paginate --slurp` needs gh >= 2.47, and is why this asks for every page:
+ * `--paginate --slurp` needs gh >= 2.47, and asking for every page is the point:
  * a long thread must still find its own marker rather than creating a duplicate.
+ */
+export async function findSummary(
+	exec: Exec,
+	repo: { owner: string; repo: string },
+	issueNumber: number,
+	options: UpsertOptions
+): Promise<FoundComment> {
+	const base = `repos/${repo.owner}/${repo.repo}/issues/${issueNumber}/comments`;
+	const found: FoundComment = {};
+
+	const list = await exec("gh", ["api", "--paginate", "--slurp", `${base}?per_page=100`], {
+		cwd: options.cwd,
+		timeoutMs: options.timeoutMs ?? 60_000,
+	});
+	if (list.code !== 0) return found;
+
+	try {
+		const parsed: unknown = JSON.parse(list.stdout);
+		if (!Array.isArray(parsed)) return found;
+		for (const page of parsed) {
+			if (!Array.isArray(page)) continue;
+			for (const entry of page as IssueComment[]) {
+				if (typeof entry?.body !== "string") continue;
+				// Attribution is what makes a removal safe, so only this bot's own
+				// comment counts. A stranger cannot forge an `applied` list.
+				if (entry.user?.login !== options.author) continue;
+				if (!entry.body.includes(SUMMARY_MARKER)) continue;
+				if (typeof entry.id !== "number") continue;
+				found.id = entry.id;
+				found.previous = parseApplied(entry.body);
+			}
+		}
+	} catch {
+		// A list we cannot read is not a reason to fail the run: the labels are
+		// already correct, and a duplicate comment costs one comment, once.
+	}
+	return found;
+}
+
+/**
+ * Edit the bot's summary comment in place, or create it when there is none.
  */
 export async function upsertComment(
 	exec: Exec,
@@ -138,44 +203,12 @@ export async function upsertComment(
 ): Promise<UpsertResult> {
 	const timeout = options.timeoutMs ?? 60_000;
 	const base = `repos/${repo.owner}/${repo.repo}/issues/${issueNumber}/comments`;
+	const found = options.existingId === undefined ? await findSummary(exec, repo, issueNumber, options) : { id: options.existingId };
 
-	let existingId: number | undefined;
-	let previous: string[] | undefined;
-
-	const collect = (entries: IssueComment[]): void => {
-		for (const entry of entries) {
-			if (typeof entry?.body !== "string") continue;
-			if (entry.user?.login !== options.author) continue;
-			if (!entry.body.includes(SUMMARY_MARKER)) continue;
-			if (typeof entry.id === "number") {
-				existingId = entry.id;
-				previous = parseApplied(entry.body);
-			}
-		}
-	};
-
-	const list = await exec("gh", ["api", "--paginate", "--slurp", `${base}?per_page=100`], {
-		cwd: options.cwd,
-		timeoutMs: timeout,
-	});
-	if (list.code === 0) {
-		try {
-			const parsed: unknown = JSON.parse(list.stdout);
-			if (Array.isArray(parsed)) {
-				for (const page of parsed) {
-					if (Array.isArray(page)) collect(page as IssueComment[]);
-				}
-			}
-		} catch {
-			// A list we cannot read is not a reason to fail the run; the labels are
-			// already correct. A new comment costs one duplicate, once.
-		}
-	}
-
-	if (existingId !== undefined) {
+	if (found.id !== undefined) {
 		const patched = await exec(
 			"gh",
-			["api", "--method", "PATCH", `repos/${repo.owner}/${repo.repo}/issues/comments/${existingId}`, "-f", `body=${body}`],
+			["api", "--method", "PATCH", `repos/${repo.owner}/${repo.repo}/issues/comments/${found.id}`, "-f", `body=${body}`],
 			{ cwd: options.cwd, timeoutMs: timeout }
 		);
 		if (patched.code !== 0) {
@@ -183,14 +216,13 @@ export async function upsertComment(
 				`could not update the summary comment (exit ${patched.code}): ${patched.stderr.trim() || "no output"}`
 			);
 		}
-		return { created: false, previous, url: htmlUrl(patched.stdout) };
+		return { created: false, previous: undefined, url: htmlUrl(patched.stdout) };
 	}
 
-	const created = await exec(
-		"gh",
-		["api", "--method", "POST", base, "-f", `body=${body}`],
-		{ cwd: options.cwd, timeoutMs: timeout }
-	);
+	const created = await exec("gh", ["api", "--method", "POST", base, "-f", `body=${body}`], {
+		cwd: options.cwd,
+		timeoutMs: timeout,
+	});
 	if (created.code !== 0) {
 		throw new Error(
 			`could not post the summary comment (exit ${created.code}): ${created.stderr.trim() || "no output"}`

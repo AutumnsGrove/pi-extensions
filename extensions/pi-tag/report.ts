@@ -62,11 +62,14 @@ export function formatReport(issue: Issue, proposal: Proposal): string {
 export interface JsonReport {
 	issue: { number: number; title: string; labels: string[]; url?: string };
 	proposal: Proposal;
+	/** Exactly what would be posted, so a dry run is an honest preview. */
+	comment: string;
 }
 
-export function jsonReport(issue: Issue, proposal: Proposal): JsonReport {
+export function jsonReport(issue: Issue, proposal: Proposal, comment: string): JsonReport {
 	return {
 		issue: { number: issue.number, title: issue.title, labels: issue.labels, url: issue.url },
 		proposal,
+		comment,
 	};
 }
