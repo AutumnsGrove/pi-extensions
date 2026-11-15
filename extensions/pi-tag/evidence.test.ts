@@ -122,12 +122,16 @@ describe("checkEvidence", () => {
 	});
 
 	it("accepts a component proven by its path", () => {
-		const verdict = checkEvidence(lattice, [{ kind: "path", path: "libs/shutter/cloudflare/src/index.ts" }], context);
-		expect(verdict).toEqual({ ok: true });
+		const evidenceUsed = { kind: "path" as const, path: "libs/shutter/cloudflare/src/index.ts" };
+		const verdict = checkEvidence(lattice, [evidenceUsed], context);
+		expect(verdict.ok).toBe(true);
+		expect(verdict.evidence).toEqual(evidenceUsed);
 	});
 
 	it("accepts a component named in the title", () => {
-		expect(checkEvidence(clearing, [{ kind: "title", phrase: "Clearing" }], context)).toEqual({ ok: true });
+		const verdict = checkEvidence(clearing, [{ kind: "title", phrase: "Clearing" }], context);
+		expect(verdict.ok).toBe(true);
+		expect(verdict.evidence).toEqual({ kind: "title", phrase: "Clearing" });
 	});
 
 	it("rejects a title phrase that is not in the title", () => {
@@ -163,7 +167,8 @@ describe("checkEvidence", () => {
 
 	it("accepts a pattern whose own doc was read", () => {
 		const verdict = checkEvidence(songbird, [{ kind: "doc", path: "docs/patterns/songbird-pattern.md" }], context);
-		expect(verdict).toEqual({ ok: true });
+		expect(verdict.ok).toBe(true);
+		expect(verdict.evidence).toEqual({ kind: "doc", path: "docs/patterns/songbird-pattern.md" });
 	});
 
 	it("takes one good piece of evidence even when another is wrong", () => {
@@ -175,7 +180,9 @@ describe("checkEvidence", () => {
 			],
 			context
 		);
-		expect(verdict).toEqual({ ok: true });
+		expect(verdict.ok).toBe(true);
+		// The proof is the path, not the wrong title guess that came first.
+		expect(verdict.evidence).toEqual({ kind: "path", path: "libs/shutter/cloudflare/src/index.ts" });
 	});
 
 	it("reports the first failure when nothing proves the claim", () => {

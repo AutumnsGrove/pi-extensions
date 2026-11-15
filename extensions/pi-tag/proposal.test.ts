@@ -259,6 +259,33 @@ describe("buildProposal on an @pi fix run", () => {
 		expect(result.removed).toEqual([{ name: "clearing", why: "named in the request" }]);
 	});
 
+	it("refuses the swap when the old label cannot be removed", () => {
+		// Otherwise the fix would leave two components on the issue while
+		// reporting success -- the one state the manifest forbids.
+		const result = propose(
+			{ labels: [{ name: "lattice", evidence: [{ kind: "path", path: "libs/shutter/src/index.ts" }] }] },
+			{ issue, previous: ["clearing"], fix: { note: "something about it" } }
+		);
+		expect(result.applied).toEqual([]);
+		expect(result.leftInPlace).toEqual([{ name: "clearing", reason: "nothing explained removing it" }]);
+		expect(result.rejected[0]?.reason).toContain("would stay");
+	});
+
+	it("quotes the evidence that held, not the first guess offered", () => {
+		const result = propose({
+			labels: [
+				{
+					name: "lattice",
+					evidence: [
+						{ kind: "title", phrase: "Shutter" },
+						{ kind: "path", path: "libs/shutter/src/index.ts" },
+					],
+				},
+			],
+		});
+		expect(result.applied[0]?.why).toBe("read `libs/shutter/src/index.ts`");
+	});
+
 	it("never removes a human's label, even when asked", () => {
 		const result = propose(
 			{ labels: [{ name: "lattice", evidence: [{ kind: "path", path: "libs/shutter/src/index.ts" }] }] },

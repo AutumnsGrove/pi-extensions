@@ -39,6 +39,8 @@ export interface EvidenceContext {
 export interface Verdict {
 	ok: boolean;
 	reason?: string;
+	/** The entry that satisfied the check, so the comment can quote the right one. */
+	evidence?: Evidence;
 }
 
 const OK: Verdict = { ok: true };
@@ -129,7 +131,7 @@ export function checkEvidence(label: Label, evidence: Evidence[], context: Evide
 						? undefined
 						: `the title does not contain "${entry.phrase}"`
 					: checkPath(entry.path, prefixes, context);
-			if (!problem) return OK;
+			if (!problem) return { ok: true, evidence: entry };
 			if (!failure) failure = problem;
 		}
 		return reject(failure);
@@ -152,7 +154,7 @@ export function checkEvidence(label: Label, evidence: Evidence[], context: Evide
 				failure ||= `"${entry.path}" is not in the tree`;
 				continue;
 			}
-			return OK;
+			return { ok: true, evidence: entry };
 		}
 		return reject(failure);
 	}

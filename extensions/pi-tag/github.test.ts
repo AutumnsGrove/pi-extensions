@@ -130,6 +130,16 @@ describe("nodeExec", () => {
 		expect(result.code).toBe(124);
 	}, 10_000);
 
+	it("escalates to SIGKILL when the child ignores SIGTERM", async () => {
+		const result = await nodeExec(
+			"node",
+			["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"],
+			{ timeoutMs: 150, killGraceMs: 100 }
+		);
+		expect(result.timedOut).toBe(true);
+		expect(result.code).toBe(124);
+	}, 10_000);
+
 	it("reports a missing binary instead of throwing", async () => {
 		const result = await nodeExec("pi-tag-command-that-does-not-exist", []);
 		expect(result.code).toBe(127);

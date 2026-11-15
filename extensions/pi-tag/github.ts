@@ -25,7 +25,7 @@ export interface ExecResult {
 export type Exec = (
 	command: string,
 	args: string[],
-	options?: { cwd?: string; timeoutMs?: number; env?: Record<string, string> }
+	options?: { cwd?: string; timeoutMs?: number; env?: Record<string, string>; killGraceMs?: number }
 ) => Promise<ExecResult>;
 
 /** Refuse a runaway reply rather than growing the heap until the runner dies. */
@@ -52,17 +52,22 @@ export const nodeExec: Exec = (command, args, options = {}) =>
 		let stderr = "";
 		let timedOut = false;
 		let settled = false;
+		let killTimer: NodeJS.Timeout | undefined;
 
 		const finish = (result: ExecResult): void => {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
+			if (killTimer) clearTimeout(killTimer);
 			resolve(result);
 		};
 
 		const timer = setTimeout(() => {
 			timedOut = true;
 			child.kill("SIGTERM");
+			// A child that defers or ignores SIGTERM would otherwise outlive the
+			// deadline, which is the hang this whole function exists to bound.
+			killTimer = setTimeout(() => child.kill("SIGKILL"), options.killGraceMs ?? 5_000);
 		}, options.timeoutMs ?? 60_000);
 
 		child.stdout?.on("data", (chunk: Buffer) => {

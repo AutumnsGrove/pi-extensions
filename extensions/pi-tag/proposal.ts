@@ -259,7 +259,7 @@ export function buildProposal(input: ProposalInput): Proposal {
 			continue;
 		}
 
-		const why = label.group === "type" ? claim.rule : describeClaim(label, claim);
+		const why = label.group === "type" ? claim.rule : describeClaim(label, claim, verdict.evidence);
 		if (label.group === "type" && !why) {
 			rejected.push({ name: claim.name, reason: "no rule cited — quote the `when` line it matches" });
 			continue;
@@ -292,6 +292,35 @@ export function buildProposal(input: ProposalInput): Proposal {
 		}
 	}
 
+	/**
+	 * The cap was checked while each reclaimable label was still assumed to be
+	 * leaving. If one ends up left in place, applying the replacement anyway would
+	 * leave the group over its cap — the one state the manifest forbids. So the
+	 * addition loses, and says what it would take to win.
+	 */
+	if (input.fix && leftInPlace.length > 0) {
+		const staying = new Map<Group, string[]>();
+		for (const name of issue.labels) {
+			if (removed.some((entry) => entry.name === name)) continue;
+			const label = labelByName(manifest, name);
+			if (!label) continue;
+			const current = staying.get(label.group) ?? [];
+			current.push(name);
+			staying.set(label.group, current);
+		}
+		for (const entry of [...applied]) {
+			const current = (staying.get(entry.group) ?? []).filter((name) => name !== entry.name);
+			if (current.length >= capFor(manifest, entry.group)) {
+				const held = current.map((name) => `\`${name}\``).join(", ");
+				rejected.push({
+					name: entry.name,
+					reason: `\`${held}\` would stay, which leaves that group over its cap — ask for \`${held}\` to be removed`,
+				});
+				applied.splice(applied.indexOf(entry), 1);
+			}
+		}
+	}
+
 	return {
 		applied,
 		removed,
@@ -308,10 +337,14 @@ function fullGroup(group: Group, current: string[], cap: number): string {
 	return `\`${group}\` is full — ${current.length} of ${cap} (${names})`;
 }
 
-/** The one line the comment shows for a label that needed evidence. */
-function describeClaim(label: Label, claim: Claim): string {
-	const first = claim.evidence[0];
-	const described = first ? describeEvidence(first) : "";
+/**
+ * The one line the comment shows for a label that needed evidence. It describes
+ * the entry the check actually passed on, not the first one offered: a proposal
+ * may carry a wrong guess as well as a proof, and quoting the guess would make
+ * the comment cite evidence that did not hold.
+ */
+function describeClaim(label: Label, claim: Claim, proven?: Evidence): string {
+	const described = proven ? describeEvidence(proven) : "";
 	if (label.group === "component" && claim.rule) {
 		return described ? `${described} — ${claim.rule}` : claim.rule;
 	}
