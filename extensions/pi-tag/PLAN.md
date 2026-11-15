@@ -382,6 +382,22 @@ verify with one dispatch. `deepseek-v4.1-flash` is the known-good fallback;
 `pi-review` runs it with tools on the same provider entry. Thinking level `low` →
 `medium`.
 
+## Deviations from the first draft
+
+- **No `submit_labels` tool.** Validation happens once, after the model answers,
+  in `proposal.ts`. A tool would let the model retry inside its own run, which is
+  nicer, but the JSON contract was verified end to end in phase 0 and a refusal
+  is legible in the comment, which is the only feedback anyone reads. Worth
+  revisiting if refusals turn out to be common.
+- **Two jobs, not one.** `gate` decides in code whether a comment or issue may
+  trigger anything; `label` is the only job that costs a model call. The cheap
+  job-level `if:` keeps a non-matching comment from spinning a runner at all.
+- **`triggers.who` is a setting.** The first draft said "you + collaborators" and
+  hard-coded it; the list is now in the settings file, defaulting to
+  OWNER/MEMBER/COLLABORATOR.
+- **The marker records ownership, not this run's additions.** Otherwise a run
+  that changed nothing would erase the attribution a later `@pi fix` needs.
+
 ## Shape
 
 ```
