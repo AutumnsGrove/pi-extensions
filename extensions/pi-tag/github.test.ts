@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { GhError, type Exec, evidenceFor, readCheckout, readIssue } from "./github.ts";
+import { GhError, type Exec, evidenceFor, nodeExec, readCheckout, readIssue } from "./github.ts";
 
 const ghJson = JSON.stringify({
 	number: 1657,
@@ -104,5 +104,34 @@ labels:
 		expect(checkout.evidence.exists("libs/engine/package.json")).toBe(true);
 		expect(checkout.evidence.exists("libs/engine/ghost.ts")).toBe(false);
 		expect(evidenceFor(checkout, "a title").title).toBe("a title");
+	});
+});
+
+describe("nodeExec", () => {
+	it("closes stdin instead of handing the child an open pipe", async () => {
+		// A child that waits for stdin must not wait forever: `execFile` leaves the
+		// pipe open, and pi's print mode reads it when it is not a terminal. This is
+		// the regression test for a run that hung for five minutes with no output.
+		const result = await nodeExec("node", ["-e", "process.stdin.resume()"], { timeoutMs: 5_000 });
+		expect(result.timedOut).toBe(false);
+		expect(result.code).toBe(0);
+	}, 10_000);
+
+	it("captures both streams", async () => {
+		const result = await nodeExec("node", ["-e", "console.log('out'); console.error('err')"]);
+		expect(result.stdout.trim()).toBe("out");
+		expect(result.stderr.trim()).toBe("err");
+		expect(result.code).toBe(0);
+	});
+
+	it("says when the clock ran out, rather than pretending it failed", async () => {
+		const result = await nodeExec("node", ["-e", "setTimeout(() => {}, 5000)"], { timeoutMs: 150 });
+		expect(result.timedOut).toBe(true);
+		expect(result.code).toBe(124);
+	}, 10_000);
+
+	it("reports a missing binary instead of throwing", async () => {
+		const result = await nodeExec("pi-tag-command-that-does-not-exist", []);
+		expect(result.code).toBe(127);
 	});
 });

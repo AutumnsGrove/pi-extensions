@@ -73,11 +73,14 @@ export async function runPi(options: PiRunOptions): Promise<PiRun> {
 	});
 	const output = result.stdout.trim();
 	if (result.code !== 0) {
+		const seconds = Math.round((options.timeoutMs ?? 300_000) / 1000);
 		return {
 			ok: false,
 			output,
 			code: result.code,
-			error: result.stderr.trim() || `pi exited ${result.code}`,
+			error: result.timedOut
+				? `pi was still working after ${seconds}s`
+				: result.stderr.trim() || `pi exited ${result.code}`,
 		};
 	}
 	return { ok: true, output, code: 0 };

@@ -29,6 +29,7 @@ interface Args {
 	fix?: string;
 	previous: string[];
 	timeoutMs: number;
+	showPrompt: boolean;
 	help: boolean;
 }
 
@@ -45,6 +46,7 @@ const USAGE = `pi-tag dry run — writes nothing
   --thinking <level>   off|minimal|low|medium|high|xhigh|max (default: medium)
   --timeout <seconds>  how long to let pi work (default: 300)
   --json               machine-readable output
+  --show-prompt        print the system prompt and context first
   --help               this text`;
 
 function parseArgs(argv: string[]): Args {
@@ -56,6 +58,7 @@ function parseArgs(argv: string[]): Args {
 		json: false,
 		previous: [],
 		timeoutMs: 300_000,
+		showPrompt: false,
 		help: false,
 	};
 	for (let index = 0; index < argv.length; index += 1) {
@@ -96,6 +99,9 @@ function parseArgs(argv: string[]): Args {
 				break;
 			case "--json":
 				args.json = true;
+				break;
+			case "--show-prompt":
+				args.showPrompt = true;
 				break;
 			case "--help":
 			case "-h":
@@ -161,6 +167,10 @@ async function main(): Promise<number> {
 		},
 		...(args.fix ? { fix: { note: args.fix, previous: args.previous } } : {}),
 	});
+
+	if (args.showPrompt) {
+		process.stderr.write(`--- system (${prompt.system.length} chars) ---\n${prompt.system}\n\n--- context (${prompt.context.length} chars) ---\n${prompt.context}\n\n`);
+	}
 
 	const run = await runPi({
 		cwd: root,

@@ -7,7 +7,7 @@
  * Nothing here writes anything.
  */
 
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { EvidenceContext } from "./evidence.ts";
@@ -18,6 +18,8 @@ export interface ExecResult {
 	stdout: string;
 	stderr: string;
 	code: number;
+	/** The timeout fired and the child was killed. */
+	timedOut?: boolean;
 }
 
 export type Exec = (
@@ -26,28 +28,60 @@ export type Exec = (
 	options?: { cwd?: string; timeoutMs?: number; env?: Record<string, string> }
 ) => Promise<ExecResult>;
 
-/** The real one. Never rejects: a non-zero exit is data, not an exception. */
+/** Refuse a runaway reply rather than growing the heap until the runner dies. */
+const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
+
+/**
+ * The real one. Never rejects: a non-zero exit is data, not an exception.
+ *
+ * stdin is `/dev/null`, not a pipe. `execFile` hands the child an open pipe, and
+ * `pi --print` reads stdin when it is not a terminal — so a plain `execFile` here
+ * hangs until the timeout, with no output and no error to explain it. `spawn`
+ * with `stdio: ["ignore", ...]` is the difference between a 24-second run and a
+ * five-minute silence.
+ */
 export const nodeExec: Exec = (command, args, options = {}) =>
 	new Promise((resolve) => {
-		execFile(
-			command,
-			args,
-			{
-				cwd: options.cwd,
-				timeout: options.timeoutMs ?? 60_000,
-				maxBuffer: 32 * 1024 * 1024,
-				env: { ...process.env, ...options.env },
-			},
-			(error, stdout, stderr) => {
-				const code =
-					typeof (error as { code?: unknown } | null)?.code === "number"
-						? ((error as { code: number }).code ?? 1)
-						: error
-							? 1
-							: 0;
-				resolve({ stdout: stdout ?? "", stderr: stderr ?? "", code });
+		const child = spawn(command, args, {
+			cwd: options.cwd,
+			env: { ...process.env, ...options.env },
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+
+		let stdout = "";
+		let stderr = "";
+		let timedOut = false;
+		let settled = false;
+
+		const finish = (result: ExecResult): void => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			resolve(result);
+		};
+
+		const timer = setTimeout(() => {
+			timedOut = true;
+			child.kill("SIGTERM");
+		}, options.timeoutMs ?? 60_000);
+
+		child.stdout?.on("data", (chunk: Buffer) => {
+			if (stdout.length > MAX_OUTPUT_BYTES) {
+				child.kill("SIGTERM");
+				return;
 			}
-		);
+			stdout += chunk.toString();
+		});
+		child.stderr?.on("data", (chunk: Buffer) => {
+			stderr += chunk.toString();
+		});
+
+		child.on("error", (error) => {
+			finish({ stdout, stderr: stderr || error.message, code: 127, timedOut });
+		});
+		child.on("close", (code) => {
+			finish({ stdout, stderr, code: timedOut ? 124 : (code ?? 1), timedOut });
+		});
 	});
 
 export class GhError extends Error {
