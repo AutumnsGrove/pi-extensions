@@ -207,12 +207,10 @@ Reviews are much better when the agent can run the suite. Two settings cooperate
 { "tools": { "bash": true }, "verify": { "installDependencies": true } }
 ```
 
-With both on, the generated workflow adds:
-
-- `actions/cache` for the npm/pnpm, pip/uv, Go, Cargo, Bundler, NuGet, and
-  Composer stores, keyed by every supported lockfile;
-- an `Install dependencies` step (8-minute limit, `continue-on-error: true`)
-  that installs **every ecosystem it finds**, so a polyglot repo works:
+With both on, the caller passes `install-dependencies: true` and the reusable
+workflow adds an `Install dependencies` step (8-minute limit,
+`continue-on-error: true`) that installs **every ecosystem it finds**, so a
+polyglot repo works:
   - Node: `pnpm-lock.yaml` (corepack pnpm), `package-lock.json` (`npm ci`),
     `yarn.lock` (classic `--frozen-lockfile` or Berry `--immutable`), Bun;
   - Python: `uv.lock` (uv), `poetry.lock`, `Pipfile.lock`, `requirements.txt`,

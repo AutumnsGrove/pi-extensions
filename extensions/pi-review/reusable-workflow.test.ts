@@ -31,6 +31,7 @@ interface Reusable {
 	permissions: Record<string, string>;
 	jobs: {
 		review: {
+			"runs-on": string;
 			"timeout-minutes": number | string;
 			env?: Record<string, string>;
 			steps: Step[];
@@ -79,7 +80,7 @@ describe("the reusable workflow", () => {
 		expect(steps[0]?.if).toBe("github.event_name == 'issue_comment'");
 		expect(steps[0]?.run).toContain("gh pr view");
 		expect(indexOf("Require a same-repo pull request")).toBeLessThan(
-			steps.findIndex((candidate) => candidate.uses === "actions/checkout@v4")
+			steps.findIndex((candidate) => candidate.uses === "actions/checkout@v7")
 		);
 	});
 
@@ -118,7 +119,7 @@ describe("the reusable workflow", () => {
 	});
 
 	it("checks the PR out and fetches the extension at the commit that defined the job", () => {
-		const checkout = steps.find((candidate) => candidate.uses === "actions/checkout@v4");
+		const checkout = steps.find((candidate) => candidate.uses === "actions/checkout@v7");
 		expect(checkout?.with?.ref).toBe(
 			"refs/pull/${{ github.event.pull_request.number || github.event.issue.number }}/merge"
 		);
@@ -132,6 +133,19 @@ describe("the reusable workflow", () => {
 		expect(fetch.run).toContain(PACKAGE_REPO);
 		expect(fetch.run).toContain('ref="${PI_REVIEW_SRC_REF:-main}"');
 		expect(fetch.run).toContain("falling back to main");
+	});
+
+	it("pins the runner and the action majors", () => {
+		// `ubuntu-latest` migrated to Ubuntu 26 in November 2026; a reviewer
+		// should not change OS under a pull request because a label rotated.
+		expect(String(workflow.jobs.review["runs-on"])).toBe("ubuntu-26.04");
+		const uses = steps.map((candidate) => candidate.uses).filter(Boolean);
+		expect(uses).toContain("actions/checkout@v7");
+		expect(uses).toContain("actions/setup-node@v7");
+		expect(uses).toContain("actions/create-github-app-token@v3");
+		expect(uses).not.toContain("actions/cache@v4");
+		// No cache: saving one needs `actions: write` in every caller (#34).
+		expect(text).not.toContain("uses: actions/cache");
 	});
 
 	it("only uses contexts a job env may read", () => {
