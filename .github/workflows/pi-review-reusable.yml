@@ -52,7 +52,10 @@ permissions:
 
 jobs:
   review:
-    runs-on: ubuntu-latest
+    # Pinned, not `ubuntu-latest`: the label migrates to Ubuntu 26 in
+    # November 2026, and a reviewer should not change operating system under a
+    # pull request because GitHub rotated a label.
+    runs-on: ubuntu-26.04
     timeout-minutes: ${{ inputs.job-timeout-minutes }}
     env:
       # A step's `if:` cannot read `secrets`, so the presence of both App secrets
@@ -79,13 +82,13 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: refs/pull/${{ github.event.pull_request.number || github.event.issue.number }}/merge
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
 
@@ -103,25 +106,15 @@ jobs:
 
       # No secret reaches this step. The install runs the caller's own scripts,
       # which is why it is bounded, allowed to fail, and kept away from keys.
-      - name: Restore the dependency cache
-        if: inputs.install-dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.npm
-            ~/.local/share/pnpm/store
-            ~/.cache/pip
-            ~/.cache/uv
-            ~/go/pkg/mod
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.bundle
-            ~/.nuget/packages
-            ~/.composer/cache
-          key: pi-review-deps-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'package-lock.json', 'yarn.lock', 'bun.lock', 'bun.lockb', 'uv.lock', 'poetry.lock', 'Pipfile.lock', 'requirements.txt', 'go.sum', 'Cargo.lock', 'Gemfile.lock', 'composer.lock') }}
-          restore-keys: |
-            pi-review-deps-${{ runner.os }}-
-
+      #
+      # There is deliberately no `actions/cache` here. Saving a cache needs
+      # `actions: write`, and a reusable workflow can only use permissions its
+      # caller granted; adding that would mean regenerating every project's
+      # caller, which is the toil this design exists to remove (#34). The cache
+      # never saved under the old permissions either, so this is the same speed
+      # it always had, minus a restore that could never hit. If caching is worth
+      # the per-project permission later, add `actions: write` to the caller and
+      # the cache back here together.
       - name: Install dependencies
         if: inputs.install-dependencies
         id: deps
@@ -254,7 +247,7 @@ jobs:
       - name: Mint the App token
         if: env.PI_REVIEW_APP_CONFIGURED == 'true'
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.PI_REVIEW_APP_ID }}
           private-key: ${{ secrets.PI_REVIEW_APP_PRIVATE_KEY }}
