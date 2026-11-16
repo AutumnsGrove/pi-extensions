@@ -4,9 +4,10 @@ Agentic pull-request review for pi, run by pi itself inside GitHub Actions.
 
 This extension is the **installer + runner** for that workflow. It does for pi
 what Claude Code's `/install-github-app` does: provision a credential and an
-identity, commit a workflow to the target repository, and let you pick the model
-from a panel. Nothing runs in this repository; each reviewed repository runs its
-own job.
+identity, commit a caller workflow to the target repository, and let you pick
+the model from a panel. Nothing runs in this repository: the job lives once in
+`.github/workflows/pi-review-reusable.yml` here, and each reviewed repository
+commits a small caller that runs it from `@main`.
 
 > Not to be confused with [`earendil-works/pi-review`](https://github.com/earendil-works/pi-review),
 > which is an interactive local `/review` command with no CI. This one installs
@@ -14,15 +15,14 @@ own job.
 
 ## Status
 
-**Milestones 1–4 done; milestone 5 partially.** The runner, App identity,
-workflow generation, and provider credentials are implemented. `/pi-review
-settings` opens the committed settings in an editor, validates them, regenerates
-the workflow, and commits the result to a branch; `/pi-review uninstall` commits
-the removal to a branch and offers to delete the credentials. The dedicated
-settings panel is the remaining milestone-5 piece.
+**Milestones 1–5 done.** The runner, App identity, workflow generation,
+provider credentials, and the settings panel are implemented. `/pi-review
+settings` walks every field in a menu (with "Edit raw JSON" for anything it does
+not cover), validates the result, regenerates the caller, and commits it to a
+branch; `/pi-review uninstall` commits the removal to a branch and offers to
+delete the credentials.
 
-Milestones 1 (runner), 2 (App identity), 3 (workflow + settings), and 4
-(provider credentials) are implemented and tested:
+Implemented and tested:
 
 - `submit_review` tool: validates every inline comment against the real diff
   (path, side, line, range), folds anything unattachable into the summary
@@ -37,8 +37,7 @@ Milestones 1 (runner), 2 (App identity), 3 (workflow + settings), and 4
   workflow runs, with the same isolation flags.
 - `/pi-review status`: what a review would use right now.
 
-Not yet: the dedicated settings panel (milestone 5's remaining piece) and
-polish such as incremental re-reviews and sticky comments (milestone 6).
+Not yet: incremental re-reviews and sticky comments (milestone 6).
 
 ## Commands
 
@@ -350,12 +349,22 @@ thirty lines:
 
 Everything else lives in the reusable workflow, which checks out the PR with
 full history, checks the same-repo guard first, installs the caller's
-dependencies with no secret in reach, installs a pinned pi, fetches this package
-at the commit that defined the job (`job.workflow_sha`, falling back to `main`), reads `.github/pi-review.json`, mints the App token when the secrets
-are present (otherwise `GITHUB_TOKEN`), runs one headless pi, and reports the
-result. It fails the step if the run wrote no artifact or the artifact says
-`incomplete`, so the failure step posts a "could not complete this review"
-comment instead of ending silently, and it always writes a step summary.
+dependencies with no secret in reach, installs the pi version the settings name,
+fetches this package at the commit that defined the job (`job.workflow_sha`,
+falling back to `main`), reads `.github/pi-review.json`, mints the App token when
+the secrets are present (otherwise `GITHUB_TOKEN`), runs one headless pi, and
+reports the result. It fails the step if the run wrote no artifact or the
+artifact says `incomplete`, so the failure step posts a "could not complete this
+review" comment instead of ending silently, and it always writes a step summary.
+
+Two choices in that job are deliberate:
+
+- **The runner is pinned** to `ubuntu-26.04`, not `ubuntu-latest`, so a GitHub
+  label rotation cannot change the operating system under a pull request.
+- **There is no `actions/cache`.** Saving a cache needs `actions: write`, which
+  a reusable workflow can only use if every caller grants it; that would put a
+  per-project change back in the path this design removes. The cache never saved
+  under the previous permissions either.
 
 Edit `.github/pi-review.json`, not either YAML.
 
@@ -373,18 +382,17 @@ The runner activates when `PI_REVIEW=1`. It reads:
 | `PI_REVIEW_BASE_REF` | base ref override for the local git fallback |
 | `GH_TOKEN` | used by `gh pr view`, `gh pr diff`, and `gh api` when posting |
 | `PI_REVIEW_MAX_COMMENTS` | inline comments kept separate; the rest fold into the summary |
-| `PI_REVIEW_REQUEST_CHANGES` | `1` allows `REQUEST_CHANGES` |
 | `OPENCODE_API_KEY` / `OPENROUTER_API_KEY` / … | the provider key, from the `PI_REVIEW_API_KEY` secret |
 
-The intended workflow (milestone 3) checks out the target repo with full
-history, installs a pinned pi, clones this package at a pinned tag, and runs:
+The shared job runs, with the provider, model, thinking level and tools taken
+from the repository's settings:
 
 ```bash
-pi -p --no-session --offline -na -nc \
+pi -p --mode json --no-session --offline -na -nc \
   -ne -e /path/to/pi-extensions/extensions/pi-review/index.ts \
   -ns -np --no-themes --no-mcp \
   --tools read,grep,find,ls,submit_review \
-  --model <provider>/<model> \
+  --provider <provider> --model <model> --thinking <level> \
   "Review pull request #$PR_NUMBER."
 ```
 

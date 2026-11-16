@@ -10,7 +10,7 @@
  *
  * Milestone 1 (this build): the runner + `/pi-review run` + `/pi-review status`.
  * The install wizard, GitHub App, workflow generation, provider auth, and
- * settings panel land in the following milestones; see PLAN.md and the issue.
+ * settings panel landed in the following milestones; see PLAN.md and the issue.
  */
 
 import { access, readFile } from "node:fs/promises";

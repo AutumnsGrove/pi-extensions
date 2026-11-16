@@ -298,8 +298,9 @@ jobs:
           "Review PR #$PR_NUMBER"
 ```
 
-Pinned versions (pi and this package) so a model/CLI change cannot silently alter
-reviews; `fetch-depth: 0` so `git diff base...head` and blame work.
+Pinned pi version so a CLI change cannot silently alter reviews (the package
+itself stopped being pinned when the job moved to the shared reusable workflow,
+#34); `fetch-depth: 0` so `git diff base...head` and blame work.
 `--no-extensions` plus an explicit `-e` for only this package keeps repo `.pi/`
 code (attacker-controlled in a PR) from loading.
 
@@ -410,8 +411,8 @@ Decisions made while building the runner, where it differs from the design above
   loads every extension in the package, including the ones with runtime
   dependencies that have no place in a review job. `/pi-review run` and the
   workflow therefore pass `-e <path>/extensions/pi-review/index.ts`, which loads
-  exactly one extension. The workflow will clone this repo at a pinned tag and
-  point at that file.
+  exactly one extension. The workflow clones this repo at the commit that
+  defined the job (`job.workflow_sha`) and points at that file.
 - **Context is injected, not embedded in the prompt.** The workflow command line
   is just `pi -p "Review pull request #N."`; the extension loads the PR, diff,
   and guidance on `before_agent_start` and returns both a system-prompt section
@@ -485,12 +486,11 @@ Decisions made while building the runner, where it differs from the design above
 - **Paths are one list with negations.** GitHub rejects `paths` together with
   `paths-ignore` on the same event, so excludes become `!pattern` entries; when
   only excludes are configured the list starts with `**`.
-- **Package pinning defaults to the local commit.** `settings.pi.packageRef`
-  defaults to this checkout's HEAD (only when its `origin` looks like
-  pi-extensions); `PI_REVIEW_PACKAGE_REF` overrides it, and a tag is the right
-  value once released. The workflow fetches that ref with `git fetch --depth 1`
-  and runs `-e <checkout>/extensions/pi-review/index.ts`, so no other extension
-  loads.
+- **Package pinning is gone (superseded).** The job used to pin
+  `settings.pi.packageRef` and fetch this package at that commit. It now lives
+  in a reusable workflow that every project calls at `@main`, and fetches its own
+  commit with `job.workflow_sha` (#34). Only the pi CLI version is still pinned,
+  per project.
 - **The review step enforces the artifact.** A run can finish with exit 0
   without submitting (the runner writes `incomplete`); the step then fails
   deliberately so the `if: failure()` step posts the "could not complete"
