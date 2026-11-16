@@ -123,11 +123,30 @@ describe("the reusable workflow", () => {
 			"refs/pull/${{ github.event.pull_request.number || github.event.issue.number }}/merge"
 		);
 		expect(checkout?.with?.["fetch-depth"]).toBe(0);
-		expect(workflow.jobs.review.env?.PI_REVIEW_SRC_REF).toBe("${{ github.job_workflow_sha }}");
+		// `job.workflow_sha` is the commit of the called workflow file. Step-level
+		// env may read the `job` context; the job's `env:` may not, and
+		// `github.job_workflow_sha` does not exist at all.
 		const fetch = step("Check out pi-review");
+		expect(fetch.env?.PI_REVIEW_SRC_REF).toBe("${{ job.workflow_sha }}");
+		expect(text).not.toContain("${{ github.job_workflow_sha }}");
 		expect(fetch.run).toContain(PACKAGE_REPO);
 		expect(fetch.run).toContain('ref="${PI_REVIEW_SRC_REF:-main}"');
 		expect(fetch.run).toContain("falling back to main");
+	});
+
+	it("only uses contexts a job env may read", () => {
+		// This is the bug that kept every caller from starting: `runner.temp` and
+		// `github.job_workflow_sha` in the job env. `jobs.<job_id>.env` allows
+		// github, needs, strategy, matrix, vars, secrets and inputs, nothing else.
+		const jobEnv = workflow.jobs.review.env ?? {};
+		for (const [key, value] of Object.entries(jobEnv)) {
+			for (const match of String(value).matchAll(/\$\{\{\s*([a-zA-Z_]+)\./g)) {
+				expect(["github", "needs", "strategy", "matrix", "vars", "secrets", "inputs"]).toContain(
+					match[1]
+				);
+			}
+			expect(key).toMatch(/^PI_REVIEW_/);
+		}
 	});
 
 	it("runs one headless review and reports an incomplete one", () => {

@@ -353,8 +353,7 @@ thirty lines:
 Everything else lives in the reusable workflow, which checks out the PR with
 full history, checks the same-repo guard first, installs the caller's
 dependencies with no secret in reach, installs a pinned pi, fetches this package
-at the commit that defined the job (`github.job_workflow_sha`, falling back to
-`main`), reads `.github/pi-review.json`, mints the App token when the secrets
+at the commit that defined the job (`job.workflow_sha`, falling back to `main`), reads `.github/pi-review.json`, mints the App token when the secrets
 are present (otherwise `GITHUB_TOKEN`), runs one headless pi, and reports the
 result. It fails the step if the run wrote no artifact or the artifact says
 `incomplete`, so the failure step posts a "could not complete this review"
