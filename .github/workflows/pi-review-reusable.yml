@@ -83,7 +83,11 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
         run: |
           set -euo pipefail
-          head=$(gh pr view "$PR_NUMBER" --json headRepository --jq '.headRepository.nameWithOwner')
+          # This step runs before the checkout (so a fork PR's code never runs),
+          # which means `gh` cannot infer the repository from a working tree: it
+          # must be named. Without `--repo` this failed with "not a git
+          # repository" and every `@pi` mention died here.
+          head=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRepository --jq '.headRepository.nameWithOwner')
           if [ "$head" != "${{ github.repository }}" ]; then
             echo "::error::pi-review only reviews pull requests from this repository"
             exit 1
@@ -355,4 +359,6 @@ jobs:
           if [ -f "$PI_REVIEW_OUTPUT" ] && ! grep -q '"incomplete": true' "$PI_REVIEW_OUTPUT"; then
             exit 0
           fi
-          gh pr comment "$PR_NUMBER" --body "pi-review could not complete this review: the job failed or timed out. Fix the cause and re-run the workflow." || true
+          # Same reason as the guard: this runs even when the checkout was
+          # skipped, so `gh` cannot infer the repository.
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body "pi-review could not complete this review: the job failed or timed out. Fix the cause and re-run the workflow." || true
