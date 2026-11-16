@@ -81,6 +81,10 @@ describe("the reusable workflow", () => {
 		expect(steps[0]?.name).toBe("Require a same-repo pull request");
 		expect(steps[0]?.if).toBe("github.event_name == 'issue_comment'");
 		expect(steps[0]?.run).toContain("gh pr view");
+		// The guard runs before the checkout, so `gh` cannot infer the repository
+		// from a working tree. Omitting `--repo` failed the mention path with
+		// "not a git repository" for every `@pi` comment.
+		expect(steps[0]?.run).toContain('--repo "${{ github.repository }}"');
 		expect(indexOf("Require a same-repo pull request")).toBeLessThan(
 			steps.findIndex((candidate) => candidate.uses === "actions/checkout@v7")
 		);
@@ -98,6 +102,17 @@ describe("the reusable workflow", () => {
 		expect(step("Read the settings").env?.PI_REVIEW_PROVIDER_KEY).toBe(
 			"${{ secrets.PI_REVIEW_API_KEY }}"
 		);
+	});
+
+	it("names the repository in every gh call that may run without a checkout", () => {
+		const withoutCheckout = ["Require a same-repo pull request", "Report an incomplete review"];
+		for (const name of withoutCheckout) {
+			const ghLines = (step(name).run ?? "").split("\n").filter((line) => /\bgh pr\b/.test(line));
+			expect(ghLines.length).toBeGreaterThan(0);
+			for (const line of ghLines) {
+				expect(line).toContain("--repo");
+			}
+		}
 	});
 
 	it("mints the App token only when the App secrets are configured", () => {
