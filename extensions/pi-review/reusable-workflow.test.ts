@@ -19,6 +19,7 @@ interface Step {
 	with?: Record<string, string | number | boolean>;
 	run?: string;
 	"timeout-minutes"?: number | string;
+	"continue-on-error"?: boolean | string;
 }
 
 interface Reusable {
@@ -33,6 +34,7 @@ interface Reusable {
 		review: {
 			"runs-on": string;
 			"timeout-minutes": number | string;
+			"cache-mode"?: string;
 			env?: Record<string, string>;
 			steps: Step[];
 		};
@@ -85,9 +87,9 @@ describe("the reusable workflow", () => {
 	});
 
 	it("never puts a secret in the dependency install step", () => {
-		const install = step("Install dependencies");
+		const install = step("Install pi and dependencies");
 		expect(JSON.stringify(install.env ?? {})).not.toContain("secrets.");
-		const installIndex = indexOf("Install dependencies");
+		const installIndex = indexOf("Install pi and dependencies");
 		const before = steps.slice(0, installIndex);
 		expect(JSON.stringify(before)).not.toContain("secrets.PI_REVIEW_API_KEY");
 		// The provider key is exported only after the install, so a PR's own
@@ -114,7 +116,7 @@ describe("the reusable workflow", () => {
 		for (const key of ["tools", "provider", "model", "thinking", "review.event", "pi.version"]) {
 			expect(text).toContain(`.${key}`.replace(".review.event", ".review.event"));
 		}
-		expect(step("Install pi").run).toContain("jq -er '.pi.version'");
+		expect(step("Install pi and dependencies").run).toContain("jq -er '.pi.version'");
 		expect(step("Check the settings file").run).toContain("not valid JSON");
 	});
 
@@ -143,9 +145,37 @@ describe("the reusable workflow", () => {
 		expect(uses).toContain("actions/checkout@v7");
 		expect(uses).toContain("actions/setup-node@v7");
 		expect(uses).toContain("actions/create-github-app-token@v3");
-		expect(uses).not.toContain("actions/cache@v4");
-		// No cache: saving one needs `actions: write` in every caller (#34).
-		expect(text).not.toContain("uses: actions/cache");
+		expect(uses).toContain("actions/cache@v4");
+	});
+
+	it("restores the pi install and the package stores without a caller change", () => {
+		// The cache key includes the settings file (which carries `pi.version`)
+		// and the lockfiles; `restore-keys` falls back to the settings hash so a
+		// lockfile change still seeds the stores and the pi prefix.
+		expect(workflow.jobs.review["cache-mode"]).toBe("write");
+		const cache = step("Restore pi and package caches");
+		expect(cache.with?.path).toContain("${{ runner.temp }}/pi-review/pi");
+		expect(cache.with?.key).toContain("hashFiles('**/pi-review.json')");
+		expect(cache.with?.key).toContain("pnpm-lock.yaml");
+		expect(cache.with?.["restore-keys"]).toContain("pi-review-");
+		// The cache is restored before the install that fills it, and never in a
+		// step that can see a secret.
+		expect(indexOf("Restore pi and package caches")).toBeLessThan(indexOf("Install pi and dependencies"));
+		expect(indexOf("Read the settings")).toBeGreaterThan(indexOf("Install pi and dependencies"));
+	});
+
+	it("installs pi beside the checkout, from the cache when the version matches", () => {
+		const install = step("Install pi and dependencies");
+		// A fresh install goes into a directory the cache restores, and the same
+		// version is not reinstalled.
+		expect(install.run).toContain('prefix="$RUNNER_TEMP/pi-review/pi"');
+		expect(install.run).toContain('"$prefix/bin/pi" --version');
+		expect(install.run).toContain("npm install -g --prefix \"$prefix\"");
+		expect(install.run).toContain('echo "$prefix/bin" >> "$GITHUB_PATH"');
+		// A failed dependency install is a warning; a failed pi install is not.
+		expect(install.run).toContain("Some dependency installs failed");
+		expect(install.run).toContain("Could not install pi");
+		expect(install["continue-on-error"]).toBeUndefined();
 	});
 
 	it("only uses contexts a job env may read", () => {

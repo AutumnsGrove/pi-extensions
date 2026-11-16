@@ -207,9 +207,8 @@ Reviews are much better when the agent can run the suite. Two settings cooperate
 ```
 
 With both on, the caller passes `install-dependencies: true` and the reusable
-workflow adds an `Install dependencies` step (8-minute limit,
-`continue-on-error: true`) that installs **every ecosystem it finds**, so a
-polyglot repo works:
+workflow's `Install pi and dependencies` step (8-minute limit) installs **every
+ecosystem it finds**, so a polyglot repo works:
   - Node: `pnpm-lock.yaml` (corepack pnpm), `package-lock.json` (`npm ci`),
     `yarn.lock` (classic `--frozen-lockfile` or Berry `--immutable`), Bun;
   - Python: `uv.lock` (uv), `poetry.lock`, `Pipfile.lock`, `requirements.txt`,
@@ -348,23 +347,31 @@ thirty lines:
   settings path, the two timeouts, and whether to install dependencies.
 
 Everything else lives in the reusable workflow, which checks out the PR with
-full history, checks the same-repo guard first, installs the caller's
-dependencies with no secret in reach, installs the pi version the settings name,
-fetches this package at the commit that defined the job (`job.workflow_sha`,
-falling back to `main`), reads `.github/pi-review.json`, mints the App token when
-the secrets are present (otherwise `GITHUB_TOKEN`), runs one headless pi, and
-reports the result. It fails the step if the run wrote no artifact or the
-artifact says `incomplete`, so the failure step posts a "could not complete this
-review" comment instead of ending silently, and it always writes a step summary.
+full history, checks the same-repo guard first, restores the pi and package
+caches, installs pi and the caller's dependencies at the same time with no
+secret in reach, fetches this package at the commit that defined the job
+(`job.workflow_sha`, falling back to `main`), reads `.github/pi-review.json`,
+mints the App token when the secrets are present (otherwise `GITHUB_TOKEN`),
+runs one headless pi, and reports the result. It fails the step if the run wrote
+no artifact or the artifact says `incomplete`, so the failure step posts a
+"could not complete this review" comment instead of ending silently, and it
+always writes a step summary.
 
-Two choices in that job are deliberate:
+Three choices in that job are deliberate:
 
 - **The runner is pinned** to `ubuntu-26.04`, not `ubuntu-latest`, so a GitHub
   label rotation cannot change the operating system under a pull request.
-- **There is no `actions/cache`.** Saving a cache needs `actions: write`, which
-  a reusable workflow can only use if every caller grants it; that would put a
-  per-project change back in the path this design removes. The cache never saved
-  under the previous permissions either.
+- **The cache is requested by the job itself.** `cache-mode: write` is declared
+  in the reusable workflow, which a called workflow may do when its caller does
+  not cap it, so caching needs no per-project caller change. Only same-repo PRs
+  reach the job, so a fork cannot write the cache, and caches saved by a
+  `pull_request` run are scoped to that PR's merge ref: the second and later
+  reviews of a PR hit them, a brand-new PR does not.
+- **`Install pi` and `Install dependencies` are one step.** Both are
+  network-bound with no secret in reach, so pi is installed in the background
+  while the dependencies install and the script waits for it before finishing.
+  A failed dependency install stays a warning; a failed pi install fails the
+  step.
 
 Edit `.github/pi-review.json`, not either YAML.
 
