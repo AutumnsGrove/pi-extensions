@@ -56,6 +56,13 @@ jobs:
     # November 2026, and a reviewer should not change operating system under a
     # pull request because GitHub rotated a label.
     runs-on: ubuntu-26.04
+    # Saving a cache is denied by default to low-trust triggers, and
+    # `issue_comment` is one; the old `actions: write` route would have needed
+    # every caller to grant the scope. A called workflow may now request cache
+    # access itself when the caller does not cap it, so this reaches every
+    # project without a caller change. Only same-repo PRs reach this job (the
+    # caller's `if:` and the guard below), so a fork cannot write the cache.
+    cache-mode: write
     timeout-minutes: ${{ inputs.job-timeout-minutes }}
     env:
       # A step's `if:` cannot read `secrets`, so the presence of both App secrets
@@ -104,84 +111,111 @@ jobs:
             exit 1
           fi
 
+      # The pi CLI and the package-manager download stores the install reads.
+      # A cache saved by a `pull_request` run is scoped to that PR's merge ref,
+      # so this pays off from the second review of a PR onwards, not the first.
+      # The stores are content-addressed, so a stale entry is harmless; the pi
+      # prefix is version-checked before use, which is why `restore-keys` can
+      # fall back to the settings hash alone.
+      - name: Restore pi and package caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/pi-review/pi
+            ~/.npm/_cacache
+            ~/.local/share/pnpm/store
+            ~/.bun/install/cache
+            ~/.cache/pip
+            ~/.cache/uv
+          key: ${{ runner.os }}-pi-review-${{ hashFiles('**/pi-review.json') }}-${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json', '**/yarn.lock', '**/bun.lock', '**/bun.lockb', '**/uv.lock', '**/poetry.lock', '**/Pipfile.lock', '**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pi-review-${{ hashFiles('**/pi-review.json') }}-
+
       # No secret reaches this step. The install runs the caller's own scripts,
-      # which is why it is bounded, allowed to fail, and kept away from keys.
+      # which is why it is bounded, kept away from keys, and its dependency
+      # failures are warnings rather than failures.
       #
-      # There is deliberately no `actions/cache` here. Saving a cache needs
-      # `actions: write`, and a reusable workflow can only use permissions its
-      # caller granted; adding that would mean regenerating every project's
-      # caller, which is the toil this design exists to remove (#34). The cache
-      # never saved under the old permissions either, so this is the same speed
-      # it always had, minus a restore that could never hit. If caching is worth
-      # the per-project permission later, add `actions: write` to the caller and
-      # the cache back here together.
-      - name: Install dependencies
-        if: inputs.install-dependencies
-        id: deps
-        continue-on-error: true
+      # pi and the dependencies are network-bound and independent, so they run
+      # at the same time instead of one after the other. A dependency failure
+      # stays a warning (the review is told the tests may not run and reads the
+      # code instead); a failed pi install is fatal, which is why this step no
+      # longer uses `continue-on-error`.
+      - name: Install pi and dependencies
+        id: install
         timeout-minutes: 8
         env:
           PI_REVIEW_INSTALL_COMMAND: ${{ inputs.install-command }}
+          PI_REVIEW_INSTALL_DEPS: ${{ inputs.install-dependencies }}
         run: |
           set -uo pipefail
+          prefix="$RUNNER_TEMP/pi-review/pi"
+          version=$(jq -er '.pi.version' "$PI_REVIEW_SETTINGS")
+          pi_install=""
+          if [ "$("$prefix/bin/pi" --version 2>/dev/null)" = "$version" ]; then
+            echo "pi $version came from the cache"
+          else
+            npm install -g --prefix "$prefix" --no-audit --no-fund --loglevel=error \
+              "@earendil-works/pi-coding-agent@$version" &
+            pi_install=$!
+          fi
+
           echo "PI_REVIEW_DEPS=unavailable" >> "$GITHUB_ENV"
-          if [ -n "$PI_REVIEW_INSTALL_COMMAND" ]; then
-            if eval "$PI_REVIEW_INSTALL_COMMAND"; then
-              echo "PI_REVIEW_DEPS=installed" >> "$GITHUB_ENV"
+          if [ "${PI_REVIEW_INSTALL_DEPS:-}" = "true" ]; then
+            if [ -n "${PI_REVIEW_INSTALL_COMMAND:-}" ]; then
+              if eval "$PI_REVIEW_INSTALL_COMMAND"; then
+                echo "PI_REVIEW_DEPS=installed" >> "$GITHUB_ENV"
+              else
+                echo "::warning::The configured install command failed; the reviewer will be told tests may not run."
+              fi
             else
-              echo "::warning::The configured install command failed; the reviewer will be told tests may not run."
-              exit 1
+              failed=0
+              found=0
+              run() { if ! "$@"; then failed=1; fi; }
+              # Node managers are mutually exclusive: running two of them leaves
+              # the tree from whichever ran last (npm ci deletes node_modules).
+              if [ -f pnpm-lock.yaml ]; then
+                found=1; run corepack pnpm install --frozen-lockfile --prefer-offline
+              elif [ -f package-lock.json ]; then
+                found=1; run npm ci --prefer-offline --no-audit --no-fund
+              elif [ -f yarn.lock ]; then
+                found=1
+                if corepack yarn --version | grep -q '^1\.'; then
+                  run corepack yarn install --frozen-lockfile
+                else
+                  run corepack yarn install --immutable
+                fi
+              elif [ -f bun.lock ] || [ -f bun.lockb ]; then
+                found=1; run npm install -g bun; run bun install --frozen-lockfile
+              fi
+              if [ -f uv.lock ]; then
+                found=1
+                if ! command -v uv >/dev/null 2>&1; then curl -LsSf https://astral.sh/uv/install.sh | sh; export PATH="$HOME/.local/bin:$PATH"; fi
+                run uv sync --frozen
+              fi
+              if [ -f poetry.lock ]; then found=1; run python3 -m pip install --user --quiet poetry; run poetry install --no-interaction; fi
+              if [ -f Pipfile.lock ]; then found=1; run python3 -m pip install --user --quiet pipenv; run pipenv sync; fi
+              if [ -f requirements.txt ]; then found=1; run python3 -m pip install -r requirements.txt; fi
+              if [ -f pyproject.toml ] && [ ! -f uv.lock ] && [ ! -f poetry.lock ]; then found=1; run python3 -m pip install -e .; fi
+              if [ -f go.mod ]; then found=1; run go mod download; fi
+              if [ -f Cargo.toml ]; then found=1; run cargo fetch; fi
+              if [ -f Gemfile.lock ]; then found=1; run bundle install; fi
+              if [ -f composer.lock ]; then found=1; run composer install --no-interaction; fi
+              if ls *.sln >/dev/null 2>&1; then found=1; run dotnet restore; fi
+              if [ "$failed" -ne 0 ]; then
+                echo "::warning::Some dependency installs failed; the reviewer will be told tests may not run."
+              elif [ "$found" -eq 0 ]; then
+                echo "PI_REVIEW_DEPS=none" >> "$GITHUB_ENV"
+              else
+                echo "PI_REVIEW_DEPS=installed" >> "$GITHUB_ENV"
+              fi
             fi
-            exit 0
           fi
-          failed=0
-          found=0
-          run() { if ! "$@"; then failed=1; fi; }
-          # Node managers are mutually exclusive: running two of them leaves the
-          # tree from whichever ran last (npm ci deletes node_modules).
-          if [ -f pnpm-lock.yaml ]; then
-            found=1; run corepack pnpm install --frozen-lockfile --prefer-offline
-          elif [ -f package-lock.json ]; then
-            found=1; run npm ci --prefer-offline --no-audit --no-fund
-          elif [ -f yarn.lock ]; then
-            found=1
-            if corepack yarn --version | grep -q '^1\.'; then
-              run corepack yarn install --frozen-lockfile
-            else
-              run corepack yarn install --immutable
-            fi
-          elif [ -f bun.lock ] || [ -f bun.lockb ]; then
-            found=1; run npm install -g bun; run bun install --frozen-lockfile
-          fi
-          if [ -f uv.lock ]; then
-            found=1
-            if ! command -v uv >/dev/null 2>&1; then curl -LsSf https://astral.sh/uv/install.sh | sh; export PATH="$HOME/.local/bin:$PATH"; fi
-            run uv sync --frozen
-          fi
-          if [ -f poetry.lock ]; then found=1; run python3 -m pip install --user --quiet poetry; run poetry install --no-interaction; fi
-          if [ -f Pipfile.lock ]; then found=1; run python3 -m pip install --user --quiet pipenv; run pipenv sync; fi
-          if [ -f requirements.txt ]; then found=1; run python3 -m pip install -r requirements.txt; fi
-          if [ -f pyproject.toml ] && [ ! -f uv.lock ] && [ ! -f poetry.lock ]; then found=1; run python3 -m pip install -e .; fi
-          if [ -f go.mod ]; then found=1; run go mod download; fi
-          if [ -f Cargo.toml ]; then found=1; run cargo fetch; fi
-          if [ -f Gemfile.lock ]; then found=1; run bundle install; fi
-          if [ -f composer.lock ]; then found=1; run composer install --no-interaction; fi
-          if ls *.sln >/dev/null 2>&1; then found=1; run dotnet restore; fi
-          if [ "$failed" -ne 0 ]; then
-            echo "::warning::Some dependency installs failed; the reviewer will be told tests may not run."
+
+          if [ -n "$pi_install" ] && ! wait "$pi_install"; then
+            echo "::error::Could not install pi $version"
             exit 1
           fi
-          if [ "$found" -eq 0 ]; then
-            echo "PI_REVIEW_DEPS=none" >> "$GITHUB_ENV"
-            exit 0
-          fi
-          echo "PI_REVIEW_DEPS=installed" >> "$GITHUB_ENV"
-
-      - name: Install pi
-        run: |
-          set -euo pipefail
-          version=$(jq -er '.pi.version' "$PI_REVIEW_SETTINGS")
-          npm install -g "@earendil-works/pi-coding-agent@$version"
+          echo "$prefix/bin" >> "$GITHUB_PATH"
 
       - name: Check out pi-review
         env:

@@ -668,3 +668,31 @@ Decisions made while building the runner, where it differs from the design above
 - The "use an existing App" path caches the provided key path; creating an App
   caches the saved key automatically. Tests inject cache/key dirs so a run never
   writes into the real agent directory.
+
+## Implementation notes (milestone 9): setup trims
+
+Measured on real runs before changing anything: the review step is 43–510s and
+the setup around it 13–54s (median ~19s), against 8s for the Claude Code job.
+The review step was left alone on purpose — its cost is model turns, and the
+owner judged the reviews worth it. Only the setup changed.
+
+- **`cache-mode: write` replaces the old "no cache because `actions: write`".**
+  A called workflow may now request cache access itself when the caller does not
+  cap it, so caching needs no per-project caller change (#34). Only same-repo PRs
+  reach the job, so a fork cannot write the cache.
+- **Cached:** the pi install (`$RUNNER_TEMP/pi-review/pi`, keyed on the settings
+  file — which carries `pi.version` — and restored by `restore-keys` when a
+  lockfile changes) and the package stores the install reads (npm, pnpm, bun,
+  pip, uv). A `pull_request` cache is scoped to the PR's merge ref, so the second
+  and later reviews of a PR hit it and a brand-new PR does not.
+- **The pi prefix is version-checked before use**, so a stale restored install is
+  replaced rather than run, and `npm install -g --prefix` keeps the global
+  install out of `/usr/local`.
+- **`Install pi` and `Install dependencies` are one step.** They are
+  network-bound and independent, so pi installs in the background while the
+  dependencies install. The step lost `continue-on-error`: a dependency failure
+  is an explicit warning (the review is told the tests may not run), while a
+  failed pi install exits 1.
+- **`setup-node` was kept.** Its 0–20s spread is runner-side (it probes yarn),
+  and dropping it would unpin the Node version for 1–9s of typical saving;
+  pi requires Node ≥ 22.19, so the pin stays.
