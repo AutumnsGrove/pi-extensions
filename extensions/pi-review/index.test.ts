@@ -62,14 +62,20 @@ function load(
 }
 
 const original = process.env.PI_REVIEW;
+const originalResolveThreads = process.env.PI_REVIEW_RESOLVE_THREADS;
 
 beforeEach(() => {
 	vi.mocked(runLocalReview).mockReset();
+	// The review job itself exports this; a test that loads runner mode must
+	// not inherit the job's tool selection.
+	delete process.env.PI_REVIEW_RESOLVE_THREADS;
 });
 
 afterEach(() => {
 	if (original === undefined) delete process.env.PI_REVIEW;
 	else process.env.PI_REVIEW = original;
+	if (originalResolveThreads === undefined) delete process.env.PI_REVIEW_RESOLVE_THREADS;
+	else process.env.PI_REVIEW_RESOLVE_THREADS = originalResolveThreads;
 });
 
 describe("pi-review command", () => {
