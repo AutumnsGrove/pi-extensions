@@ -15,12 +15,12 @@ commits a small caller that runs it from `@main`.
 
 ## Status
 
-**Milestones 1–5 done.** The runner, App identity, workflow generation,
-provider credentials, and the settings panel are implemented. `/pi-review
-settings` walks every field in a menu (with "Edit raw JSON" for anything it does
-not cover), validates the result, regenerates the caller, and commits it to a
-branch; `/pi-review uninstall` commits the removal to a branch and offers to
-delete the credentials.
+**Milestones 1–6 done, plus failure hardening (#27, #43–#47).** The runner, App
+identity, workflow generation, provider credentials, settings panel, incremental
+re-reviews, and sticky summary comment are implemented. `/pi-review settings`
+walks the common fields in a menu (with "Edit raw JSON" for the rest), validates
+the result, regenerates the caller, and commits it to a branch; `/pi-review
+uninstall` commits the removal to a branch and offers to delete the credentials.
 
 Implemented and tested:
 
@@ -36,8 +36,10 @@ Implemented and tested:
 - `/pi-review run`: local dry run that spawns the same headless agent the
   workflow runs, with the same isolation flags.
 - `/pi-review status`: what a review would use right now.
-
-Not yet: incremental re-reviews and sticky comments (milestone 6).
+- A run that does not submit is classified (`provider`, `incomplete`, `aborted`,
+  `budget`, `post`), nudged once, recovered as a `COMMENT` review when the final
+  answer is substantive, and reported through one edited failure comment. Every
+  run uploads its transcript and resolved model/tool/retry state.
 
 ## Commands
 
@@ -198,6 +200,56 @@ For free-form repo rules ("we care about X", "never comment on Y"), put them in
 `REVIEW.md` on the base branch; it is loaded into every review and cannot be
 rewritten by a PR.
 
+## When a run fails
+
+A review can end without `submit_review`. The job classifies the ending instead
+of treating every one as "the job failed or timed out":
+
+| kind | what happened | what the job does |
+| --- | --- | --- |
+| `submitted` | the model called `submit_review` | posts the review |
+| `incomplete` | the model ended in prose | one explicit nudge; if it still does not submit, a final answer of at least 400 characters is posted as a `COMMENT` review marked "submitted by recovery" |
+| `provider` | a 429/5xx/overload/network error survived the retry budget | no review is posted; the failure comment names the provider and includes its error |
+| `aborted` / `budget` | the step timed out or was cancelled, or the model hit its output limit | no review is posted; the comment says which |
+| `post` | the review validated but GitHub rejected the post | the workflow retries the review, then its summary, before giving up |
+
+Retries are pi's own policy, written into a throwaway agent directory from the
+settings file:
+
+```json
+{
+  "review": {
+    "retry": {
+      "maxRetries": 6,
+      "baseDelayMs": 5000,
+      "maxDelayMs": 60000,
+      "providerMaxRetries": 2
+    },
+    "onProviderFailure": "fail"
+  }
+}
+```
+
+`providerMaxRetries` retries a single request and honours `Retry-After`;
+`maxRetries` retries the failed assistant turn with exponential backoff. Six
+agent retries at a five-second base is roughly three minutes of patience, which
+covers the overload spikes that used to turn into a red check after sixteen
+seconds. `onProviderFailure` is `fail` by default: a green check that posted no
+review can let an unreviewed PR merge. Set it to `warn` for a provider that is
+flaky and a check that is not required.
+
+A failed run edits **one** comment per pull request instead of adding another.
+The comment carries `<!-- pi-review:failed -->`, names the reason and the run
+that produced it, and is written by `github-actions` so the workflow token can
+always edit it. Reviews still post as the App.
+
+Every run uploads `events.jsonl`, `review.json`, `recovery.json`,
+`conclusion.json`, and `run-meta.json` as a `pi-review-pr-<n>-<run>` artifact
+for seven days. `run-meta.json` records the resolved provider, model, thinking
+level, tools, retry policy, last stream event, last stop reason, and pi's exit
+code, so "it finished without submitting" can be diagnosed from the artifact
+rather than a grep through the job log.
+
 ## Verifying with tests
 
 Reviews are much better when the agent can run the suite. Two settings cooperate:
@@ -258,8 +310,8 @@ push. The review itself still carries the findings.
 Create the App once; the wizard then remembers it on this machine:
 
 - when it creates an App it saves the key to
-  `~/.pi/agent/pi-review/<owner>.pem` (`0600`) and records the App id, slug, and
-  key path in `~/.pi/agent/pi-review.json` (`0600`);
+  `~/.pi/agent/pi-review/<owner>.pem` (`0600`) and records the App ID, client ID,
+  slug, and key path in `~/.pi/agent/pi-review.json` (`0600`);
 - in another repository under the same owner, `/pi-review install` finds that
   entry, verifies the id/key with a short-lived App JWT, writes the secrets
   automatically, and **asks no App questions**. If the App is already installed
@@ -276,6 +328,12 @@ If you never downloaded a key: open the App settings → **Private keys** →
 **Generate a private key**; the browser saves a `.pem` in Downloads, which the
 picker will list.
 
+The `PI_REVIEW_APP_ID` secret holds the App's **client ID** (the `Iv23…` value)
+on a new install. An older install's numeric App ID still works as the JWT
+issuer, and re-running `/pi-review install` refreshes the secret to the client
+ID. The workflow passes it as `client-id` and narrows the minted token to
+`contents: read`, `pull-requests: write`, and `issues: write`.
+
 Personal accounts have no shared secrets, so each repository still receives a
 copy of the key as a repo secret; the local copy makes that automatic.
 Organizations can put the same key in an **organization secret** instead.
@@ -287,9 +345,10 @@ disables only that repository. To stop reusing the App on this machine, delete
 
 `/pi-review settings` opens a menu for the common knobs: model, thinking, tools
 (read-only vs +bash), strictness, verdict, dependency install, stale-thread
-resolution, and the `@pi` mention trigger. Each entry shows the current value;
-**Save and continue** commits the result, and **Edit raw JSON…** opens the
-committed file for provider, path filters, triggers, and timeouts.
+resolution, the retry budget, the provider-failure policy, and the `@pi` mention
+trigger. Each entry shows the current value; **Save and continue** commits the
+result, and **Edit raw JSON…** opens the committed file for provider, path
+filters, triggers, and timeouts.
 
 On save the JSON is validated (unknown enums are refused, numbers are clamped),
 the workflow is regenerated from it, and both files are committed to
@@ -352,10 +411,12 @@ caches, installs pi and the caller's dependencies at the same time with no
 secret in reach, fetches this package at the commit that defined the job
 (`job.workflow_sha`, falling back to `main`), reads `.github/pi-review.json`,
 mints the App token when the secrets are present (otherwise `GITHUB_TOKEN`),
-runs one headless pi, and reports the result. It fails the step if the run wrote
-no artifact or the artifact says `incomplete`, so the failure step posts a
-"could not complete this review" comment instead of ending silently, and it
-always writes a step summary.
+and runs one headless pi. The Review step records the result instead of deciding
+it: a recovery step retries a validated review or recovers the final assistant
+text, a conclude step decides between success, a recovered warning, the
+provider-failure policy, and a real failure, and a report step edits the one
+failure comment. The step summary and the uploaded transcript always exist, so a
+failure is explainable from the run itself.
 
 Three choices in that job are deliberate:
 
@@ -384,7 +445,7 @@ The runner activates when `PI_REVIEW=1`. It reads:
 | `PI_REVIEW` | `1` turns the extension into the review harness |
 | `PR_NUMBER` | pull request to review (else the workflow should pass one) |
 | `PI_REVIEW_DRY_RUN` | `1` validates and writes an artifact instead of posting |
-| `PI_REVIEW_OUTPUT` | path for the JSON artifact (`review`, `markdown`, `url`) |
+| `PI_REVIEW_OUTPUT` | path for the JSON artifact (`review`, `markdown`, `url`, `errorKind`, `recovered`) |
 | `PI_REVIEW_REQUEST_CHANGES` | `1` allows `REQUEST_CHANGES` (default `COMMENT`) |
 | `PI_REVIEW_BASE_REF` | base ref override for the local git fallback |
 | `GH_TOKEN` | used by `gh pr view`, `gh pr diff`, and `gh api` when posting |
@@ -404,9 +465,11 @@ pi -p --mode json --no-session --offline -na -nc \
 ```
 
 The extension loads the PR, injects the review context, and the agent finishes
-by calling `submit_review`. A run that finishes without it leaves an
-`incomplete` artifact so the workflow can report the failure instead of ending
-silently.
+by calling `submit_review`. A run that finishes without it gets one explicit
+continuation asking for `submit_review`; if that also ends in prose, the runner
+writes an `incomplete` artifact with the failure kind and recovers a substantive
+final answer as a `COMMENT` review. Provider errors, aborts, and output-limit
+stops are never recovered into a review.
 
 ## Security defaults
 
@@ -420,7 +483,10 @@ silently.
 - The review key should be a dedicated, revocable key per repository — never a
   developer key.
 - `bash` is opt-in; the runner is the security boundary because pi does not
-  sandbox tools.
+  sandbox tools. The transcript artifact keeps the whole model stream for seven
+  days, so a command that prints its environment can put the provider key there;
+  keep the key dedicated and revocable, and leave `bash` off when a review does
+  not need it.
 - The provider key is minted as a dedicated, revocable key per repository. It
   is written only to the repository secret, never to the settings file, a log,
   or the terminal (the paste path is the exception: the key is visible while
@@ -450,6 +516,7 @@ detect.ts   git remote → owner/repo, branch, base ref, gh auth, PR lookup
 context.ts  PR or local diff, metadata, base-branch guidance
 diff.ts     unified-diff parsing + inline position validation
 review.ts   submission validation, summary folding, markdown rendering
+failure.ts  classify a run that ended without submit_review; recovery helpers
 submit.ts   submit_review tool + gh api posting
 prompt.ts   system instructions + fenced PR context
 runner.ts   CI wiring (PI_REVIEW=1)

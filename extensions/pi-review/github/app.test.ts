@@ -37,9 +37,17 @@ describe("exchangeManifestCode", () => {
 			body: JSON.stringify({ id: 1234, slug: "pi-review-x", name: "Pi Review", pem }),
 		});
 		const app = await exchangeManifestCode("CODE", { fetch: fetchImpl });
-		expect(app).toEqual({ id: 1234, slug: "pi-review-x", name: "Pi Review", pem });
+		expect(app).toEqual({ id: 1234, clientId: "1234", slug: "pi-review-x", name: "Pi Review", pem });
 		expect(fetchImpl.calls[0]!.url).toBe("https://api.github.com/app-manifests/CODE/conversions");
 		expect((fetchImpl.calls[0]!.init as { method?: string }).method).toBe("POST");
+	});
+
+	it("prefers the client ID GitHub returns", async () => {
+		const fetchImpl = fakeFetch({
+			body: JSON.stringify({ id: 1234, client_id: "Iv23abcdef", slug: "pi-review-x", name: "Pi Review", pem }),
+		});
+		const app = await exchangeManifestCode("CODE", { fetch: fetchImpl });
+		expect(app.clientId).toBe("Iv23abcdef");
 	});
 
 	it("surfaces GitHub's rejection", async () => {
@@ -98,6 +106,14 @@ describe("fetchAppInfo", () => {
 		expect((fetchImpl.calls[0]!.init as { headers?: Record<string, string> }).headers?.Authorization).toBe(
 			"Bearer JWT"
 		);
+	});
+
+	it("reads the client ID when present", async () => {
+		const fetchImpl = fakeFetch({
+			body: JSON.stringify({ id: 1234, client_id: "Iv23abcdef", slug: "pi-review-x" }),
+		});
+		const info = await fetchAppInfo("JWT", { fetch: fetchImpl });
+		expect(info.clientId).toBe("Iv23abcdef");
 	});
 
 	it("treats a 401 as bad credentials", async () => {

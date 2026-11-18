@@ -8,13 +8,21 @@
  * serves `/pi-review run` locally.
  */
 
-import { access, writeFile } from "node:fs/promises";
+import { access, mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadGuidance, loadReviewTarget } from "./context.ts";
 import type { Exec } from "./detect.ts";
 import { type ParsedDiff, parseDiff } from "./diff.ts";
+import {
+	assistantText,
+	classifySettlement,
+	isSubstantiveReview,
+	recoverySummary,
+} from "./failure.ts";
 import { buildReviewPrompt } from "./prompt.ts";
-import type { ValidatedReview } from "./review.ts";
+import { type ValidatedReview, renderReviewMarkdown } from "./review.ts";
 import { createSubmitReviewTool, postReview, upsertStickyComment } from "./submit.ts";
 import {
 	type ReviewThread,
@@ -24,6 +32,10 @@ import {
 } from "./github/threads.ts";
 
 export const REVIEW_ENV = "PI_REVIEW";
+
+/** One explicit second turn for a model that ended the review in prose (#44). */
+export const NUDGE_MESSAGE =
+	"You have not called submit_review, so nothing has reached GitHub. Call submit_review now with the findings you already have. Do not answer in prose; do not re-review the code. If nothing is worth flagging, submit a short summary saying the change looks sound.";
 
 export function isReviewRunner(env: Record<string, string | undefined> = process.env): boolean {
 	return env[REVIEW_ENV] === "1";
@@ -67,6 +79,17 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 	// `before_agent_start` runs again for a retry or recovery; the injected
 	// message is already in the transcript, so only the system prompt repeats.
 	let injectedContext = false;
+	// The final assistant message is the only record of how the run ended. A
+	// provider error and a model that finished in prose both leave no artifact,
+	// and they must not be reported as the same thing (issue #27).
+	let lastAssistant: AssistantMessage | undefined;
+	// A nudge can produce a short "I already answered" turn after a substantive
+	// review. Keep the last answer worth posting, not merely the last message.
+	let lastSubstantiveText = "";
+	let submitted = false;
+	let submittedReview: ValidatedReview | undefined;
+	// One nudge per process; the continuation itself can settle again.
+	let nudged = false;
 
 	const load = (): Promise<LoadedReview> => {
 		loaded ??= (async () => {
@@ -158,6 +181,11 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 			maxComments,
 			outputPath,
 			post,
+			onSubmitted: (review) => {
+				submitted = true;
+				submittedReview = review;
+			},
+			extraDetails: () => (nudged ? { nudged: true } : {}),
 			renderMeta: async () => {
 				const { target } = await load();
 				return {
@@ -170,6 +198,45 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 			},
 		})
 	);
+
+	// `message_end` is the authoritative final message, so this survives retries,
+	// compaction recovery, and the nudge below.
+	pi.on("message_end", (event) => {
+		if (event.message.role !== "assistant") return;
+		lastAssistant = event.message;
+		if (event.message.stopReason !== "stop") return;
+		const text = assistantText(event.message);
+		if (isSubstantiveReview(text)) lastSubstantiveText = text;
+	});
+
+	// A model that ends a long review in prose has not submitted anything. One
+	// explicit continuation is cheaper and more reliable than a second process:
+	// the findings are already in context, and the same tool set is active.
+	pi.on("agent_before_settle", (event) => {
+		if (nudged || submitted) return;
+		if (event.outcome !== "completed") return;
+		// Only a normal prose ending is drift. An error, abort, or output-length
+		// stop has its own classification and cannot be fixed by a nudge.
+		if (lastAssistant && lastAssistant.stopReason !== "stop") return;
+		// Do not guard on `event.context.canContinue`: pi builds it from the
+		// entries proposed *before* this handler, so it is false for a prose
+		// ending. The `custom_message` returned below becomes a user-role
+		// message, and pi recomputes `finalContext.canContinue` after committing
+		// it, which makes the requested continuation valid.
+		nudged = true;
+		return {
+			entries: [
+				...event.entries,
+				{
+					type: "custom_message" as const,
+					customType: "pi-review-nudge",
+					content: NUDGE_MESSAGE,
+					display: false,
+				},
+			],
+			continue: true,
+		};
+	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		cwd = ctx.cwd;
@@ -219,33 +286,115 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 		};
 	});
 
-	// A run that never called submit_review leaves no artifact. Write one so the
-	// workflow can tell "failed" from "posted nothing" without parsing logs.
+	const writeRunnerArtifact = async (details: Record<string, unknown>): Promise<void> => {
+		if (!outputPath) return;
+		await mkdir(dirname(outputPath), { recursive: true });
+		await writeFile(outputPath, JSON.stringify(details, null, 2), "utf8");
+	};
+
+	// A run that never called submit_review leaves no artifact. Classify why,
+	// then recover a substantive prose review as a COMMENT instead of losing it
+	// (#27, #43). The artifact keeps `incomplete: true` so the run still says the
+	// model drifted; `recovered` and `url` tell the workflow the review posted.
 	pi.on("agent_settled", async () => {
 		if (!outputPath) return;
 		try {
 			await access(outputPath);
+			return;
 		} catch {
-			const { target } = await load();
-			await writeFile(
-				outputPath,
-				JSON.stringify(
-					{
-						dryRun,
-						incomplete: true,
-						error: "The review agent finished without submitting a review.",
-						target: {
-							repo: target.repo,
-							number: target.number,
-							baseRef: target.baseRef,
-							headSha: target.headSha,
-						},
-					},
-					null,
-					2
-				),
-				"utf8"
-			);
+			// No artifact: this run never reached submit_review.
+		}
+
+		const { target } = await load();
+		const targetSummary = {
+			repo: target.repo,
+			number: target.number,
+			baseRef: target.baseRef,
+			headSha: target.headSha,
+		};
+
+		if (submitted) {
+			// The review is already on GitHub. A failed artifact write must not
+			// turn a posted review into a red check, and the workflow must not
+			// retry it and post a duplicate.
+			await writeRunnerArtifact({
+				dryRun,
+				...(dryRun
+					? { incomplete: true, errorKind: "no-artifact" }
+					: { submitted: true }),
+				...(submittedReview ? { review: submittedReview } : {}),
+				error: dryRun
+					? "the dry-run review was validated but its artifact was not written"
+					: "the review posted but its artifact was not written",
+				target: targetSummary,
+			});
+			return;
+		}
+
+		const classification = classifySettlement(lastAssistant);
+		const base = {
+			dryRun,
+			incomplete: true,
+			errorKind: classification.kind,
+			error: classification.detail,
+			retryable: classification.retryable,
+			target: targetSummary,
+		};
+
+		// A provider error, abort, or output limit is not a model that forgot to
+		// submit. Never turn one into a review comment or a recovered summary.
+		if (classification.kind !== "incomplete") {
+			await writeRunnerArtifact(base);
+			return;
+		}
+
+		const text = lastSubstantiveText || assistantText(lastAssistant);
+		if (!isSubstantiveReview(text)) {
+			await writeRunnerArtifact({
+				...base,
+				error: `${classification.detail}; there was no substantive final answer to recover`,
+			});
+			return;
+		}
+
+		const review: ValidatedReview = {
+			event: "COMMENT",
+			summary: recoverySummary(text),
+			comments: [],
+			dropped: [],
+		};
+		const markdown = renderReviewMarkdown(review, {
+			repo: target.repo,
+			number: target.number,
+			baseRef: target.baseRef,
+			headSha: target.headSha,
+			model: env.PI_MODEL,
+		});
+		const recovered = {
+			...base,
+			recovered: true,
+			review,
+			markdown,
+			error: "the run ended without calling submit_review; its final answer was recovered as a COMMENT review",
+		};
+		// Write the review before the network call: if the process is killed
+		// mid-post, the workflow can retry from this artifact.
+		await writeRunnerArtifact(recovered);
+		if (!post) return;
+		try {
+			const result = await post(review);
+			await writeRunnerArtifact({
+				...recovered,
+				url: result.url,
+				error: "the run ended without calling submit_review; its final answer was posted as a COMMENT review",
+			});
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			await writeRunnerArtifact({
+				...recovered,
+				errorKind: "post",
+				error: `recovery could not post the final answer: ${message}`,
+			});
 		}
 	});
 }

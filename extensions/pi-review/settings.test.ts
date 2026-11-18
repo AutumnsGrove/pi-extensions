@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	DEFAULT_MAX_INLINE_COMMENTS,
+	DEFAULT_RETRY,
 	DEFAULT_TIMEOUT_MINUTES,
 	defaultSettings,
 	parseSettings,
@@ -22,7 +23,12 @@ describe("defaultSettings", () => {
 			model: "deepseek-v4.1-flash",
 			thinking: "medium",
 			tools: { bash: false },
-			review: { event: "COMMENT", maxInlineComments: DEFAULT_MAX_INLINE_COMMENTS },
+			review: {
+				event: "COMMENT",
+				maxInlineComments: DEFAULT_MAX_INLINE_COMMENTS,
+				retry: DEFAULT_RETRY,
+				onProviderFailure: "fail",
+			},
 			timeoutMinutes: DEFAULT_TIMEOUT_MINUTES,
 			pi: { version: "1.5.0" },
 		});
@@ -60,6 +66,30 @@ describe("parseSettings", () => {
 	it("parses resolveStaleThreads", () => {
 		expect(parseSettings({ review: { resolveStaleThreads: true } }).review.resolveStaleThreads).toBe(true);
 		expect(parseSettings({}).review.resolveStaleThreads).toBe(false);
+	});
+
+	it("parses the retry budget and clamps it", () => {
+		const parsed = parseSettings({
+			review: {
+				retry: { maxRetries: 4, baseDelayMs: 3_000, maxDelayMs: 2_000, providerMaxRetries: 9 },
+			},
+		});
+		expect(parsed.review.retry).toEqual({
+			maxRetries: 4,
+			baseDelayMs: 3_000,
+			maxDelayMs: 3_000,
+			providerMaxRetries: 5,
+		});
+		expect(parseSettings({ review: { retry: { maxRetries: 99 } } }).review.retry.maxRetries).toBe(10);
+		expect(parseSettings({ review: { retry: { maxRetries: -1 } } }).review.retry.maxRetries).toBe(0);
+	});
+
+	it("parses the provider failure mode and rejects an unknown one", () => {
+		expect(parseSettings({ review: { onProviderFailure: "warn" } }).review.onProviderFailure).toBe("warn");
+		expect(parseSettings({}).review.onProviderFailure).toBe("fail");
+		expect(() => parseSettings({ review: { onProviderFailure: "skip" } })).toThrow(
+			"Invalid provider failure mode"
+		);
 	});
 
 	it("parses the verify setting and its command override", () => {

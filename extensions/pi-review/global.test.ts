@@ -20,11 +20,21 @@ describe("App cache", () => {
 	it("round-trips entries by lowercased owner", async () => {
 		const dir = await tempDir();
 		const cachePath = join(dir, "pi-review.json");
-		await saveCachedApp("AutumnsGrove", { appId: 1, slug: "pi-review-a", keyPath: "/k.pem" }, { cachePath });
+		await saveCachedApp(
+			"AutumnsGrove",
+			{ appId: 1, clientId: "Iv23a", slug: "pi-review-a", keyPath: "/k.pem" },
+			{ cachePath }
+		);
 		await saveCachedApp("acme", { appId: 2, slug: "pi-review-b", keyPath: "/b.pem" }, { cachePath });
 		const cache = await loadAppCache({ cachePath });
-		expect(cache.autumnsgrove).toEqual({ appId: 1, slug: "pi-review-a", keyPath: "/k.pem" });
+		expect(cache.autumnsgrove).toEqual({
+			appId: 1,
+			clientId: "Iv23a",
+			slug: "pi-review-a",
+			keyPath: "/k.pem",
+		});
 		expect(cachedAppFor(cache, "ACME")?.appId).toBe(2);
+		expect(cachedAppFor(cache, "ACME")?.clientId).toBeUndefined();
 		const mode = (await stat(cachePath)).mode & 0o777;
 		expect(mode).toBe(0o600);
 	});

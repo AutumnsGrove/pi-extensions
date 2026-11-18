@@ -10,6 +10,14 @@
 import type { RepoRef } from "../detect.ts";
 import type { CommandRunner } from "./exec.ts";
 
+/**
+ * The App identity the workflow passes as `client-id`.
+ *
+ * GitHub recommends the client ID (a string such as `Iv23…`) and accepts the
+ * numeric App ID as the JWT issuer too. The secret kept its historical name so
+ * an installed repository needs no change; a re-run of `/pi-review install`
+ * writes the client ID.
+ */
 export const APP_ID_SECRET = "PI_REVIEW_APP_ID";
 export const APP_KEY_SECRET = "PI_REVIEW_APP_PRIVATE_KEY";
 /** Non-secret App slug, so a re-run can find the App without reading secrets. */

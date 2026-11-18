@@ -105,13 +105,17 @@ describe("the reusable workflow", () => {
 	});
 
 	it("names the repository in every gh call that may run without a checkout", () => {
-		const withoutCheckout = ["Require a same-repo pull request", "Report an incomplete review"];
-		for (const name of withoutCheckout) {
-			const ghLines = (step(name).run ?? "").split("\n").filter((line) => /\bgh pr\b/.test(line));
-			expect(ghLines.length).toBeGreaterThan(0);
-			for (const line of ghLines) {
-				expect(line).toContain("--repo");
-			}
+		const guardLines = (step("Require a same-repo pull request").run ?? "")
+			.split("\n")
+			.filter((line) => /\bgh pr\b/.test(line));
+		expect(guardLines.length).toBeGreaterThan(0);
+		for (const line of guardLines) expect(line).toContain("--repo");
+		// The recovery and failure-comment steps use the REST API, which needs
+		// the repository named explicitly when the checkout was skipped.
+		for (const name of ["Recover the review", "Report an incomplete review"]) {
+			const apiLines = (step(name).run ?? "").split("\n").filter((line) => /\bgh api\b/.test(line));
+			expect(apiLines.length).toBeGreaterThan(0);
+			for (const line of apiLines) expect(line).toContain("$GITHUB_REPOSITORY");
 		}
 	});
 
@@ -120,6 +124,11 @@ describe("the reusable workflow", () => {
 			"${{ secrets.PI_REVIEW_APP_ID != '' && secrets.PI_REVIEW_APP_PRIVATE_KEY != '' }}"
 		);
 		expect(step("Mint the App token").if).toBe("env.PI_REVIEW_APP_CONFIGURED == 'true'");
+		const mint = step("Mint the App token");
+		expect(mint.with?.["client-id"]).toBe("${{ secrets.PI_REVIEW_APP_ID }}");
+		expect(mint.with?.["app-id"]).toBeUndefined();
+		expect(mint.with?.["permission-pull-requests"]).toBe("write");
+		expect(mint.with?.["permission-issues"]).toBe("write");
 		expect(step("Review").env?.GH_TOKEN).toBe(
 			"${{ steps.app-token.outputs.token || github.token }}"
 		);
@@ -128,8 +137,17 @@ describe("the reusable workflow", () => {
 	it("reads the caller's settings at run time", () => {
 		const settings = step("Read the settings");
 		expect(settings.run).toContain("$PI_REVIEW_SETTINGS");
-		for (const key of ["tools", "provider", "model", "thinking", "review.event", "pi.version"]) {
-			expect(text).toContain(`.${key}`.replace(".review.event", ".review.event"));
+		for (const key of [
+			"tools",
+			"provider",
+			"model",
+			"thinking",
+			"review.event",
+			"review.retry",
+			"review.onProviderFailure",
+			"pi.version",
+		]) {
+			expect(text).toContain(`.${key}`);
 		}
 		expect(step("Install pi and dependencies").run).toContain("jq -er '.pi.version'");
 		expect(step("Check the settings file").run).toContain("not valid JSON");
@@ -160,7 +178,10 @@ describe("the reusable workflow", () => {
 		expect(uses).toContain("actions/checkout@v7");
 		expect(uses).toContain("actions/setup-node@v7");
 		expect(uses).toContain("actions/create-github-app-token@v3");
-		expect(uses).toContain("actions/cache@v4");
+		// Node 20 is deprecated on the runner; these majors target Node 24.
+		expect(uses).toContain("actions/cache@v6");
+		expect(uses).toContain("actions/upload-artifact@v7");
+		expect(uses).not.toContain("actions/cache@v4");
 	});
 
 	it("restores the pi install and the package stores without a caller change", () => {
@@ -208,16 +229,71 @@ describe("the reusable workflow", () => {
 		}
 	});
 
-	it("runs one headless review and reports an incomplete one", () => {
+	it("runs one headless review without deciding the outcome in that step", () => {
 		const review = step("Review");
 		expect(review.run).toContain("--tools \"$PI_REVIEW_TOOLS\"");
 		expect(review.run).toContain("--thinking \"$PI_REVIEW_THINKING\"");
 		expect(review.run).toContain('"Review pull request #$PR_NUMBER."');
-		expect(review.run).toContain("wrote no review artifact");
-		expect(review.run).toContain("finished without submitting a review");
+		expect(review.run).toContain('status=${PIPESTATUS[0]}');
+		expect(review.run).toContain("PI_PI_EXIT=$status");
+		expect(review.run).toContain("run-meta.json");
 		expect(review.env?.PI_REVIEW_REQUEST).toBe("${{ github.event.comment.body }}");
-		expect(step("Step summary").if).toBe("always()");
-		expect(step("Report an incomplete review").if).toBe("failure()");
+		expect(review.env?.PI_CODING_AGENT_DIR).toBe("${{ runner.temp }}/pi-review/agent");
+	});
+
+	it("writes a patient retry policy into a throwaway agent directory", () => {
+		const settings = step("Read the settings");
+		expect(settings.run).toContain('agent_dir="$RUNNER_TEMP/pi-review/agent"');
+		expect(settings.run).toContain("maxAgentDelayMs");
+		expect(settings.run).toContain("providerMaxRetries");
+		expect(settings.run).toContain("maxRetryDelayMs");
+		// The agent directory is a fresh settings file, not the caller's or the
+		// runner user's, so no unrelated global setting can change a review.
+		expect(settings.run).toContain("> \"$agent_dir/settings.json\"");
+	});
+
+	it("recovers a validated review, then a substantive prose answer", () => {
+		const recover = step("Recover the review");
+		expect(recover.if).toBe("always()");
+		expect(recover.run).toContain(".review != null");
+		expect(recover.run).toContain("recovery-full.json");
+		expect(recover.run).toContain("recovery-summary.json");
+		expect(recover.run).toContain("message_end");
+		expect(recover.run).toContain("-ge 400");
+		expect(recover.run).toContain("Submitted by recovery");
+		// A provider error is not a prose review and never becomes a comment.
+		expect(recover.run).toContain("provider|aborted|budget");
+	});
+
+	it("concludes once, with a distinct provider warning", () => {
+		const conclude = step("Conclude the review");
+		expect(conclude.if).toBe("always()");
+		expect(conclude.run).toContain("PI_REVIEW_ON_PROVIDER_FAILURE");
+		expect(conclude.run).toContain("provider-warn");
+		expect(conclude.run).toContain("::error::pi-review could not post a review");
+		expect(conclude.run).toContain("$GITHUB_STEP_SUMMARY");
+	});
+
+	it("edits one failure comment in place with the workflow token", () => {
+		const report = step("Report an incomplete review");
+		expect(report.if).toBe("always()");
+		expect(report.env?.GH_TOKEN).toBe("${{ github.token }}");
+		expect(report.run).toContain("<!-- pi-review:failed -->");
+		expect(report.run).toContain("github-actions[bot]");
+		expect(report.run).toContain("--method PATCH");
+		expect(report.run).toContain("actions/runs/${GITHUB_RUN_ID}");
+	});
+
+	it("uploads the transcript and the resolved run state", () => {
+		const upload = step("Upload the review transcript");
+		expect(upload.if).toBe("always()");
+		expect(upload.uses).toBe("actions/upload-artifact@v7");
+		expect(upload.with?.["if-no-files-found"]).toBe("warn");
+		expect(String(upload.with?.path)).toContain("events.jsonl");
+		expect(String(upload.with?.path)).toContain("run-meta.json");
+		expect(String(upload.with?.path)).toContain("conclusion.json");
+		// Never upload the installed pi prefix; it is large and not the transcript.
+		expect(String(upload.with?.path)).not.toContain("pi-review/pi");
 	});
 
 	it("names the file the callers point at", () => {

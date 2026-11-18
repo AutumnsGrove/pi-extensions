@@ -152,6 +152,8 @@ export interface InstallOptions {
 
 export interface AppIdentity {
 	id: number;
+	/** The value the workflow passes as `client-id`. */
+	clientId?: string;
 	slug: string;
 	name: string;
 }
@@ -412,7 +414,11 @@ async function tryCachedApp(
 	try {
 		await setRepoSecret({ run: commandRunner, repo, cwd, name: APP_KEY_SECRET, value: pem });
 		changed.push(APP_KEY_SECRET);
-		await setRepoSecret({ run: commandRunner, repo, cwd, name: APP_ID_SECRET, value: String(entry.appId) });
+		// The workflow wants the client ID (`client-id`). A cache written by an
+		// older install may only have the numeric App ID, which GitHub still
+		// accepts as the JWT issuer.
+		const clientId = info.clientId ?? entry.clientId ?? String(entry.appId);
+		await setRepoSecret({ run: commandRunner, repo, cwd, name: APP_ID_SECRET, value: clientId });
 		changed.push(APP_ID_SECRET);
 		await setRepoVariable({ run: commandRunner, repo, cwd, name: APP_SLUG_VARIABLE, value: info.slug });
 		changed.push(APP_SLUG_VARIABLE);
@@ -541,7 +547,13 @@ async function resolveIdentity(options: InstallOptions, state: Preflight): Promi
 		try {
 			await setRepoSecret({ run: commandRunner, repo, cwd, name: APP_KEY_SECRET, value: pem });
 			changed.push(APP_KEY_SECRET);
-			await setRepoSecret({ run: commandRunner, repo, cwd, name: APP_ID_SECRET, value: String(appId) });
+			await setRepoSecret({
+				run: commandRunner,
+				repo,
+				cwd,
+				name: APP_ID_SECRET,
+				value: info.clientId ?? String(appId),
+			});
 			changed.push(APP_ID_SECRET);
 			await setRepoVariable({ run: commandRunner, repo, cwd, name: APP_SLUG_VARIABLE, value: info.slug });
 			changed.push(APP_SLUG_VARIABLE);
@@ -553,7 +565,16 @@ async function resolveIdentity(options: InstallOptions, state: Preflight): Promi
 		}
 
 		try {
-			await saveCachedApp(repo.owner, { appId, slug: info.slug, keyPath: resolvedPath }, cachePaths);
+			await saveCachedApp(
+				repo.owner,
+				{
+					appId,
+					...(info.clientId ? { clientId: info.clientId } : {}),
+					slug: info.slug,
+					keyPath: resolvedPath,
+				},
+				cachePaths
+			);
 		} catch (error) {
 			ui.notify(
 				`Could not cache the App for other repositories: ${error instanceof Error ? error.message : String(error)}`,
@@ -678,7 +699,7 @@ async function resolveIdentity(options: InstallOptions, state: Preflight): Promi
 		// it before the key it belongs to is stored.
 		await setRepoSecret({ run: commandRunner, repo, cwd, name: APP_KEY_SECRET, value: app.pem });
 		changed.push(APP_KEY_SECRET);
-		await setRepoSecret({ run: commandRunner, repo, cwd, name: APP_ID_SECRET, value: String(app.id) });
+		await setRepoSecret({ run: commandRunner, repo, cwd, name: APP_ID_SECRET, value: app.clientId });
 		changed.push(APP_ID_SECRET);
 		if (app.slug) {
 			await setRepoVariable({ run: commandRunner, repo, cwd, name: APP_SLUG_VARIABLE, value: app.slug });
@@ -696,7 +717,7 @@ async function resolveIdentity(options: InstallOptions, state: Preflight): Promi
 			const keyPath = await saveAppKey(repo.owner, app.pem, cachePaths);
 			await saveCachedApp(
 				repo.owner,
-				{ appId: app.id, slug: app.slug, keyPath },
+				{ appId: app.id, clientId: app.clientId, slug: app.slug, keyPath },
 				cachePaths
 			);
 			ui.notify(
@@ -741,7 +762,7 @@ async function resolveIdentity(options: InstallOptions, state: Preflight): Promi
 		status: "created",
 		identity: "app",
 		repo,
-		app: { id: app.id, slug: app.slug, name: app.name },
+		app: { id: app.id, clientId: app.clientId, slug: app.slug, name: app.name },
 		installed,
 		changed,
 	};

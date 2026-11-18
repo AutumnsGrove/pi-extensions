@@ -389,6 +389,201 @@ new file mode 100644
 		await events.get("agent_settled")!({}, { cwd: "/repo" });
 		const artifact = JSON.parse(await readFile(path, "utf8"));
 		expect(artifact.incomplete).toBe(true);
-		expect(artifact.error).toContain("without submitting");
+		expect(artifact.errorKind).toBe("incomplete");
+		expect(artifact.error).toContain("no substantive final answer");
+	});
+
+	it("nudges a prose ending once, then stops", async () => {
+		const { pi, events } = fakePi(fakeExec());
+		registerReviewRunner(pi, { env: { PI_REVIEW: "1", PR_NUMBER: "5" } });
+		events.get("message_end")!(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "stop",
+					content: [{ type: "text", text: "The change looks sound." }],
+				},
+			},
+			{ cwd: "/repo" }
+		);
+		// pi computes this from the entries proposed *before* the handler, so a
+		// prose ending has canContinue: false even though the nudge is valid.
+		const settle = { outcome: "completed", entries: [], continue: false, context: { canContinue: false } };
+		const first = (await events.get("agent_before_settle")!(settle, { cwd: "/repo" })) as {
+			continue: boolean;
+			entries: { type: string; customType?: string; content?: string }[];
+		};
+		expect(first.continue).toBe(true);
+		expect(first.entries.at(-1)).toMatchObject({
+			type: "custom_message",
+			customType: "pi-review-nudge",
+		});
+		expect(first.entries.at(-1)?.content).toContain("Call submit_review");
+
+		const second = await events.get("agent_before_settle")!(settle, { cwd: "/repo" });
+		expect(second).toBeUndefined();
+	});
+
+	it("records a nudge in the artifact when the model submits afterwards", async () => {
+		const path = await outputPath();
+		const { pi, tools, events } = fakePi(fakeExec());
+		registerReviewRunner(pi, {
+			env: { PI_REVIEW: "1", PI_REVIEW_DRY_RUN: "1", PI_REVIEW_OUTPUT: path, PR_NUMBER: "5" },
+		});
+		await events.get("before_agent_start")!(
+			{ messageType: "user", prompt: "x", systemPrompt: "BASE" },
+			{ cwd: "/repo" }
+		);
+		events.get("message_end")!(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "stop",
+					content: [{ type: "text", text: "The review is above." }],
+				},
+			},
+			{ cwd: "/repo" }
+		);
+		await events.get("agent_before_settle")!(
+			{ outcome: "completed", entries: [], continue: false, context: { canContinue: false } },
+			{ cwd: "/repo" }
+		);
+		await executeTool(tools[0]!, { summary: "Looks fine.", comments: [] });
+		const artifact = JSON.parse(await readFile(path, "utf8"));
+		expect(artifact.nudged).toBe(true);
+		expect(artifact.review.summary).toBe("Looks fine.");
+	});
+
+	it("does not nudge a provider error or a submitted review", async () => {
+		const failed = fakePi(fakeExec());
+		registerReviewRunner(failed.pi, { env: { PI_REVIEW: "1", PR_NUMBER: "5" } });
+		failed.events.get("message_end")!(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "error",
+					errorMessage: "429 overloaded",
+					content: [],
+				},
+			},
+			{ cwd: "/repo" }
+		);
+		expect(
+			await failed.events.get("agent_before_settle")!(
+				{ outcome: "error", entries: [], continue: false, context: { canContinue: false } },
+				{ cwd: "/repo" }
+			)
+		).toBeUndefined();
+
+		const posted = fakePi(fakeExec());
+		registerReviewRunner(posted.pi, { env: { PI_REVIEW: "1", PR_NUMBER: "5" } });
+		await posted.events.get("before_agent_start")!(
+			{ messageType: "user", prompt: "x", systemPrompt: "BASE" },
+			{ cwd: "/repo" }
+		);
+		await executeTool(posted.tools[0]!, { summary: "Looks fine.", comments: [] });
+		posted.events.get("message_end")!(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "stop",
+					content: [{ type: "text", text: "Done." }],
+				},
+			},
+			{ cwd: "/repo" }
+		);
+		expect(
+			await posted.events.get("agent_before_settle")!(
+				{ outcome: "completed", entries: [], continue: false, context: { canContinue: false } },
+				{ cwd: "/repo" }
+			)
+		).toBeUndefined();
+	});
+
+	it("recovers a substantive prose answer as a COMMENT review", async () => {
+		const path = await outputPath();
+		const { pi, events } = fakePi(fakeExec());
+		registerReviewRunner(pi, {
+			env: { PI_REVIEW: "1", PI_REVIEW_OUTPUT: path, PR_NUMBER: "5" },
+		});
+		await events.get("before_agent_start")!(
+			{ messageType: "user", prompt: "x", systemPrompt: "BASE" },
+			{ cwd: "/repo" }
+		);
+		const prose = `I reviewed the change end to end. ${'The new path is covered by a test. '.repeat(15)}`;
+		events.get("message_end")!(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "stop",
+					content: [{ type: "text", text: prose }],
+				},
+			},
+			{ cwd: "/repo" }
+		);
+		// A second, shorter turn after the nudge must not replace the review.
+		events.get("message_end")!(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "stop",
+					content: [{ type: "text", text: "I already answered above." }],
+				},
+			},
+			{ cwd: "/repo" }
+		);
+		await events.get("agent_settled")!({}, { cwd: "/repo" });
+		const artifact = JSON.parse(await readFile(path, "utf8"));
+		expect(artifact).toMatchObject({
+			incomplete: true,
+			recovered: true,
+			errorKind: "incomplete",
+			url: "https://example.test/r/1",
+			review: { event: "COMMENT" },
+		});
+		expect(artifact.review.summary).toContain("Submitted by recovery");
+		expect(artifact.review.summary).toContain("The new path is covered by a test");
+	});
+
+	it("never recovers a provider error", async () => {
+		const path = await outputPath();
+		let reviewPosts = 0;
+		const base = fakeExec();
+		const exec: Exec = async (command, args, options) => {
+			if (
+				command === "gh" &&
+				args.includes("--method") &&
+				args.includes("POST") &&
+				args.some((arg) => String(arg).includes("/reviews"))
+			) {
+				reviewPosts += 1;
+			}
+			return base(command, args, options);
+		};
+		const { pi, events } = fakePi(exec);
+		registerReviewRunner(pi, {
+			env: { PI_REVIEW: "1", PI_REVIEW_OUTPUT: path, PR_NUMBER: "5" },
+		});
+		await events.get("before_agent_start")!(
+			{ messageType: "user", prompt: "x", systemPrompt: "BASE" },
+			{ cwd: "/repo" }
+		);
+		events.get("message_end")!(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "error",
+					errorMessage: "429: the inference service is overloaded",
+					content: [],
+				},
+			},
+			{ cwd: "/repo" }
+		);
+		await events.get("agent_settled")!({}, { cwd: "/repo" });
+		const artifact = JSON.parse(await readFile(path, "utf8"));
+		expect(artifact).toMatchObject({ incomplete: true, errorKind: "provider", retryable: true });
+		expect(artifact.review).toBeUndefined();
+		expect(artifact.url).toBeUndefined();
+		expect(reviewPosts).toBe(0);
 	});
 });

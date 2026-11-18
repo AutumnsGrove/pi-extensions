@@ -19,12 +19,40 @@ export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhig
 export const TRIGGER_TYPES = ["opened", "synchronize", "ready_for_review", "reopened"] as const;
 export const REVIEW_EVENTS = ["COMMENT", "REQUEST_CHANGES"] as const;
 export const STRICTNESS_LEVELS = ["significant", "balanced", "thorough"] as const;
+export const PROVIDER_FAILURE_MODES = ["fail", "warn"] as const;
 
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export type TriggerType = (typeof TRIGGER_TYPES)[number];
 export type ReviewEvent = (typeof REVIEW_EVENTS)[number];
 export type ReviewStrictness = (typeof STRICTNESS_LEVELS)[number];
+export type ProviderFailureMode = (typeof PROVIDER_FAILURE_MODES)[number];
 export type IdentityMode = "app" | "token";
+
+/**
+ * pi's own retry policy, tuned for an unattended CI review.
+ *
+ * The defaults are deliberately patient: a 429 or an overload spike is the
+ * most likely failure a reviewer sees, and a few minutes of backoff turns it
+ * into a normal review instead of a red check (#27). Provider-level retries
+ * honour `Retry-After`; agent-level retries cover a failed turn.
+ */
+export interface RetrySettings {
+	/** Agent-level attempts after the first failed turn. */
+	maxRetries: number;
+	/** First exponential-backoff delay, in milliseconds. */
+	baseDelayMs: number;
+	/** Cap on each agent-level delay, in milliseconds. */
+	maxDelayMs: number;
+	/** Provider-level attempts, which honour `Retry-After`. */
+	providerMaxRetries: number;
+}
+
+export const DEFAULT_RETRY: RetrySettings = {
+	maxRetries: 6,
+	baseDelayMs: 5_000,
+	maxDelayMs: 60_000,
+	providerMaxRetries: 2,
+};
 
 export interface ReviewSettings {
 	version: 1;
@@ -55,6 +83,10 @@ export interface ReviewSettings {
 		strictness: ReviewStrictness;
 		/** Let a follow-up resolve its own threads when it verifies they are fixed. */
 		resolveStaleThreads: boolean;
+		/** pi's retry budget for provider and agent failures. */
+		retry: RetrySettings;
+		/** A provider outage after retries: a red check, or a green warning. */
+		onProviderFailure: ProviderFailureMode;
 	};
 	paths: { include: string[]; exclude: string[] };
 	pi: { version: string };
@@ -96,6 +128,10 @@ export function defaultSettings(overrides: SettingsDefaults = {}): ReviewSetting
 			maxInlineComments: DEFAULT_MAX_INLINE_COMMENTS,
 			strictness: "significant",
 			resolveStaleThreads: false,
+			retry: { ...DEFAULT_RETRY },
+			// Safer default: a check that silently passes without a review can
+			// let a PR merge unreviewed. `warn` is available for flaky providers.
+			onProviderFailure: "fail",
 		},
 		paths: { include: [], exclude: [] },
 		pi: {
@@ -122,6 +158,22 @@ function stringList(value: unknown, fallback: string[]): string[] {
 	return value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
 }
 
+function clampedNumber(value: unknown, fallback: number, min: number, max: number): number {
+	const number = Number(value);
+	if (!Number.isFinite(number)) return fallback;
+	return Math.max(min, Math.min(max, Math.trunc(number)));
+}
+
+function retrySettings(value: Record<string, unknown>, fallback: RetrySettings): RetrySettings {
+	const baseDelayMs = clampedNumber(value.baseDelayMs, fallback.baseDelayMs, 500, 60_000);
+	return {
+		maxRetries: clampedNumber(value.maxRetries, fallback.maxRetries, 0, 10),
+		baseDelayMs,
+		maxDelayMs: Math.max(baseDelayMs, clampedNumber(value.maxDelayMs, fallback.maxDelayMs, 1_000, 300_000)),
+		providerMaxRetries: clampedNumber(value.providerMaxRetries, fallback.providerMaxRetries, 0, 5),
+	};
+}
+
 function oneOf<T extends string>(value: unknown, allowed: readonly T[], fallback: T, label: string): T {
 	if (typeof value !== "string") return fallback;
 	const match = allowed.find((option) => option === value);
@@ -142,6 +194,7 @@ export function parseSettings(value: unknown, defaults = defaultSettings()): Rev
 	const verify = isRecord(value.verify) ? value.verify : {};
 	const triggers = isRecord(value.triggers) ? value.triggers : {};
 	const review = isRecord(value.review) ? value.review : {};
+	const retry = isRecord(review.retry) ? review.retry : {};
 	const paths = isRecord(value.paths) ? value.paths : {};
 	const pi = isRecord(value.pi) ? value.pi : {};
 
@@ -189,6 +242,13 @@ export function parseSettings(value: unknown, defaults = defaultSettings()): Rev
 			resolveStaleThreads: booleanValue(
 				review.resolveStaleThreads,
 				defaults.review.resolveStaleThreads
+			),
+			retry: retrySettings(retry, defaults.review.retry),
+			onProviderFailure: oneOf(
+				review.onProviderFailure,
+				PROVIDER_FAILURE_MODES,
+				defaults.review.onProviderFailure,
+				"provider failure mode"
 			),
 			maxInlineComments:
 				Number.isFinite(maxInline)

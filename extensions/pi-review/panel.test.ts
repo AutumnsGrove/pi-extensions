@@ -88,6 +88,25 @@ describe("editSettings", () => {
 		});
 	});
 
+	it("edits the retry preset and the provider failure mode", async () => {
+		const ui = scripted({
+			select: [
+				`Retries: ${base.review.retry.maxRetries} agent · ${base.review.retry.providerMaxRetries} provider`,
+				"Patient — 10 agent retries, 10s base, 3 provider retries",
+				"Provider failure: fail (red check)",
+				"warn — green check and a comment",
+				"Save and continue",
+			],
+		});
+		const result = await editSettings(base, ui);
+		expect(result).toMatchObject({
+			review: {
+				retry: { maxRetries: 10, baseDelayMs: 10_000, maxDelayMs: 60_000, providerMaxRetries: 3 },
+				onProviderFailure: "warn",
+			},
+		});
+	});
+
 	it("warns when dependency install is chosen without bash", async () => {
 		const ui = scripted({
 			select: ["Install dependencies: no", "Save and continue"],

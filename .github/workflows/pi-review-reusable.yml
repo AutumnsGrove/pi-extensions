@@ -122,7 +122,7 @@ jobs:
       # prefix is version-checked before use, which is why `restore-keys` can
       # fall back to the settings hash alone.
       - name: Restore pi and package caches
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ${{ runner.temp }}/pi-review/pi
@@ -245,6 +245,10 @@ jobs:
       # that holds a secret. The provider key is copied into the environment
       # under the name the project chose, so the review step can use it and the
       # install step above never could.
+      #
+      # This step also writes the only settings pi itself needs: a retry budget
+      # patient enough for a 429 or an overloaded provider (#27). The agent
+      # directory is a throwaway, so no user or project settings leak in.
       - name: Read the settings
         env:
           PI_REVIEW_PROVIDER_KEY: ${{ secrets.PI_REVIEW_API_KEY }}
@@ -266,6 +270,7 @@ jobs:
             echo "PI_REVIEW_TOOLS=$tools"
             echo "PI_REVIEW_MAX_COMMENTS=$(jq -r '.review.maxInlineComments // 25' "$settings")"
             echo "PI_REVIEW_STRICTNESS=$(jq -r '.review.strictness // "significant"' "$settings")"
+            echo "PI_REVIEW_ON_PROVIDER_FAILURE=$(jq -r '.review.onProviderFailure // "fail"' "$settings")"
           } >> "$GITHUB_ENV"
           if [ "$(jq -r '.review.event // "COMMENT"' "$settings")" = "REQUEST_CHANGES" ]; then
             echo "PI_REVIEW_REQUEST_CHANGES=1" >> "$GITHUB_ENV"
@@ -282,25 +287,81 @@ jobs:
             echo "${provider_env}=${PI_REVIEW_PROVIDER_KEY}" >> "$GITHUB_ENV"
           fi
 
+          agent_dir="$RUNNER_TEMP/pi-review/agent"
+          mkdir -p "$agent_dir"
+          jq '
+            ((.review.retry? // {}) | if type == "object" then . else {} end) as $retry
+            | {
+                retry: {
+                  enabled: true,
+                  maxRetries: (if (($retry.maxRetries? | type) == "number") then $retry.maxRetries else 6 end),
+                  baseDelayMs: (if (($retry.baseDelayMs? | type) == "number") then $retry.baseDelayMs else 5000 end),
+                  maxAgentDelayMs: (if (($retry.maxDelayMs? | type) == "number") then $retry.maxDelayMs else 60000 end),
+                  provider: {
+                    maxRetries: (if (($retry.providerMaxRetries? | type) == "number") then $retry.providerMaxRetries else 2 end),
+                    maxRetryDelayMs: 60000
+                  }
+                }
+              }
+          ' "$settings" > "$agent_dir/settings.json"
+          jq -e . "$agent_dir/settings.json" > /dev/null
+
+      # `client-id` is the v3 name for the same identity input; the secret keeps
+      # its historical name and holds the client ID for a new install, or the
+      # numeric App ID an older install stored (GitHub accepts either as the JWT
+      # issuer). Re-running /pi-review install refreshes it to the client ID.
       - name: Mint the App token
         if: env.PI_REVIEW_APP_CONFIGURED == 'true'
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ secrets.PI_REVIEW_APP_ID }}
+          client-id: ${{ secrets.PI_REVIEW_APP_ID }}
           private-key: ${{ secrets.PI_REVIEW_APP_PRIVATE_KEY }}
+          # Narrow the installation token to exactly what a review uses. The
+          # App manifest already requests these; naming them here fails loudly
+          # if an App is ever installed with less, instead of a review that
+          # cannot post.
+          permission-contents: read
+          permission-pull-requests: write
+          permission-issues: write
 
+      # The step never decides the outcome. It records the exit code and the
+      # shape of the stream, then the recovery and conclude steps decide, so a
+      # timeout, a provider failure, and a prose ending are reported differently
+      # and a recovered review can still post.
       - name: Review
+        id: review
         timeout-minutes: ${{ inputs.review-timeout-minutes }}
         env:
           PI_REVIEW_OUTPUT: ${{ runner.temp }}/pi-review/review.json
+          PI_REVIEW_EVENTS: ${{ runner.temp }}/pi-review/events.jsonl
           PI_REVIEW: "1"
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           PI_REVIEW_REQUEST: ${{ github.event.comment.body }}
+          PI_CODING_AGENT_DIR: ${{ runner.temp }}/pi-review/agent
         run: |
-          set -euo pipefail
-          mkdir -p "$(dirname "$PI_REVIEW_OUTPUT")"
+          set -uo pipefail
+          work="$RUNNER_TEMP/pi-review"
+          mkdir -p "$work"
+          # Metadata is diagnostic; never let it stop the review.
+          if ! jq -n \
+            --arg repo "$GITHUB_REPOSITORY" \
+            --arg pr "$PR_NUMBER" \
+            --arg provider "$PI_REVIEW_PROVIDER" \
+            --arg model "$PI_REVIEW_MODEL" \
+            --arg thinking "$PI_REVIEW_THINKING" \
+            --arg tools "$PI_REVIEW_TOOLS" \
+            --arg workflowSha "${{ job.workflow_sha }}" \
+            --arg event "$GITHUB_EVENT_NAME" \
+            --arg startedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --slurpfile agent "$PI_CODING_AGENT_DIR/settings.json" \
+            '{repo:$repo, pullRequest:($pr|tonumber? // $pr), provider:$provider, model:$model, thinking:$thinking, tools:($tools|split(",")), retry:($agent[0].retry // {}), workflowSha:$workflowSha, event:$event, startedAt:$startedAt}' \
+            > "$work/run-meta.json"; then
+            echo "::warning::Could not write the run metadata."
+            echo '{"note":"run metadata unavailable"}' > "$work/run-meta.json"
+          fi
+
           args=(
             -p
             --mode json
@@ -323,42 +384,346 @@ jobs:
             args+=(--model "$PI_REVIEW_MODEL")
           fi
           args+=(--thinking "$PI_REVIEW_THINKING")
-          pi "${args[@]}" "Review pull request #$PR_NUMBER." \
-            | tee "$RUNNER_TEMP/pi-review/events.jsonl"
-          if [ ! -f "$PI_REVIEW_OUTPUT" ]; then
-            echo "::error::pi-review wrote no review artifact"
-            exit 1
-          fi
-          if grep -q '"incomplete": true' "$PI_REVIEW_OUTPUT"; then
-            echo "::error::pi-review finished without submitting a review"
-            exit 1
-          fi
 
-      - name: Step summary
+          set +e
+          pi "${args[@]}" "Review pull request #$PR_NUMBER." | tee "$PI_REVIEW_EVENTS"
+          status=${PIPESTATUS[0]}
+          echo "PI_PI_EXIT=$status" >> "$GITHUB_ENV"
+
+          last_event=$(tail -n 1 "$PI_REVIEW_EVENTS" 2>/dev/null | jq -r '.type // "unknown"' 2>/dev/null || true)
+          last_stop=$(jq -Rrs '
+            split("\n")
+            | map(select(length > 0) | (fromjson? // empty))
+            | map(select(.type == "message_end" and .message.role == "assistant") | .message)
+            | last // {}
+            | (.stopReason // "none")
+          ' "$PI_REVIEW_EVENTS" 2>/dev/null || true)
+          last_error=$(jq -Rrs '
+            split("\n")
+            | map(select(length > 0) | (fromjson? // empty))
+            | map(select(.type == "message_end" and .message.role == "assistant") | .message)
+            | last // {}
+            | (.errorMessage // "")
+          ' "$PI_REVIEW_EVENTS" 2>/dev/null | tr '\n' ' ' | cut -c1-500 || true)
+          if jq --argjson exit "$status" \
+            --arg lastEvent "$last_event" \
+            --arg lastStopReason "$last_stop" \
+            --arg lastError "$last_error" \
+            '. + {piExit:$exit, lastEvent:$lastEvent, lastStopReason:$lastStopReason, lastError:$lastError}' \
+            "$work/run-meta.json" > "$work/run-meta.next"; then
+            mv "$work/run-meta.next" "$work/run-meta.json"
+          else
+            echo "::warning::Could not append the run metadata."
+            rm -f "$work/run-meta.next"
+          fi
+          exit 0
+
+      # The extension already recovers a substantive prose answer in
+      # `agent_settled`. This is the safety net for a timeout, a killed process,
+      # or a post GitHub rejected: retry the validated review, then the final
+      # assistant text, and record exactly what happened (#43).
+      - name: Recover the review
         if: always()
         env:
           PI_REVIEW_OUTPUT: ${{ runner.temp }}/pi-review/review.json
-        run: |
-          {
-            echo "## pi-review"
-            echo
-            if [ -f "$PI_REVIEW_OUTPUT" ]; then
-              jq -r '"**" + (.review.event // "incomplete") + "** · inline comments: " + (((.review.comments // []) | length) | tostring) + (if .url then " · " + .url else "" end) + (if .error then " · error: " + .error else "" end)' "$PI_REVIEW_OUTPUT" || echo "Unreadable artifact."
-            else
-              echo "No review artifact: the review did not complete."
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Report an incomplete review
-        if: failure()
-        env:
-          PI_REVIEW_OUTPUT: ${{ runner.temp }}/pi-review/review.json
+          PI_REVIEW_EVENTS: ${{ runner.temp }}/pi-review/events.jsonl
+          PI_REVIEW_RECOVERY: ${{ runner.temp }}/pi-review/recovery.json
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
         run: |
-          if [ -f "$PI_REVIEW_OUTPUT" ] && ! grep -q '"incomplete": true' "$PI_REVIEW_OUTPUT"; then
+          set -uo pipefail
+          work="$RUNNER_TEMP/pi-review"
+          artifact="$PI_REVIEW_OUTPUT"
+          events="$PI_REVIEW_EVENTS"
+          recovery="$PI_REVIEW_RECOVERY"
+          mkdir -p "$work"
+
+          write_recovery() { # recovered url reason [detail]
+            jq -n --argjson recovered "$1" --arg url "$2" --arg reason "$3" --arg detail "${4:-}" \
+              '{recovered:$recovered, url:$url, reason:$reason, detail:$detail}' > "$recovery"
+          }
+          post_review() { # payload-file
+            gh api --method POST "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews" \
+              --input "$1" --jq '.html_url' 2> "$work/recovery-error.txt"
+          }
+
+          # A normal submission needs no recovery. Validate first: a truncated
+          # artifact is a crash, not a posted review.
+          if [ -f "$artifact" ] && jq -e . "$artifact" > /dev/null 2>&1 && \
+            [ "$(jq -r '.incomplete // false' "$artifact")" != "true" ]; then
+            write_recovery false "" "review posted" ""
             exit 0
           fi
-          # Same reason as the guard: this runs even when the checkout was
-          # skipped, so `gh` cannot infer the repository.
-          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body "pi-review could not complete this review: the job failed or timed out. Fix the cause and re-run the workflow." || true
+
+          # The extension posted a recovered review before the process settled.
+          if [ -f "$artifact" ]; then
+            url=$(jq -r '.url // ""' "$artifact")
+            if [ -n "$url" ]; then
+              write_recovery true "$url" "review posted" ""
+              exit 0
+            fi
+          fi
+
+          # A validated review that never reached GitHub (a rejected post, a
+          # timeout after submit_review) is the best thing to retry.
+          if [ -f "$artifact" ] && jq -e '.review != null' "$artifact" > /dev/null 2>&1; then
+            jq '{event: (.review.event // "COMMENT"), body: (((.review.summary // "") | if length > 0 then . + "\n\n" else "" end) + "<!-- pi-review:review -->"), comments: [(.review.comments // [])[] | {path, line, side: (.side // "RIGHT"), body} + (if .start_line then {start_line} else {} end)]}' \
+              "$artifact" > "$work/recovery-full.json"
+            if url=$(post_review "$work/recovery-full.json") && [ -n "$url" ]; then
+              write_recovery true "$url" "posted the validated review" ""
+              exit 0
+            fi
+            # Inline anchors are the most likely reason GitHub rejects the whole
+            # review; the summary is still useful on its own.
+            summary=$(jq -r '.review.summary // ""' "$artifact")
+            if [ "${#summary}" -ge 40 ]; then
+              jq '{event: "COMMENT", body: ((.review.summary // "") + "\n\n<!-- pi-review:review -->"), comments: []}' \
+                "$artifact" > "$work/recovery-summary.json"
+              if url=$(post_review "$work/recovery-summary.json") && [ -n "$url" ]; then
+                write_recovery true "$url" "posted the review summary" ""
+                exit 0
+              fi
+            fi
+          fi
+
+          # A provider error, abort, or output limit is not a prose review. Do
+          # not turn one into a comment (#27).
+          artifact_kind=""
+          if [ -f "$artifact" ]; then
+            artifact_kind=$(jq -r '.errorKind // ""' "$artifact")
+          fi
+          case "$artifact_kind" in
+            provider|aborted|budget)
+              write_recovery false "" "not recoverable: $artifact_kind" ""
+              exit 0
+              ;;
+          esac
+
+          # The model ended in prose. Recover the last assistant text if it is
+          # substantive enough to stand on its own (#43).
+          text=""
+          if [ -f "$events" ]; then
+            text=$(jq -Rrs '
+              split("\n")
+              | map(select(length > 0) | (fromjson? // empty))
+              | map(select(.type == "message_end" and .message.role == "assistant") | .message)
+              | map(select((.stopReason // "") == "stop")
+                  | [.content[]? | select(.type == "text") | .text] | join("\n"))
+              | map(select(length >= 400))
+              | last // ""
+            ' "$events" 2>/dev/null || true)
+          fi
+          if [ "${#text}" -ge 400 ]; then
+            jq -n --arg text "$text" '{event: "COMMENT", body: ("<!-- pi-review:review -->\n_Submitted by recovery: the run ended without calling `submit_review`, so pi-review posted its final answer as a COMMENT review._\n\n" + $text), comments: []}' \
+              > "$work/recovery-text.json"
+            if url=$(post_review "$work/recovery-text.json") && [ -n "$url" ]; then
+              write_recovery true "$url" "posted the final assistant text" ""
+              exit 0
+            fi
+          fi
+
+          detail=""
+          if [ -f "$work/recovery-error.txt" ]; then
+            detail=$(tr '\n' ' ' < "$work/recovery-error.txt" | cut -c1-400)
+          fi
+          write_recovery false "" "nothing to recover" "$detail"
+          exit 0
+
+      # The one place the run succeeds or fails. A provider outage can be a red
+      # check (default) or a warning depending on `review.onProviderFailure`; a
+      # recovered review is a warning because a review did post. Everything else
+      # is a failure and gets the in-place comment below.
+      - name: Conclude the review
+        if: always()
+        env:
+          PI_REVIEW_OUTPUT: ${{ runner.temp }}/pi-review/review.json
+          PI_REVIEW_RECOVERY: ${{ runner.temp }}/pi-review/recovery.json
+          PI_REVIEW_CONCLUSION: ${{ runner.temp }}/pi-review/conclusion.json
+        run: |
+          set -uo pipefail
+          artifact="$PI_REVIEW_OUTPUT"
+          recovery="$PI_REVIEW_RECOVERY"
+          conclusion="$PI_REVIEW_CONCLUSION"
+          kind=""
+          detail=""
+          url=""
+          retryable=false
+          outcome=""
+          reason=""
+
+          if [ -f "$artifact" ]; then
+            if ! jq -e . "$artifact" > /dev/null 2>&1; then
+              outcome="failure"
+              kind="unreadable"
+              detail="the review artifact was not valid JSON"
+            else
+              incomplete=$(jq -r '.incomplete // false' "$artifact")
+              kind=$(jq -r '.errorKind // ""' "$artifact")
+              detail=$(jq -r '.error // ""' "$artifact")
+              url=$(jq -r '.url // ""' "$artifact")
+              retryable=$(jq -r '.retryable // false' "$artifact")
+              if [ "$incomplete" != "true" ]; then
+                outcome="success"
+                kind="submitted"
+                reason="review posted"
+              elif [ "$(jq -r '.recovered // false' "$artifact")" = "true" ] && [ -z "$url" ]; then
+                # The prose review was recovered but the post never landed; name
+                # that instead of claiming there was nothing to post.
+                kind="post"
+                detail="the recovered review was not posted"
+              fi
+            fi
+          fi
+
+          # A recovery that posted wins over a failed or unreadable artifact; it
+          # must never override a normal submission.
+          if [ "$outcome" != "success" ] && [ -f "$recovery" ] && \
+            [ "$(jq -r '.recovered // false' "$recovery")" = "true" ]; then
+            outcome="recovered"
+            kind="recovered"
+            reason=$(jq -r '.reason // "the review was recovered"' "$recovery")
+            url=$(jq -r '.url // ""' "$recovery")
+          fi
+
+          if [ -z "$outcome" ] && [ -n "$url" ]; then
+            outcome="recovered"
+            kind="recovered"
+            reason="review posted"
+          fi
+
+          if [ -z "$outcome" ] && [ -z "$kind" ]; then
+            if [ -f "$artifact" ]; then
+              kind="incomplete"
+              detail="the run ended without calling submit_review"
+            else
+              kind="no-artifact"
+              detail="no review artifact was written; the review step may have timed out or crashed"
+            fi
+          fi
+
+          if [ -z "$outcome" ] && [ "$kind" = "provider" ]; then
+            mode="${PI_REVIEW_ON_PROVIDER_FAILURE:-fail}"
+            if [ "$mode" = "warn" ]; then
+              outcome="provider-warn"
+            else
+              outcome="failure"
+            fi
+          fi
+          if [ -z "$outcome" ]; then outcome="failure"; fi
+
+          if [ -z "$reason" ]; then
+            case "$kind" in
+              provider)
+                if [ "$retryable" = "true" ]; then
+                  reason="the model provider was unavailable after retries, so no review was posted"
+                else
+                  reason="the model provider rejected the request, so no review was posted"
+                fi
+                ;;
+              incomplete) reason="the review agent ended without calling submit_review and left nothing substantial to post" ;;
+              aborted) reason="the review run was cancelled or timed out" ;;
+              budget) reason="the review hit the model's output limit before it could submit" ;;
+              post) reason="the review was validated but GitHub rejected the post" ;;
+              no-artifact) reason="the review step produced no artifact; it may have timed out or crashed" ;;
+              unreadable) reason="the review artifact was not valid JSON, so the outcome could not be read" ;;
+              recovered) reason="the run ended without calling submit_review; its final answer was posted as a COMMENT review" ;;
+              *) reason="the review did not complete" ;;
+            esac
+          fi
+          detail=$(printf '%s' "$detail" | tr '\n' ' ' | cut -c1-500 | sed 's/[[:space:]]*$//')
+
+          jq -n --arg outcome "$outcome" --arg kind "$kind" --arg reason "$reason" \
+            --arg detail "$detail" --arg url "$url" --argjson retryable "$retryable" \
+            '{outcome:$outcome, kind:$kind, reason:$reason, detail:$detail, url:$url, retryable:$retryable}' \
+            > "$conclusion"
+
+          {
+            echo "## pi-review"
+            echo
+            if [ -f "$artifact" ] && jq -e '.review != null' "$artifact" > /dev/null 2>&1; then
+              jq -r '"**" + (.review.event // "incomplete") + "** · inline comments: " + (((.review.comments // []) | length) | tostring) + (if .url then " · " + .url else "" end)' "$artifact"
+            else
+              echo "No review was posted."
+            fi
+            echo
+            echo "- outcome: \`$outcome\`"
+            echo "- reason: \`$kind\` — $reason"
+            if [ -n "$detail" ]; then echo "- detail: \`$detail\`"; fi
+            if [ -n "$url" ]; then echo "- review: $url"; fi
+            echo "- pi exit: \`${PI_PI_EXIT:-unknown}\`"
+            echo "- run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          case "$outcome" in
+            success) exit 0 ;;
+            recovered) echo "::warning::pi-review recovered the review: $reason"; exit 0 ;;
+            provider-warn) echo "::warning::pi-review could not post a review: $reason"; exit 0 ;;
+            *) echo "::error::pi-review could not post a review: $reason"; exit 1 ;;
+          esac
+
+      # One failure comment per pull request, edited in place. This uses
+      # `github.token` deliberately: a comment can only be edited by the identity
+      # that wrote it, and the workflow token is always present. Reviews still
+      # post as the App, but workflow failures are the workflow's voice (#46).
+      - name: Report an incomplete review
+        if: always()
+        env:
+          PI_REVIEW_CONCLUSION: ${{ runner.temp }}/pi-review/conclusion.json
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+        run: |
+          set -uo pipefail
+          conclusion="$PI_REVIEW_CONCLUSION"
+          [ -f "$conclusion" ] || exit 0
+          [ -n "${PR_NUMBER:-}" ] || exit 0
+          outcome=$(jq -r '.outcome // "failure"' "$conclusion")
+          case "$outcome" in
+            success|recovered) exit 0 ;;
+          esac
+          reason=$(jq -r '.reason // "the review did not complete"' "$conclusion")
+          kind=$(jq -r '.kind // "unknown"' "$conclusion")
+          detail=$(jq -r '.detail // ""' "$conclusion" | tr '\n' ' ' | tr '`' "'" | cut -c1-400 | sed 's/[[:space:]]*$//')
+          body=$(printf '%s\n' \
+            "<!-- pi-review:failed -->" \
+            "**pi-review could not complete this review:** ${reason}." \
+            "" \
+            "- run: [${GITHUB_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})" \
+            "- when: $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "- reason: \`${kind}\`")
+          if [ -n "$detail" ]; then
+            body="${body}"$'\n'"- detail: \`${detail}\`"
+          fi
+          body="${body}"$'\n\n'"Fix the cause and re-run the workflow. This comment is updated in place, not duplicated."
+          jq -n --arg body "$body" '{body:$body}' > "$RUNNER_TEMP/pi-review/comment.json"
+          existing=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100" \
+            --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | contains("<!-- pi-review:failed -->")) | .id' \
+            2>/dev/null | tail -n 1 || true)
+          if [ -n "$existing" ]; then
+            if gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" \
+              --input "$RUNNER_TEMP/pi-review/comment.json" > /dev/null 2>&1; then
+              exit 0
+            fi
+            echo "::warning::Could not edit the existing pi-review failure comment; posting a new one."
+          fi
+          if ! gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+            --input "$RUNNER_TEMP/pi-review/comment.json" > /dev/null 2>&1; then
+            echo "::warning::Could not post the pi-review failure comment."
+          fi
+
+      # Keep the transcript and the resolved model/tool/retry/end state with the
+      # run, not just in the log (#45). `events.jsonl` is already redacted by
+      # construction: it is the model stream, and the provider key lives only in
+      # the environment.
+      - name: Upload the review transcript
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pi-review-pr-${{ github.event.pull_request.number || github.event.issue.number }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/pi-review/events.jsonl
+            ${{ runner.temp }}/pi-review/review.json
+            ${{ runner.temp }}/pi-review/recovery.json
+            ${{ runner.temp }}/pi-review/conclusion.json
+            ${{ runner.temp }}/pi-review/run-meta.json
+          if-no-files-found: warn
+          retention-days: 7
