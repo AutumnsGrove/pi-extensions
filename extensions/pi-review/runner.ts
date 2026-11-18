@@ -215,10 +215,14 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 	pi.on("agent_before_settle", (event) => {
 		if (nudged || submitted) return;
 		if (event.outcome !== "completed") return;
-		if (event.context?.canContinue === false) return;
 		// Only a normal prose ending is drift. An error, abort, or output-length
 		// stop has its own classification and cannot be fixed by a nudge.
 		if (lastAssistant && lastAssistant.stopReason !== "stop") return;
+		// Do not guard on `event.context.canContinue`: pi builds it from the
+		// entries proposed *before* this handler, so it is false for a prose
+		// ending. The `custom_message` returned below becomes a user-role
+		// message, and pi recomputes `finalContext.canContinue` after committing
+		// it, which makes the requested continuation valid.
 		nudged = true;
 		return {
 			entries: [

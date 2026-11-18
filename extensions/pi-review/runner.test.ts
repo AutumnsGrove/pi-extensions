@@ -406,7 +406,9 @@ new file mode 100644
 			},
 			{ cwd: "/repo" }
 		);
-		const settle = { outcome: "completed", entries: [], continue: false, context: { canContinue: true } };
+		// pi computes this from the entries proposed *before* the handler, so a
+		// prose ending has canContinue: false even though the nudge is valid.
+		const settle = { outcome: "completed", entries: [], continue: false, context: { canContinue: false } };
 		const first = (await events.get("agent_before_settle")!(settle, { cwd: "/repo" })) as {
 			continue: boolean;
 			entries: { type: string; customType?: string; content?: string }[];
@@ -443,7 +445,7 @@ new file mode 100644
 			{ cwd: "/repo" }
 		);
 		await events.get("agent_before_settle")!(
-			{ outcome: "completed", entries: [], continue: false, context: { canContinue: true } },
+			{ outcome: "completed", entries: [], continue: false, context: { canContinue: false } },
 			{ cwd: "/repo" }
 		);
 		await executeTool(tools[0]!, { summary: "Looks fine.", comments: [] });
@@ -468,7 +470,7 @@ new file mode 100644
 		);
 		expect(
 			await failed.events.get("agent_before_settle")!(
-				{ outcome: "error", entries: [], continue: false, context: { canContinue: true } },
+				{ outcome: "error", entries: [], continue: false, context: { canContinue: false } },
 				{ cwd: "/repo" }
 			)
 		).toBeUndefined();
@@ -492,7 +494,7 @@ new file mode 100644
 		);
 		expect(
 			await posted.events.get("agent_before_settle")!(
-				{ outcome: "completed", entries: [], continue: false, context: { canContinue: true } },
+				{ outcome: "completed", entries: [], continue: false, context: { canContinue: false } },
 				{ cwd: "/repo" }
 			)
 		).toBeUndefined();
