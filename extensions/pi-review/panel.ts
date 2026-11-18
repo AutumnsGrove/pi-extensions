@@ -1,17 +1,19 @@
 /**
  * Interactive settings menu for `/pi-review settings`.
  *
- * A sequence of select/input dialogs is the honest v1 of the panel: every
- * field in `.github/pi-review.json` is reachable without hand-editing JSON,
- * and "Edit raw JSON" still opens the editor for anything the menu does not
- * cover. The result is a complete settings object; the command commits it and
- * regenerates the workflow.
+ * A sequence of select/input dialogs is the honest v1 of the panel: the common
+ * fields in `.github/pi-review.json` are reachable without hand-editing JSON,
+ * and "Edit raw JSON" still opens the editor for exact retry values, provider
+ * and paths. The result is a complete settings object; the command commits it
+ * and regenerates the workflow.
  */
 
 import {
+	DEFAULT_RETRY,
 	REVIEW_EVENTS,
 	STRICTNESS_LEVELS,
 	THINKING_LEVELS,
+	type RetrySettings,
 	type ReviewSettings,
 	type ReviewStrictness,
 	type ThinkingLevel,
@@ -39,6 +41,18 @@ const STRICTNESS_LABELS: Record<ReviewStrictness, string> = {
 	thorough: "thorough — plus minor suggestions",
 };
 
+const RETRY_PRESETS: { label: string; retry: RetrySettings }[] = [
+	{ label: "Default — 6 agent retries, 5s base, 2 provider retries", retry: { ...DEFAULT_RETRY } },
+	{
+		label: "Patient — 10 agent retries, 10s base, 3 provider retries",
+		retry: { maxRetries: 10, baseDelayMs: 10_000, maxDelayMs: 60_000, providerMaxRetries: 3 },
+	},
+	{
+		label: "Off — no retries",
+		retry: { maxRetries: 0, baseDelayMs: 5_000, maxDelayMs: 60_000, providerMaxRetries: 0 },
+	},
+];
+
 function labelFor(choice: string): string {
 	return choice.split(" — ")[0] ?? choice;
 }
@@ -55,6 +69,8 @@ export async function editSettings(settings: ReviewSettings, ui: PanelUI): Promi
 			`Verdict: ${current.review.event}`,
 			`Install dependencies: ${current.verify.installDependencies ? "yes" : "no"}`,
 			`Resolve stale threads: ${current.review.resolveStaleThreads ? "yes" : "no"}`,
+			`Retries: ${current.review.retry.maxRetries} agent · ${current.review.retry.providerMaxRetries} provider`,
+			`Provider failure: ${current.review.onProviderFailure === "warn" ? "warn (green check)" : "fail (red check)"}`,
 			`Mention trigger: ${current.triggers.mention ? "on" : "off"}`,
 			SAVE,
 			RAW,
@@ -123,6 +139,25 @@ export async function editSettings(settings: ReviewSettings, ui: PanelUI): Promi
 				["Yes", "No"]
 			);
 			if (value) current.review.resolveStaleThreads = value === "Yes";
+			continue;
+		}
+
+		if (choice.startsWith("Retries:")) {
+			const value = await ui.select(
+				"Review retry budget",
+				RETRY_PRESETS.map((preset) => preset.label)
+			);
+			const preset = RETRY_PRESETS.find((candidate) => candidate.label === value);
+			if (preset) current.review.retry = { ...preset.retry };
+			continue;
+		}
+
+		if (choice.startsWith("Provider failure:")) {
+			const value = await ui.select(
+				"When the provider is still unavailable after retries",
+				["fail — red check and a comment", "warn — green check and a comment"]
+			);
+			if (value) current.review.onProviderFailure = value.startsWith("warn") ? "warn" : "fail";
 			continue;
 		}
 

@@ -351,6 +351,19 @@ describe("installPiReview identity choices", () => {
 });
 
 describe("installPiReview create path", () => {
+	it("stores the client ID the workflow passes as client-id", async () => {
+		const runner = fakeRunner();
+		const { run } = harness({
+			runner,
+			fetch: fakeFetch({ id: 1234, client_id: "Iv23abcdef", slug: "pi-review-x", name: "Pi Review" }),
+		});
+		await run();
+		const idSet = runner.calls.find(
+			(call) => call.args[1] === "set" && call.args[2] === APP_ID_SECRET
+		);
+		expect(idSet?.stdin).toBe("Iv23abcdef");
+	});
+
 	it("creates the App, stores the key before the id, and writes the workflow", async () => {
 		const writer = fakeBranchWriter();
 		const { runner, server, opened, ui, run } = harness({ writeBranch: writer });
@@ -629,6 +642,57 @@ describe("installPiReview cached App", () => {
 			});
 			expect(ui.prompts).not.toContain("Identity for reviews");
 			expect(runner.calls.find((call) => call.args[2] === APP_KEY_SECRET)?.stdin).toBe(pem);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("refreshes the cached App secret to the client ID", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "pi-review-cached-"));
+		const keyPath = join(dir, "key.pem");
+		const cachePath = join(dir, "pi-review.json");
+		await writeFile(keyPath, pem, "utf8");
+		await writeFile(
+			cachePath,
+			JSON.stringify({ owner: { appId: 1234, slug: "pi-review-x", keyPath } }),
+			"utf8"
+		);
+		const fetchImpl = async (url: string) => {
+			if (url.endsWith("/app")) {
+				return {
+					ok: true,
+					status: 200,
+					text: async () =>
+						JSON.stringify({
+							id: 1234,
+							client_id: "Iv23cached",
+							slug: "pi-review-x",
+							name: "Pi Review",
+						}),
+				};
+			}
+			if (url.includes("/installation")) {
+				return { ok: true, status: 200, text: async () => JSON.stringify({ id: 9 }) };
+			}
+			return { ok: true, status: 200, text: async () => JSON.stringify({ id: 1234, slug: "pi-review-x", pem }) };
+		};
+		try {
+			const runner = fakeRunner({ secrets: [] });
+			const ui = scriptedUi({
+				confirm: [true],
+				select: ["medium", "Read-only", "Comment only"],
+			});
+			await harness({
+				runner,
+				ui,
+				cachePath,
+				keyDir: dir,
+				fetch: Object.assign(fetchImpl, { calls: [] as string[] }),
+			}).run();
+			const idSet = runner.calls.find(
+				(call) => call.args[1] === "set" && call.args[2] === APP_ID_SECRET
+			);
+			expect(idSet?.stdin).toBe("Iv23cached");
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}

@@ -211,6 +211,10 @@ export interface SubmitReviewDeps {
 	maxComments?: number;
 	/** Extra context for the rendered markdown, resolved lazily. */
 	renderMeta?: () => ReviewMeta | undefined | Promise<ReviewMeta | undefined>;
+	/** Called after a review is validated (and posted outside a dry run). */
+	onSubmitted?: (review: ValidatedReview) => void;
+	/** Extra artifact fields the runner wants to record (for example, `nudged`). */
+	extraDetails?: () => Record<string, unknown> | undefined;
 }
 
 export interface SubmitReviewDetails {
@@ -218,6 +222,8 @@ export interface SubmitReviewDetails {
 	review?: ValidatedReview;
 	url?: string;
 	error?: string;
+	/** Machine-readable failure class for the workflow. */
+	errorKind?: string;
 }
 
 async function writeArtifact(
@@ -302,8 +308,13 @@ export function createSubmitReviewTool(deps: SubmitReviewDeps) {
 
 			if (deps.dryRun) {
 				submitted = review;
+				deps.onSubmitted?.(review);
 				const details: SubmitReviewDetails = { dryRun: true, review };
-				await writeArtifact(deps.outputPath, { ...details, markdown });
+				await writeArtifact(deps.outputPath, {
+					...details,
+					...(deps.extraDetails?.() ?? {}),
+					markdown,
+				});
 				return {
 					content: [{ type: "text" as const, text: markdown }],
 					details,
@@ -324,30 +335,29 @@ export function createSubmitReviewTool(deps: SubmitReviewDeps) {
 				};
 			}
 
+			let result: PostResult;
 			try {
-				const result = await deps.post(review);
-				submitted = review;
-				const details: SubmitReviewDetails = { dryRun: false, review, url: result.url };
-				await writeArtifact(deps.outputPath, { ...details, markdown });
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: result.url ? `Review posted: ${result.url}` : "Review posted.",
-						},
-					],
-					details,
-					terminate: true,
-				};
+				result = await deps.post(review);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				// Keep the validated review: a failed post is exactly when the
-				// findings are most useful to the step summary.
-				const details: SubmitReviewDetails = { dryRun: false, review, error: message };
-				// `incomplete` makes the workflow fail (and say so on the PR) when the
-				// agent gives up after a rejected post, instead of a green run with no
-				// review. A later successful submission overwrites this artifact.
-				await writeArtifact(deps.outputPath, { ...details, incomplete: true, markdown });
+				// findings are most useful to the step summary and to the workflow's
+				// recovery step, which retries the post before giving up.
+				const details: SubmitReviewDetails = {
+					dryRun: false,
+					review,
+					error: message,
+					errorKind: "post",
+				};
+				// `incomplete` makes the workflow act on the failure instead of a
+				// green run with no review. A later successful submission overwrites
+				// this artifact.
+				await writeArtifact(deps.outputPath, {
+					...details,
+					...(deps.extraDetails?.() ?? {}),
+					incomplete: true,
+					markdown,
+				});
 				return {
 					content: [
 						{
@@ -359,6 +369,34 @@ export function createSubmitReviewTool(deps: SubmitReviewDeps) {
 					isError: true,
 				};
 			}
+
+			// The review is on GitHub. A failed artifact write must not be
+			// mistaken for a failed post: that would make the workflow retry a
+			// review that already exists.
+			submitted = review;
+			deps.onSubmitted?.(review);
+			const details: SubmitReviewDetails = { dryRun: false, review, url: result.url };
+			try {
+				await writeArtifact(deps.outputPath, {
+					...details,
+					...(deps.extraDetails?.() ?? {}),
+					markdown,
+				});
+			} catch (error) {
+				console.error(
+					`pi-review: the review posted but the artifact could not be written: ${error instanceof Error ? error.message : String(error)}`
+				);
+			}
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: result.url ? `Review posted: ${result.url}` : "Review posted.",
+					},
+				],
+				details,
+				terminate: true,
+			};
 		},
 	});
 }

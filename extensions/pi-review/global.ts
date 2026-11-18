@@ -16,6 +16,12 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export interface CachedApp {
 	appId: number;
+	/**
+	 * GitHub's client ID, the value the workflow passes as `client-id`.
+	 * Optional because old caches only recorded the numeric App ID; a reuse
+	 * refreshes it from `GET /app`.
+	 */
+	clientId?: string;
 	slug: string;
 	/** Path to the PEM the user (or the wizard) saved. */
 	keyPath: string;
@@ -43,6 +49,7 @@ function validEntry(value: unknown): value is CachedApp {
 	return (
 		typeof record.appId === "number" &&
 		Number.isInteger(record.appId) &&
+		(record.clientId === undefined || (typeof record.clientId === "string" && record.clientId.length > 0)) &&
 		typeof record.slug === "string" &&
 		record.slug.length > 0 &&
 		typeof record.keyPath === "string" &&
@@ -60,6 +67,7 @@ export async function loadAppCache(paths: CachePaths = {}): Promise<AppCache> {
 			if (validEntry(entry)) {
 				cache[owner.toLowerCase()] = {
 					appId: entry.appId,
+					...(entry.clientId ? { clientId: entry.clientId } : {}),
 					slug: entry.slug,
 					keyPath: entry.keyPath,
 				};

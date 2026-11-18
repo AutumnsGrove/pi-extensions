@@ -24,6 +24,8 @@ export class ManifestExchangeError extends Error {
 
 export interface CreatedApp {
 	id: number;
+	/** GitHub's primary App identifier; the workflow passes this as `client-id`. */
+	clientId: string;
 	slug: string;
 	name: string;
 	/** PEM private key. Never logged, printed, or written to disk. */
@@ -53,7 +55,7 @@ export async function exchangeManifestCode(
 			`GitHub rejected the App registration code (${response.status}): ${body.slice(0, 300) || "no response body"}`
 		);
 	}
-	let parsed: { id?: unknown; slug?: unknown; name?: unknown; pem?: unknown };
+	let parsed: { id?: unknown; client_id?: unknown; slug?: unknown; name?: unknown; pem?: unknown };
 	try {
 		parsed = JSON.parse(body);
 	} catch {
@@ -65,6 +67,7 @@ export async function exchangeManifestCode(
 	}
 	return {
 		id,
+		clientId: typeof parsed.client_id === "string" && parsed.client_id ? parsed.client_id : String(id),
 		slug: typeof parsed.slug === "string" ? parsed.slug : "",
 		name: typeof parsed.name === "string" ? parsed.name : "",
 		pem: parsed.pem,
@@ -103,6 +106,8 @@ export async function accountKind(
 
 export interface AppInfo {
 	id: number;
+	/** Present on current GitHub responses; older tests and responses may omit it. */
+	clientId?: string;
 	slug: string;
 	name: string;
 	owner?: string;
@@ -128,7 +133,13 @@ export async function fetchAppInfo(jwt: string, deps: { fetch?: FetchLike } = {}
 			`GitHub rejected the App credentials (${response.status}): ${body.slice(0, 200) || "no response body"}`
 		);
 	}
-	let parsed: { id?: unknown; slug?: unknown; name?: unknown; owner?: { login?: unknown } };
+	let parsed: {
+		id?: unknown;
+		client_id?: unknown;
+		slug?: unknown;
+		name?: unknown;
+		owner?: { login?: unknown };
+	};
 	try {
 		parsed = JSON.parse(body);
 	} catch {
@@ -139,6 +150,7 @@ export async function fetchAppInfo(jwt: string, deps: { fetch?: FetchLike } = {}
 	}
 	return {
 		id: parsed.id,
+		...(typeof parsed.client_id === "string" && parsed.client_id ? { clientId: parsed.client_id } : {}),
 		slug: parsed.slug,
 		name: typeof parsed.name === "string" ? parsed.name : "",
 		...(typeof parsed.owner?.login === "string" ? { owner: parsed.owner.login } : {}),

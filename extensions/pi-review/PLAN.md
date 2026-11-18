@@ -6,11 +6,13 @@ request — the same experience as Claude Code's `/install-github-app`, but with
 whatever provider pi is logged into (OpenCode Go, OpenRouter, …), with the
 model configurable from a panel.
 
-Status: **milestones 1–4 implemented, milestone 5 partly:** runner, App
-identity, workflow + settings, provider credentials, plus a settings editor and
-uninstall. The dedicated settings panel is the remaining milestone-5 piece. Researched 2026-11-05; scope
-updated after owner review (name `pi-review`, no turn budget, OpenCode Go in CI is
-explicitly permitted). Tracked in the GitHub issue "Add `pi-review` extension".
+Status: **milestones 1–6 implemented, plus failure hardening (#27,
+#43–#47):** runner, App identity, workflow + settings, provider credentials,
+settings editor, uninstall, incremental re-reviews, sticky summary comments, and
+the classify/nudge/recover path for a run that does not submit. Researched
+2026-11-05; scope updated after owner review (name `pi-review`, no turn budget,
+OpenCode Go in CI is explicitly permitted). Tracked in the GitHub issue
+"Add `pi-review` extension".
 
 Implemented in milestone 1: `diff.ts`, `detect.ts`, `context.ts`, `review.ts`,
 `submit.ts`, `prompt.ts`, `runner.ts`, `local.ts`, and the `/pi-review run`
@@ -491,11 +493,13 @@ Decisions made while building the runner, where it differs from the design above
   in a reusable workflow that every project calls at `@main`, and fetches its own
   commit with `job.workflow_sha` (#34). Only the pi CLI version is still pinned,
   per project.
-- **The review step enforces the artifact.** A run can finish with exit 0
-  without submitting (the runner writes `incomplete`); the step then fails
-  deliberately so the `if: failure()` step posts the "could not complete"
-  comment. The job timeout is the review timeout + 5 minutes, so a timed-out
-  review still reaches that step.
+- **The review step records; the conclude step decides (superseded by #43–#46).**
+  A run can finish with exit 0 without submitting. The runner classifies why
+  (`provider`, `incomplete`, `aborted`, `budget`, `post`) and a recovery step
+  posts a validated review or a substantive prose answer before the conclude
+  step writes the summary and exits. The job timeout is the review timeout + 5
+  minutes, so a timed-out review still reaches recovery, conclusion, and the
+  single edited failure comment.
 - **The branch writer refuses a dirty tree**, branches from the fetched default,
   commits only the two generated paths, pushes, and restores the original
   branch even when the push fails. `pi-review/setup` is reused with the first
@@ -696,3 +700,43 @@ owner judged the reviews worth it. Only the setup changed.
 - **`setup-node` was kept.** Its 0–20s spread is runner-side (it probes yarn),
   and dropping it would unpin the Node version for 1–9s of typical saving;
   pi requires Node ≥ 22.19, so the pin stays.
+
+## Implementation notes (milestone 10): failure hardening (#27, #43–#47)
+
+The rule is that a run which did not submit has **one** of several causes, and
+the job must name it rather than print "the job failed or timed out".
+
+- **The nudge is in-process (#44).** `agent_before_settle` appends one
+  `custom_message` and asks for `continue: true` instead of spawning a second
+  `pi`. The findings are already in context, the same tools are active, and
+  there is no second provider handshake. One flag makes it exactly one nudge.
+  A provider error, abort, or output-limit stop is not nudged: those cannot be
+  fixed by asking the model again.
+- **Recovery lives in two places (#43).** The runner classifies the final
+  assistant message and, for a normal prose ending of at least 400 characters,
+  writes the recovered review to the artifact *before* posting and again with
+  the URL after. The workflow repeats the recovery for a timeout or a killed
+  process: validated review first (then summary-only), then the last assistant
+  text from `events.jsonl`. `incomplete: true` plus `recovered: true` keeps the
+  model drift visible while the review still posts.
+- **`failure.ts` owns the classification (#27).** `provider` uses pi-ai's
+  `isRetryableAssistantError` so quota/billing errors are `retryable: false`
+  and real overloads are `true`; `aborted`, `budget`, `post`, and `incomplete`
+  are distinct. Recovery never runs for provider/aborted/budget.
+- **Retries are a settings knob.** `review.retry` writes pi's own policy into a
+  throwaway `PI_CODING_AGENT_DIR` settings file: six agent retries at a 5s base
+  (~3 minutes, capped at 60s each) and two provider retries that honour
+  `Retry-After`. `review.onProviderFailure` defaults to `fail`; `warn` is the
+  opt-in for a flaky provider and a non-required check.
+- **The workflow decides once.** `Review` records `PI_PI_EXIT` and the stream's
+  last event/stop reason; `Recover` posts what it can; `Conclude` is the only
+  step that exits nonzero and writes the step summary; `Report` edits **one**
+  `<!-- pi-review:failed -->` comment written by `github-actions` (the only
+  identity that can always edit its own comments); `Upload` keeps the transcript.
+- **Deprecations cleared (#47).** `actions/cache@v6` and
+  `actions/upload-artifact@v7` target Node 24. `create-github-app-token@v3`
+  gets `client-id`; new installs store the client ID in the historical
+  `PI_REVIEW_APP_ID` secret, old numeric App IDs still work as the JWT issuer,
+  and a re-run refreshes the secret. The mint step names the three permissions
+  the review uses, so a narrowed installation fails loudly instead of posting
+  nothing.
