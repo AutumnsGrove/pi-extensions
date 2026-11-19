@@ -240,6 +240,7 @@ pnpm cost report                  # print the ledger without changing anything
 | opencode-go | $0.339 | 1 |
 | pi-background | $0.318 | 1 |
 | parallel | $0.303 | 1 |
+| pi-memory | $0.251 | 1 |
 | pi-q-n-a | $0.228 | 1 |
 | context-window | $0.204 | 1 |
 | notify | $0.121 | 1 |
