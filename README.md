@@ -32,6 +32,7 @@ generated from it: edit the settings file rather than the YAML.
 | [`thinking-box`](extensions/thinking-box/) | Collapsible, timed thinking traces: stream into a short box showing duration + reasoning tokens, expand the full trace with `Ctrl+O` (`/thinking-box`). | working |
 | [`pi-q-n-a`](extensions/pi-q-n-a/) | Model-facing `pi-q-n-a` tool: a multi-question form with single/multi-select, an always-present "Type something", per-question notes, optional side-by-side previews, and partial submit. A hard blocker: nothing runs until you answer. | working |
 | [`pi-tasks`](extensions/pi-tasks/) | Model-facing `todo` tool (create/update/delete/list) with a live task panel above the editor and a full `/todos` view. State replays from the session branch, so it survives `/reload` and compaction. | working |
+| [`pi-memory`](extensions/pi-memory/) | Automatic, file-based project memory: a small always-loaded index, four memory types, immediate saves, capped per-turn recall, throttled background extraction, `/memory dream` consolidation, and opt-in Claude Code import/shared store. | working (v1) |
 | [`pi-review`](extensions/pi-review/) | Agentic pull-request review, run by pi itself inside GitHub Actions: a validated `submit_review` runner, base-branch guidance, a local dry run, and an installer that creates a scoped Pi GitHub App, stores its secrets, and commits a small caller for the shared reusable job plus a settings branch (`/pi-review install`, `/pi-review run`, `/pi-review status`, `/pi-review settings`). | implemented (runner, installer, auth, follow-up reviews, sticky summary, settings panel, and failure recovery) |
 | [`pi-background`](extensions/pi-background/) | Claude-style background shell jobs: `bash` auto-detaches at the deadline, a `jobs` tool lists/reads/waits/kills/searches, completions wake the agent, and a live widget shows running work (`/bg`, `Ctrl+Shift+B`). | working |
 | [`cost-tracker`](extensions/cost-tracker/) | Tracks development cost from pi's own session usage. `/cost start` … `/cost stop` in pi, or `pnpm cost` from a shell; finalizes runs and auto-imports the table below. | working |
@@ -239,6 +240,7 @@ pnpm cost report                  # print the ledger without changing anything
 | opencode-go | $0.339 | 1 |
 | pi-background | $0.318 | 1 |
 | parallel | $0.303 | 1 |
+| pi-memory | $0.251 | 1 |
 | pi-q-n-a | $0.228 | 1 |
 | context-window | $0.204 | 1 |
 | notify | $0.121 | 1 |
