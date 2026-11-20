@@ -123,7 +123,7 @@ function setup(overrides: { checks?: unknown[]; issueComments?: unknown[] } = {}
 		cursor: initCursor(snapshot),
 		checks: snapshot.checks,
 		state: "open",
-		createdAt: 0,
+		createdAt: Date.now(),
 		consecutiveErrors: 0,
 		notifiedErrors: [],
 		catchUp: false,
@@ -273,7 +273,7 @@ describe("pollInterval", () => {
 		cursor: initCursor({ pull: { number: 1, title: "", url: "", state: "open", merged: false, draft: false, headSha: "a", headRef: "", baseRef: "", authorBot: false }, checks: [], comments: [], reviews: [] }),
 		checks: [],
 		state: "open",
-		createdAt: 0,
+		createdAt: Date.now(),
 		consecutiveErrors: 0,
 		notifiedErrors: [],
 		catchUp: false,
@@ -297,6 +297,16 @@ describe("pollInterval", () => {
 
 		settled.lastEventAt = 1;
 		expect(pollInterval(settled, deps, 2 * 60 * 60_000)).toBe(300_000);
+	});
+
+	it("backs off even when no event ever fired", () => {
+		const deps: PollerDeps = { cwd: "/tmp", basePollMs: DEFAULT_BASE_POLL_MS };
+		const quiet = sub();
+		quiet.checks = [{ key: "a", name: "a", status: "completed", conclusion: "success" }];
+		quiet.createdAt = 1;
+		expect(quiet.lastEventAt).toBeUndefined();
+		expect(pollInterval(quiet, deps, 2 * 60 * 60_000)).toBe(300_000);
+		expect(pollInterval(quiet, deps, ACTIVE_AFTER_MS + 2)).toBe(60_000);
 	});
 });
 

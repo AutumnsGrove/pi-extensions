@@ -334,7 +334,9 @@ const items = (body: unknown): unknown[] => (Array.isArray(body) ? body : []);
 async function fetchIssueComments(api: GhApi, ref: PrRef, since: string | undefined): Promise<unknown> {
 	const base = `repos/${ref.owner}/${ref.repo}/issues/${ref.number}/comments?per_page=${PAGE_SIZE}`;
 	if (!since) {
-		const first = await api.get(base, { etagKey: `issue-comments:${ref.number}:seed` });
+		// No conditional read here: a 304 carries no `Link`, so a warm cache would
+		// silently reseed from the oldest page. A seed is one request.
+		const first = await api.get(base);
 		const last = linkPage(first.headers, "last");
 		if (last === undefined || last <= 1) return first.body;
 		const tail = await api.get(`${base}&page=${last}`, {
@@ -378,25 +380,39 @@ async function fetchReviews(api: GhApi, ref: PrRef): Promise<{ list: unknown }> 
 	const key = `reviews:${prKey(ref)}`;
 	const known = api.getMeta<ReviewPageState>(key);
 	let page = known?.page ?? 1;
-	let response = await api.get(`${base}&page=${page}`, known?.full ? {} : { etagKey: `${key}:p${page}` });
-	let list = response.body;
+	let conditional = !known?.full;
+	const collected: unknown[] = [];
+	let lastPage = page;
+	let lastWasFull = false;
 
-	// A page past the end returns an empty array after a delete; go back to one.
-	if (page > 1 && items(list).length === 0) {
-		page = 1;
-		response = await api.get(`${base}&page=1`, { etagKey: `${key}:p1` });
-		list = response.body;
-	}
+	for (let reads = 0; reads < MAX_PAGES; reads += 1) {
+		const response = await api.get(`${base}&page=${page}`, conditional ? { etagKey: `${key}:p${page}` } : {});
+		conditional = false;
+		const pageItems = items(response.body);
 
-	let full = items(list).length >= PAGE_SIZE;
-	while (full && page < MAX_PAGES) {
+		if (pageItems.length === 0) {
+			if (collected.length === 0 && page > 1) {
+				// The remembered page is past the end (deletes moved the boundary).
+				page = 1;
+				lastPage = 1;
+				lastWasFull = false;
+				continue;
+			}
+			// A page with room after a full one: the previous page is the last.
+			break;
+		}
+
+		// Keep every page read, not just the last: the review that fills a page can
+		// arrive in the same read as the review that spills onto the next one.
+		collected.push(...pageItems);
+		lastPage = page;
+		lastWasFull = pageItems.length >= PAGE_SIZE;
+		if (!lastWasFull) break;
 		page += 1;
-		response = await api.get(`${base}&page=${page}`);
-		list = response.body;
-		full = items(list).length >= PAGE_SIZE;
 	}
-	api.setMeta(key, { page, full });
-	return { list };
+
+	api.setMeta(key, { page: lastPage, full: lastWasFull });
+	return { list: collected };
 }
 
 /**

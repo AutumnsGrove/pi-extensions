@@ -348,11 +348,35 @@ The live run itself was the phase-0 evidence: six events (three inline comments,
 the sticky summary, the review, and the settle verdict) arrived as one coalesced
 turn on the first PR this branch opened.
 
-10. **The base rate holds for ten minutes after any event.** Observed live: a
-    push right after a settle waited out the 60 s settled interval, and the
-    widget looked stuck. A settled PR now keeps the 20 s rate for ten minutes
-    after its last event, then 60 s, then 5 min. The ETags make the extra polls
-    free; the cost is a `gh` process per request, not API quota.
+10. **The base rate holds for ten minutes after any event or since subscribing.**
+    Observed live: a push right after a settle waited out the 60 s settled
+    interval, and the widget looked stuck. A settled PR now keeps the 20 s rate
+    for ten minutes after its last event — or after `createdAt` when nothing has
+    happened yet, so a forgotten subscription still backs off rather than
+    spawning `gh` every 20 s forever. The ETags make the extra polls free; the
+    cost is a `gh` process per request, not API quota.
+
+### Review findings from the second live run
+
+The follow-up review caught two defects inside the first fix, and one regression
+the interval change introduced:
+
+1. **The review page loop dropped the page it had just read.** Returning only the
+   next page lost the review that filled the previous page in the same read, and
+   an exact multiple of 100 returned the empty page after it. One read now
+   returns every page it read (full page plus spill), and a full page at the end
+   is returned rather than the empty page beyond it.
+2. **The seed's first-page read was conditional.** A 304 carries no `Link`, so a
+   re-seed on the same client (unsubscribe and subscribe again) fell back to the
+   oldest page — the replay the newest-page seed exists to prevent. The seed is
+   never conditional now.
+3. **`lastEventAt` absent meant the base rate forever.** Subscribing to an
+   already-settled PR and walking away polled every 20 s indefinitely, against
+   the documented ladder. `createdAt` is the fallback clock.
+
+All three have tests that fail on the previous behaviour, including the boundary
+probe from the review: 99 reviews, then 100 and 101 in one read, must deliver
+both.
 
 ### Phase 4 (pi-review integration)
 

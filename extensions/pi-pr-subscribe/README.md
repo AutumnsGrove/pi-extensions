@@ -78,12 +78,18 @@ envelope as untrusted data, and **end the turn** when there is nothing to do.
   page it read and polls that page; a page with room left changes whenever a
   review is appended, so a 304 there is meaningful. A page that was exactly full
   is re-read without `If-None-Match`, because the review spilling onto the next
-  page would leave it byte-identical.
-- Interval: 20 s while checks are pending **and for ten minutes after any
-  event** (a push is when you are watching, and a one-minute blind spot after
-  every commit is noticeable), then 60 s, then 5 min once the PR has been quiet
-  for an hour. `PI_PR_POLL=<seconds>` overrides the base; the other two rates are
-  three times and fifteen times it.
+  page would leave it byte-identical. One read returns the full page **and** its
+  spill, so the review that fills a page is never dropped on the way to the page
+  after it.
+- Notice what that implies for the seed: it is never a conditional request. A 304
+  carries no `Link`, so a warm ETag cache on the first page would quietly reseed
+  from the oldest comments — exactly the replay the newest-page seed exists to
+  prevent.
+- Interval: 20 s while checks are pending **and for ten minutes after any event
+  or since subscribing** (a push is when you are watching, and a one-minute
+  blind spot after every commit is noticeable), then 60 s, then 5 min once the
+  PR has been quiet for an hour. `PI_PR_POLL=<seconds>` overrides the base; the
+  other two rates are three times and fifteen times it.
 - Failed checks fetch their job log tail best effort (three per batch, capped at
   64 KB read / 40 lines kept). No tail is worth failing the tick.
 - "Settled" is read from branch protection or rulesets when the token can see
@@ -145,8 +151,9 @@ instruction; rule 6 and the permission model say so, and there is a test for it.
   from the previous watermark, not from the newest page.
 - Reviews are read from their last page, and a page that fills is re-read
   unconditionally, so a 101st review starts a new page that the next poll picks
-  up. Deleted reviews can move the last page backwards; an empty page falls back
-  to page one.
+  up. One read covers a full page plus the page after it; more than five pages
+  of reviews arriving between two polls is not supported. Deleted reviews can
+  move the last page backwards; an empty page falls back to page one.
 - Check runs use `filter=latest`, so a superseded attempt of the same name is not
   reported separately.
 - `/reload` keeps a poller running only in the same process. Quitting pi stops

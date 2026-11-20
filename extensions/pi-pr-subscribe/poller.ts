@@ -108,8 +108,9 @@ export function pollInterval(sub: Subscription, deps: PollerDeps, at = now(deps)
 	const base = deps.basePollMs ?? DEFAULT_BASE_POLL_MS;
 	const summary = checkSummary(sub.checks);
 	if (summary.pending > 0) return base;
-	if (sub.lastEventAt === undefined) return base;
-	const sinceEvent = at - sub.lastEventAt;
+	// Subscribe counts as activity: a PR that never produced an event must still
+	// back off, or a forgotten subscription spawns gh every 20 s forever.
+	const sinceEvent = at - (sub.lastEventAt ?? sub.createdAt);
 	if (sinceEvent < ACTIVE_AFTER_MS) return base;
 	if (sinceEvent < QUIET_AFTER_MS) return Math.min(base * 3, MAX_POLL_MS);
 	return Math.min(base * 15, MAX_POLL_MS);
