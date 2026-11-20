@@ -60,7 +60,7 @@ const shortSha = (sha: string): string => (sha.length > 7 ? sha.slice(0, 7) : sh
 
 const authorText = (author: string | undefined, bot: boolean): string => {
 	if (!author) return bot ? "a bot" : "someone";
-	return bot && !author.endsWith("[bot]") ? `${author} [bot]` : author;
+	return neutralize(bot && !author.endsWith("[bot]") ? `${author} [bot]` : author);
 };
 
 export interface CreatedOptions {
@@ -101,13 +101,15 @@ function eventBody(event: PrEvent, logTails: Map<string, string> | undefined): s
 	switch (event.type) {
 		case "comment.created": {
 			const { comment } = event;
+			// Paths are attacker-chosen (a PR author names the files they comment
+			// on), so they go through the same neutralizer as the body.
 			const where = comment.path
-				? ` on ${comment.path}${comment.line !== undefined ? `:${comment.line}` : ""}`
+				? ` on ${neutralize(comment.path)}${comment.line !== undefined ? `:${comment.line}` : ""}`
 				: "";
 			const reply = comment.replyTo ? ` (reply to comment ${comment.replyTo})` : "";
 			return [
 				`${comment.kind === "review" ? "Inline review comment" : "Issue comment"}${where}${reply} by ${authorText(comment.author, comment.bot)}`,
-				comment.url ?? "",
+				neutralize(comment.url ?? ""),
 				"",
 				truncateBytes(neutralize(comment.body)).text,
 			]
@@ -117,8 +119,8 @@ function eventBody(event: PrEvent, logTails: Map<string, string> | undefined): s
 		case "review.submitted": {
 			const { review } = event;
 			return [
-				`Review ${review.state.toLowerCase()} by ${authorText(review.author, review.bot)}`,
-				review.url ?? "",
+				`Review ${neutralize(review.state.toLowerCase())} by ${authorText(review.author, review.bot)}`,
+				neutralize(review.url ?? ""),
 				"",
 				truncateBytes(neutralize(review.body)).text,
 			]
@@ -127,9 +129,9 @@ function eventBody(event: PrEvent, logTails: Map<string, string> | undefined): s
 		}
 		case "check.completed": {
 			const lines = [
-				`Check "${neutralize(event.name)}" finished: ${event.conclusion}`,
-				event.app ? `App: ${event.app}` : "",
-				event.url ?? "",
+				`Check "${neutralize(event.name)}" finished: ${neutralize(event.conclusion)}`,
+				event.app ? `App: ${neutralize(event.app)}` : "",
+				neutralize(event.url ?? ""),
 			].filter(Boolean);
 			const tail = event.logJobId ? logTails?.get(event.logJobId) : undefined;
 			if (tail) lines.push("", `Last ${MAX_LOG_LINES} lines of the failing log:`, neutralize(tail));
@@ -175,9 +177,10 @@ export function formatBatch({ ref, events, catchUp, logTails, now = Date.now() }
 	const live = events.filter((event) => event.type !== "subscription.error");
 	const errors = events.filter((event) => event.type === "subscription.error");
 	const count = live.length;
+	const label = `${neutralize(ref.owner)}/${neutralize(ref.repo)}#${ref.number}`;
 	const header = catchUp
-		? `While you were away: ${plural(count, "event")} on ${ref.owner}/${ref.repo}#${ref.number}.`
-		: `${plural(count, "event")} on ${ref.owner}/${ref.repo}#${ref.number}${count === 1 ? ":" : ""}`;
+		? `While you were away: ${plural(count, "event")} on ${label}.`
+		: `${plural(count, "event")} on ${label}${count === 1 ? ":" : ""}`;
 	const out: string[] = [];
 	if (count > 0) out.push(header, "");
 	const ordered = [...live].sort((a, b) => rank(a) - rank(b));
@@ -230,7 +233,7 @@ function envelope(event: PrEvent, logTails: Map<string, string> | undefined): st
 				: false;
 	const source = event.type === "review.submitted" ? event.review.source : undefined;
 	return [
-		`<pr-activity event="${EVENT_TAGS[event.type]}"${author ? ` author="${author.replace(/"/g, "")}"` : ""}${bot ? ' bot="true"' : ""}${source ? ` source="${source}"` : ""}>`,
+		`<pr-activity event="${EVENT_TAGS[event.type]}"${author ? ` author="${neutralize(author).replace(/"/g, "")}"` : ""}${bot ? ' bot="true"' : ""}${source ? ` source="${source}"` : ""}>`,
 		body,
 		"</pr-activity>",
 	].join("\n");
@@ -364,4 +367,4 @@ export function formatCompactionReminder(
 }
 
 export const SECOND_SESSION_TEXT = (ref: PrRef, holder: string): string =>
-	`${ref.owner}/${ref.repo}#${ref.number} is already watched by another session (${holder}). This session subscribed, but it will not receive events for it until that session stops.`;
+	`${neutralize(ref.owner)}/${neutralize(ref.repo)}#${ref.number} is already watched by another session (${neutralize(holder)}). This session subscribed, but it will not receive events for it until that session stops.`;

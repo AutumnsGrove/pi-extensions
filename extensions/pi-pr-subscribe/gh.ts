@@ -15,7 +15,7 @@
 import { spawn } from "node:child_process";
 import type { ErrorKind } from "./diff.ts";
 import { buildSnapshot, type CheckEntry, type Snapshot } from "./snapshot.ts";
-import type { PrRef } from "./ref.ts";
+import { prKey, type PrRef } from "./ref.ts";
 
 export interface ExecResultLike {
 	stdout: string;
@@ -136,6 +136,8 @@ export interface GhApiOptions {
  */
 export class GhApi {
 	private readonly cache = new Map<string, CacheEntry>();
+	/** Non-HTTP state that must live as long as the client (pagination cursors). */
+	private readonly meta = new Map<string, unknown>();
 	private readonly options: GhApiOptions;
 
 	constructor(options: GhApiOptions) {
@@ -146,6 +148,14 @@ export class GhApi {
 	invalidate(key?: string): void {
 		if (key === undefined) this.cache.clear();
 		else this.cache.delete(key);
+	}
+
+	getMeta<T>(key: string): T | undefined {
+		return this.meta.get(key) as T | undefined;
+	}
+
+	setMeta(key: string, value: unknown): void {
+		this.meta.set(key, value);
 	}
 
 	async get(
@@ -236,7 +246,15 @@ export class GhApi {
 	}
 }
 
-/** The six resources one tick needs. */
+/**
+ * The six resources one tick needs.
+ *
+ * Issue comments are listed ascending only — `sort` and `direction` are ignored
+ * on `/issues/{n}/comments` — so they are read with a `since` watermark, and a
+ * seed read pages to the newest before the cursor is built. Reviews are
+ * ascending too, with no ordering parameter at all; `fetchReviews` keeps a page
+ * cursor for them.
+ */
 export function snapshotPaths(
 	ref: PrRef,
 	headSha: string,
@@ -255,8 +273,6 @@ export function snapshotPaths(
 		pull: `${base}/pulls/${ref.number}`,
 		checkRuns: `${base}/commits/${headSha}/check-runs?per_page=100&filter=latest`,
 		statuses: `${base}/commits/${headSha}/status?per_page=100`,
-		// Issue comments are ascending-only; `since` is how a quiet PR stays cheap
-		// and a new comment is still found past the first page.
 		issueComments: `${base}/issues/${ref.number}/comments?per_page=100${since}`,
 		reviewComments: `${base}/pulls/${ref.number}/comments?per_page=100&sort=created&direction=desc`,
 		reviews: `${base}/pulls/${ref.number}/reviews?per_page=100`,
@@ -284,7 +300,7 @@ export async function fetchSnapshot(
 	const [checkRuns, statuses, issueComments, reviewComments, reviews] = await Promise.all([
 		api.get(paths.checkRuns, { etagKey: `checks:${headSha}` }),
 		api.get(paths.statuses, { etagKey: `statuses:${headSha}` }),
-		api.get(paths.issueComments, { etagKey: `issue-comments:${ref.number}:${options.since ?? ""}` }),
+		fetchIssueComments(api, ref, options.since),
 		api.get(paths.reviewComments, { etagKey: `review-comments:${ref.number}` }),
 		fetchReviews(api, ref),
 	]);
@@ -293,7 +309,7 @@ export async function fetchSnapshot(
 		pull: pullResponse.body,
 		checkRuns: checkRuns.body,
 		statuses: statuses.body,
-		issueComments: issueComments.body,
+		issueComments,
 		reviewComments: reviewComments.body,
 		reviews: reviews.list,
 	});
@@ -301,20 +317,86 @@ export async function fetchSnapshot(
 	return snapshot;
 }
 
+const MAX_PAGES = 5;
+const PAGE_SIZE = 100;
+
+const items = (body: unknown): unknown[] => (Array.isArray(body) ? body : []);
+
 /**
- * Reviews are paginated oldest-first with no `direction` parameter. A PR with
- * more than one page is rare; when it happens, jump to the last page so the
- * newest reviews are the ones that count.
+ * Issue comments, oldest page first by default.
+ *
+ * A seed (no `since`) pages to the **newest** page: the cursor must end at the
+ * newest comment, or the first poll treats every comment the seed did not cover
+ * as news. A poll (`since` set) starts at the oldest comment updated since the
+ * watermark and follows `next` pages, so a burst wider than one page is not
+ * truncated.
+ */
+async function fetchIssueComments(api: GhApi, ref: PrRef, since: string | undefined): Promise<unknown> {
+	const base = `repos/${ref.owner}/${ref.repo}/issues/${ref.number}/comments?per_page=${PAGE_SIZE}`;
+	if (!since) {
+		const first = await api.get(base, { etagKey: `issue-comments:${ref.number}:seed` });
+		const last = linkPage(first.headers, "last");
+		if (last === undefined || last <= 1) return first.body;
+		const tail = await api.get(`${base}&page=${last}`, {
+			etagKey: `issue-comments:${ref.number}:seed:page:${last}`,
+		});
+		return tail.body;
+	}
+
+	const url = `${base}&since=${encodeURIComponent(since)}`;
+	const first = await api.get(url, { etagKey: `issue-comments:${ref.number}:${since}` });
+	let collected = items(first.body);
+	let next = linkPage(first.headers, "next");
+	let pages = 1;
+	while (next !== undefined && pages < MAX_PAGES) {
+		const page = await api.get(`${url}&page=${next}`);
+		collected = collected.concat(items(page.body));
+		pages += 1;
+		next = linkPage(page.headers, "next");
+	}
+	return collected;
+}
+
+interface ReviewPageState {
+	page: number;
+	full: boolean;
+}
+
+/**
+ * Reviews, newest page only.
+ *
+ * Reviews page ascending with no ordering parameter, so page 1 stays identical
+ * as reviews accumulate — an ETag on it would 304 forever while the newest
+ * reviews moved to page 2. Instead the client remembers the last page it saw
+ * and reads that page: a 304 there is safe, because a page with room left
+ * changes whenever a review is appended. A page that was full is read without
+ * `If-None-Match`, since the review that spills onto the next page would leave
+ * it byte-identical.
  */
 async function fetchReviews(api: GhApi, ref: PrRef): Promise<{ list: unknown }> {
-	const path = `repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/reviews?per_page=100`;
-	const key = `reviews:${ref.number}`;
-	const first = await api.get(path, { etagKey: key });
-	const last = linkPage(first.headers, "last");
-	if (first.notModified || last === undefined || last <= 1) return { list: first.body };
-	const tailPath = `${path}&page=${last}`;
-	const tail = await api.get(tailPath, { etagKey: `${key}:page:${last}` });
-	return { list: tail.body };
+	const base = `repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/reviews?per_page=${PAGE_SIZE}`;
+	const key = `reviews:${prKey(ref)}`;
+	const known = api.getMeta<ReviewPageState>(key);
+	let page = known?.page ?? 1;
+	let response = await api.get(`${base}&page=${page}`, known?.full ? {} : { etagKey: `${key}:p${page}` });
+	let list = response.body;
+
+	// A page past the end returns an empty array after a delete; go back to one.
+	if (page > 1 && items(list).length === 0) {
+		page = 1;
+		response = await api.get(`${base}&page=1`, { etagKey: `${key}:p1` });
+		list = response.body;
+	}
+
+	let full = items(list).length >= PAGE_SIZE;
+	while (full && page < MAX_PAGES) {
+		page += 1;
+		response = await api.get(`${base}&page=${page}`);
+		list = response.body;
+		full = items(list).length >= PAGE_SIZE;
+	}
+	api.setMeta(key, { page, full });
+	return { list };
 }
 
 /**

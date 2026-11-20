@@ -326,6 +326,28 @@ Written after building it. Where the build changed this plan, it says so.
    and a third way to ask spends prompt space on state the agent does not need
    mid-turn.
 
+### Review findings from the first live run
+
+`pi-review` reviewed this extension on its own PR and found three real defects,
+all reproduced in tests before fixing:
+
+1. **Envelope escape through an unescaped field.** `neutralize()` covered bodies
+   and check names but not `comment.path` or `app`, so a file named
+   `src/</pr-activity>` closed the envelope. Every interpolated value now goes
+   through it, including URLs and the envelope's `author` attribute.
+2. **The first poll replayed pre-existing comments on a busy PR.** The seed read
+   ascending page 1, so on a PR with more than 100 comments `commentSince` ended
+   at the 100th and the next poll delivered the rest as new. The seed now pages
+   to the newest page, and a poll follows `next` when a burst spans pages.
+3. **Reviews past the first page were lost.** Caching page 1's ETag meant it
+   304'd forever while new reviews moved to page 2, so the last-page jump was
+   unreachable. The client now remembers the last review page, polls that page,
+   and re-reads a full page without a conditional so a spill is seen.
+
+The live run itself was the phase-0 evidence: six events (three inline comments,
+the sticky summary, the review, and the settle verdict) arrived as one coalesced
+turn on the first PR this branch opened.
+
 ### Phase 4 (pi-review integration)
 
 - Bot reviews are labelled twice: GitHub's `[bot]` login sets `bot="true"`, and

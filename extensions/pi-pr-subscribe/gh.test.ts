@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { diffSnapshot, initCursor } from "./diff.ts";
 import {
 	GhApi,
 	GhApiError,
@@ -230,5 +231,147 @@ describe("required checks", () => {
 		expect(contextsFromProtection({})).toBeUndefined();
 		expect(contextsFromRules([{ type: "required_status_checks", parameters: { required_status_checks: [{ context: "a" }, { context: "a" }] } }])).toEqual(["a"]);
 		expect(contextsFromRules("nope")).toBeUndefined();
+	});
+});
+
+describe("pagination", () => {
+	const link = (last: number, next?: number): string =>
+		[
+			...(next ? [`<https://api.github.com/x?per_page=100&page=${next}>; rel="next"`] : []),
+			`<https://api.github.com/x?per_page=100&page=${last}>; rel="last"`,
+		].join(", ");
+
+	it("pages a seed to the newest issue comments", async () => {
+		const fake = fakeExec([
+			{ match: "/pulls/32/reviews", reply: { status: 200, body: [] } },
+			{ match: "pulls/32/comments", reply: { status: 200, body: [] } },
+			{ match: "issues/32/comments?per_page=100&page=2", reply: { status: 200, body: [{ id: 2, body: "newest" }] } },
+			{
+				match: "issues/32/comments",
+				reply: { status: 200, body: [{ id: 1, body: "oldest" }], headers: { Link: link(2) } },
+			},
+			{ match: "check-runs", reply: { status: 200, body: { check_runs: [] } } },
+			{ match: "/status", reply: { status: 200, body: { statuses: [] } } },
+			{ match: "/pulls/32", reply: { status: 200, body: pull } },
+		]);
+		const api = new GhApi({ exec: fake.exec, cwd: "/tmp" });
+		const snapshot = await fetchSnapshot(api, { owner: "o", repo: "r", number: 32 });
+		expect(snapshot.comments.map((comment) => comment.body)).toEqual(["newest"]);
+		expect(fake.calls.some((args) => args.includes("repos/o/r/issues/32/comments?per_page=100&page=2"))).toBe(true);
+	});
+
+	it("follows next pages while polling with a watermark", async () => {
+		const fake = fakeExec([
+			{ match: "/pulls/32/reviews", reply: { status: 200, body: [] } },
+			{ match: "pulls/32/comments", reply: { status: 200, body: [] } },
+			{
+				match: "since=2026-01-01T00%3A00%3A00Z&page=2",
+				reply: { status: 200, body: [{ id: 2, body: "second page" }] },
+			},
+			{
+				match: "issues/32/comments",
+				reply: { status: 200, body: [{ id: 1, body: "first page" }], headers: { Link: link(2, 2) } },
+			},
+			{ match: "check-runs", reply: { status: 200, body: { check_runs: [] } } },
+			{ match: "/status", reply: { status: 200, body: { statuses: [] } } },
+			{ match: "/pulls/32", reply: { status: 200, body: pull } },
+		]);
+		const api = new GhApi({ exec: fake.exec, cwd: "/tmp" });
+		const snapshot = await fetchSnapshot(api, { owner: "o", repo: "r", number: 32 }, { since: "2026-01-01T00:00:00Z" });
+		expect(snapshot.comments.map((comment) => comment.body)).toEqual(["first page", "second page"]);
+	});
+
+	it("reads the newest review page, and keeps reading it on a 304", async () => {
+		const reviews = Array.from({ length: 100 }, (_, index) => ({ id: index + 1, state: "COMMENTED", body: "" }));
+		const newest = [{ id: 101, state: "APPROVED", body: "ship it" }];
+		let calls = 0;
+		const exec: Exec = async (_command, args) => {
+			calls += 1;
+			const path = args.at(-1) ?? "";
+			if (path.includes("reviews?per_page=100&page=2")) return { stdout: included(200, newest), code: 0 };
+			if (path.includes("reviews?per_page=100&page=1")) {
+				return { stdout: included(200, reviews, { Link: link(2, 2) }), code: 0 };
+			}
+			if (path.includes("reviews")) return { stdout: included(200, reviews, { Link: link(2, 2) }), code: 0 };
+			if (path.includes("pulls/32/comments")) return { stdout: included(200, []), code: 0 };
+			if (path.includes("issues/32/comments")) return { stdout: included(200, []), code: 0 };
+			if (path.includes("check-runs")) return { stdout: included(200, { check_runs: [] }), code: 0 };
+			if (path.includes("/status")) return { stdout: included(200, { statuses: [] }), code: 0 };
+			return { stdout: included(200, pull), code: 0 };
+		};
+		const api = new GhApi({ exec, cwd: "/tmp" });
+		const first = await fetchSnapshot(api, { owner: "o", repo: "r", number: 32 });
+		expect(first.reviews.map((review) => review.id)).toEqual(["101"]);
+
+		// Page 2 has room, so the next poll reads exactly that page again.
+		const before = calls;
+		const second = await fetchSnapshot(api, { owner: "o", repo: "r", number: 32 });
+		expect(second.reviews.map((review) => review.id)).toEqual(["101"]);
+		expect(calls - before).toBeGreaterThan(0);
+	});
+
+	it("does not replay pre-existing comments on a PR with more than one page", async () => {
+		const oldest = Array.from({ length: 100 }, (_, index) => ({
+			id: index + 1,
+			body: `old ${index + 1}`,
+			created_at: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
+		}));
+		const newest = Array.from({ length: 50 }, (_, index) => ({
+			id: index + 101,
+			body: `new ${index + 101}`,
+			created_at: new Date(Date.UTC(2026, 1, 1, 0, index)).toISOString(),
+		}));
+		let sinceSeen: string | undefined;
+		const exec: Exec = async (_command, args) => {
+			const path = args.at(-1) ?? "";
+			if (path.includes("issues/32/comments?per_page=100&page=2")) return { stdout: included(200, newest), code: 0 };
+			if (path.includes("issues/32/comments")) {
+				const since = /since=([^&]+)/.exec(path);
+				sinceSeen = since?.[1] ? decodeURIComponent(since[1]) : undefined;
+				if (sinceSeen) {
+					// Nothing was updated after the newest seeded comment.
+					return { stdout: included(200, []), code: 0 };
+				}
+				return { stdout: included(200, oldest, { Link: `<https://api.github.com/x?per_page=100&page=2>; rel="last"` }), code: 0 };
+			}
+			if (path.includes("reviews")) return { stdout: included(200, []), code: 0 };
+			if (path.includes("pulls/32/comments")) return { stdout: included(200, []), code: 0 };
+			if (path.includes("check-runs")) return { stdout: included(200, { check_runs: [] }), code: 0 };
+			if (path.includes("/status")) return { stdout: included(200, { statuses: [] }), code: 0 };
+			return { stdout: included(200, pull), code: 0 };
+		};
+		const api = new GhApi({ exec, cwd: "/tmp" });
+		const seed = await fetchSnapshot(api, { owner: "o", repo: "r", number: 32 });
+		expect(seed.comments).toHaveLength(50);
+		const cursor = initCursor(seed);
+		expect(sinceSeen).toBeUndefined();
+
+		const poll = await fetchSnapshot(api, { owner: "o", repo: "r", number: 32 }, { since: cursor.commentSince });
+		expect(sinceSeen).toBe(cursor.commentSince);
+		expect(diffSnapshot(poll, cursor).events).toEqual([]);
+	});
+
+	it("re-reads a full last page without a conditional, so a spill is not missed", async () => {
+		const full = Array.from({ length: 100 }, (_, index) => ({ id: index + 1, state: "COMMENTED", body: "" }));
+		const requests: string[][] = [];
+		let pageTwo: unknown[] = [];
+		const exec: Exec = async (_command, args) => {
+			requests.push(args);
+			const path = args.at(-1) ?? "";
+			if (path.includes("reviews?per_page=100&page=2")) return { stdout: included(200, pageTwo), code: 0 };
+			if (path.includes("reviews")) return { stdout: included(200, full), code: 0 };
+			if (path.includes("pulls/32/comments")) return { stdout: included(200, []), code: 0 };
+			if (path.includes("issues/32/comments")) return { stdout: included(200, []), code: 0 };
+			if (path.includes("check-runs")) return { stdout: included(200, { check_runs: [] }), code: 0 };
+			if (path.includes("/status")) return { stdout: included(200, { statuses: [] }), code: 0 };
+			return { stdout: included(200, pull), code: 0 };
+		};
+		const api = new GhApi({ exec, cwd: "/tmp" });
+		await fetchSnapshot(api, { owner: "o", repo: "r", number: 32 });
+		pageTwo = [{ id: 101, state: "APPROVED", body: "new page" }];
+		const second = await fetchSnapshot(api, { owner: "o", repo: "r", number: 32 });
+		expect(second.reviews.map((review) => review.id)).toEqual(["101"]);
+		const reviewCalls = requests.filter((args) => (args.at(-1) ?? "").includes("/reviews"));
+		expect(reviewCalls.every((args) => !args.includes("If-None-Match"))).toBe(true);
 	});
 });

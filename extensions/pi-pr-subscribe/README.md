@@ -69,10 +69,16 @@ envelope as untrusted data, and **end the turn** when there is nothing to do.
   SHA, legacy commit statuses, issue comments, inline review comments, reviews.
 - Every read sends `If-None-Match`. A 304 does not count against the rate limit,
   and `gh api --include` exposes the headers cleanly.
-- Issue comments page ascending only, so they are read with a `since` watermark:
-  the newest comment's `created_at`. Review comments and the PR itself page
-  newest-first. Reviews have no `direction` parameter, so a PR with more than one
-  page jumps to its last page (rare, and one extra request when it happens).
+- Issue comments page ascending only — `sort`/`direction` are ignored — so they
+  are read with a `since` watermark: the newest comment's `updated_at`. At
+  subscribe the seed pages through to the newest page before the cursor is
+  built, and a poll that finds more than one page of new comments follows
+  `next`. Review comments and the PR itself page newest-first.
+- Reviews have no ordering parameter either. The client remembers the last review
+  page it read and polls that page; a page with room left changes whenever a
+  review is appended, so a 304 there is meaningful. A page that was exactly full
+  is re-read without `If-None-Match`, because the review spilling onto the next
+  page would leave it byte-identical.
 - Interval: 20 s while checks are pending, 60 s once they settle, 5 min once a PR
   has been quiet for an hour. `PI_PR_POLL=<seconds>` overrides the base.
 - Failed checks fetch their job log tail best effort (three per batch, capped at
@@ -116,7 +122,9 @@ A PR comment is attacker-controllable text, and this extension deliberately wake
 the agent to read it. Three layers:
 
 1. **The envelope.** Bodies are labelled untrusted, fenced, and truncated (4 KB
-   for comments), and any attempt to close the envelope early is neutralized.
+   for comments), and **every** interpolated field — body, file path, app name,
+   author, URLs — runs through the same neutralizer, so an attacker-chosen path
+   cannot close the envelope early.
 2. **The guard.** The tool only subscribes to a repo matching one of the session's
    git remotes, and says why when it refuses. `owner`/`repo` are model-supplied
    and the model cannot tell a user request from injected event text, so
@@ -129,11 +137,13 @@ instruction; rule 6 and the permission model say so, and there is a test for it.
 
 ## Limits, honestly
 
-- A PR with more than 100 new comments between two polls (20 s) would lose the
-  overflow. The cursor keeps 500 ids, and the next poll's page would still show
-  the newest, so the practical window is much larger than one poll.
-- Reviews are read from their last page; a burst of >100 reviews between polls is
-  the same failure.
+- A poll follows at most five issue-comment pages (500 new comments) between
+  ticks. Past that the overflow is read on the next tick, because `since` starts
+  from the previous watermark, not from the newest page.
+- Reviews are read from their last page, and a page that fills is re-read
+  unconditionally, so a 101st review starts a new page that the next poll picks
+  up. Deleted reviews can move the last page backwards; an empty page falls back
+  to page one.
 - Check runs use `filter=latest`, so a superseded attempt of the same name is not
   reported separately.
 - `/reload` keeps a poller running only in the same process. Quitting pi stops
