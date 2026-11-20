@@ -82,9 +82,15 @@ details }, { triggerTurn: true, deliverAs: "steer" })`, the same delivery
 
 Bot-authored events are labelled, not filtered. Filtering belongs to the user's
 prompt, and "the review bot said X" is exactly what the agent needs to see. The
-agent's **own** comments (author equals the authenticated login, or carrying a
-marker the agent adds) are skipped so a reply does not wake the agent about
-itself.
+agent's **own** comments are skipped so a reply does not wake the agent about
+itself. Ownership is **not** decided by login: `gh` runs as the user, so a login
+match would drop every comment the user writes from github.com, and it would miss
+anything posted through another identity such as the `pi-review` App. Instead the
+tool that posts on the agent's behalf appends a hidden marker
+(`<!-- pi-pr-subscribe:agent -->`) and records the posted comment id in the
+cursor; an event is skipped only if it carries the marker or its id is recorded.
+Comments posted outside that path, by the user or anyone else, always wake the
+agent.
 
 ### Transport: polling `gh api`, not webhooks
 
@@ -95,14 +101,24 @@ works anywhere pi works.
 - One `gh api` call per resource, with `If-None-Match`. A 304 does **not** count
   against the rate limit, so an idle PR is nearly free.
 - Resources per tick: the PR (state, merged, head SHA), check runs for the head
-  SHA, issue comments, review comments, reviews. Five requests, most of them 304.
+  SHA, **commit statuses** for the head SHA (`/commits/{sha}/status`, a separate
+  endpoint that legacy CI reports through), issue comments, review comments,
+  reviews. Six requests, most of them 304.
+- "Required" checks come from the branch's protection or rulesets
+  (`/branches/{base}/protection/required_status_checks`, or the rules for the
+  branch), fetched once at subscribe time and refreshed on `head.updated`. When
+  the token cannot read them (no admin scope) or none are configured,
+  `checks.settled` means **every** check run and status on the head SHA is
+  terminal, and the event says which definition it used.
 - Interval: 20 s while checks are pending, 60 s when they are settled, 5 min once
   a PR has been quiet for an hour. `PI_PR_POLL` overrides the base.
 - Auth reuses `gh`, as `pi-review` does. No new token handling. If `gh` is not
   logged in, `subscribe_pr_activity` fails with the fix, not silently.
 - Fallback if the spike finds ETag + REST too chatty: one GraphQL query per tick
-  (`statusCheckRollup`, `reviews`, `comments`, `reviewThreads`) at the cost of
-  points instead of requests. `pi-review/github/threads.ts` already speaks
+  (`statusCheckRollup`, which covers check runs and statuses and carries
+  `isRequired`, plus `reviews`, `comments`, `reviewThreads`) at the cost of
+  points instead of requests. The spike should compare both on completeness, not
+  only on request count. `pi-review/github/threads.ts` already speaks
   GraphQL through `gh`.
 
 ### State and dedupe
@@ -167,9 +183,13 @@ that the agent is instructed to act on. Mitigations, in order of strength:
 - The permission model (`extensions/permissions`) still gates every tool call a
   woken turn makes. The extension does not bypass it, and a notification turn does
   not start with extra grants.
-- Only subscribe to PRs in the repo the session is in, unless `owner`/`repo` are
-  passed explicitly by the user's request. The tool refuses repos that do not
-  match `origin` or any remote, and says why.
+- The tool only subscribes to PRs in a repo matching `origin` or another git
+  remote, and says why when it refuses. `owner` and `repo` are model-supplied, and
+  the tool cannot tell a user request from injected event text, so cross-repo is
+  **not** left to the model: it is possible only through the user's own
+  `/subscribe owner/repo#n` command, or a UI confirmation the user answers. An
+  injected comment therefore cannot widen the set of repos feeding events into the
+  session.
 
 ### User surface
 
@@ -208,7 +228,8 @@ that the agent is instructed to act on. Mitigations, in order of strength:
    workflows all arrive the same way. Only the agent's own comments are skipped.
    A future `ignoreAuthors` setting is the escape hatch if some bot gets noisy.
 4. **Auto-subscribe after `gh pr create`:** no. Subscribing is explicit.
-5. **Scope:** same-repo PRs by default; cross-repo needs an explicit ask.
+5. **Scope:** same-repo PRs only through the tool; cross-repo only through the
+   user's own `/subscribe` command or a confirmation prompt.
 6. **Idle sessions:** an event wakes pi only while the session is open. On resume a
    single batched "what you missed" event fires. No daemon.
 
