@@ -5,8 +5,9 @@ agent opens a PR, subscribes, and keeps working or goes idle. When CI finishes, 
 review or comment lands, or the PR merges or closes, the event arrives as its own
 turn. No `sleep` loops, no re-running `gh pr checks` by hand.
 
-Status: **planned, not started.** Phase 0 is a spike on the polling transport
-(below); everything after it assumes the spike holds.
+Status: **built (phases 0–3), phase 4 done in the pi-review README, phase 5 not
+started.** The implementation record at the bottom names every place the build
+changed a decision made here; the phase list is otherwise live.
 
 The motivating case is [`pi-review`](../pi-review/). With the review bot
 installed, a typical session is: code, push, open the PR, then "subscribe so you
@@ -261,3 +262,74 @@ that the agent is instructed to act on. Mitigations, in order of strength:
 - **Notification is not authorization.** The agent acting on a bot review is
   fine; acting on a human's comment that says "now merge it" is not. Rule 6 and the
   permission model cover it, and it deserves its own test.
+
+## Implementation record
+
+Written after building it. Where the build changed this plan, it says so.
+
+### Phase 0, measured
+
+- `gh api --include` exposes the status line, `Etag`, `Link`, `Retry-After`, and
+  `X-RateLimit-*` cleanly. A second request with `If-None-Match` returns
+  `304 Not Modified` with an empty body and no rate-limit charge.
+- A poll is six `gh` invocations. On a quiet PR five are 304s; wall time for a
+  cached tick is under a second on the development machine.
+- REST + ETag won over GraphQL. The GitHub App installation token from
+  `pi-review` would need `checks:read` and `pull_requests:read`; `gh`'s own login
+  is already there, so no new token handling.
+- Required checks are unreadable on this repository (no branch protection), which
+  is the common case and the documented fallback: every check on the head counts
+  and the event says so.
+- `gh api …/actions/jobs/<id>/logs` follows the redirect and returns plain text.
+  It is megabytes, so `pi.exec` (which caps from the head) cannot be used; the
+  job-log tail comes from a small spawn that keeps the last 64 KB.
+- Issue comments are **ascending only**: `sort`/`direction` are ignored on
+  `/issues/{n}/comments`. The plan assumed one page of the newest would do. It
+  does not — page one is the oldest hundred forever. They are read with a
+  `since` watermark instead, which also keeps a quiet PR to a 304.
+- Review comments do accept `direction=desc`. Reviews do not; they are read from
+  their last `Link` page when they overflow one page.
+
+### Decisions this build made, and why
+
+1. **`subscription.created` is the tool result, not a message.** Sending the
+   rules as a message while the tool call is still running steers the same turn
+   the result is about to enter, so the text would appear twice. The tool result
+   carries the same rules, state snapshot, and "end the turn" instruction.
+2. **A checkless head waits three polls before `checks.settled`.** "Every check
+   is terminal" is vacuously true with zero checks, which would announce CI
+   finished the moment a head was pushed, before Actions created a run. Three
+   polls (~60 s at the base rate) is the compromise; a repo with no CI sees one
+   "no checks" verdict a minute after subscribing.
+3. **A required context that never appears settles against every check.** A
+   renamed job or a stale required list must not wedge a subscription forever.
+   The event stays honest: `definition: "all"` plus the missing contexts.
+4. **The log tail is fetched only for failures, at most three per batch.** The
+   plan said a failure includes its tail; it did not say the tail costs a
+   multi-megabyte download. This keeps a red matrix from turning one poll into
+   eight downloads.
+5. **A blocked (second-session) subscription retries the lock every minute.** The
+   plan said a stale heartbeat releases it; a crash is not the only way to get
+   one, and a one-minute retry makes take-over automatic instead of a `/reload`
+   away.
+6. **The issue-comment watermark is stored in the cursor.** It has to survive
+   resume for the same reason the ids do, and an edited sticky comment (which
+   `pi-review` is) can arrive under `since`: ids still dedupe it.
+7. **The staleness of a foreign-machine lock is judged by heartbeat only.** A
+   lock from another host cannot be checked by pid. A shared home over NFS is
+   out of scope, but the file does not lie about it.
+8. **`/subscribe status` is the debugger.** Cursor, head, required list, seen
+   counts, next poll, error class, and lock holder, because "why did nothing
+   arrive" is the only bug report this extension can get.
+9. **Two read-only surfaces, not three.** There is no `pr_subscriptions` tool:
+   the compaction reminder and `/subscribe` already answer "what am I watching",
+   and a third way to ask spends prompt space on state the agent does not need
+   mid-turn.
+
+### Phase 4 (pi-review integration)
+
+- Bot reviews are labelled twice: GitHub's `[bot]` login sets `bot="true"`, and
+  the `<!-- pi-review:review -->` marker sets `source="pi-review"` even when the
+  review was posted through another identity.
+- The `pi-review` README gained a "Watching for the review" section pointing at
+  `subscribe_pr_activity`.

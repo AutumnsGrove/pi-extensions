@@ -305,6 +305,19 @@ on the first run and updated in place afterwards:
 That keeps a stable status line on the PR instead of one status comment per
 push. The review itself still carries the findings.
 
+## Watching for the review
+
+With [`pi-pr-subscribe`](../pi-pr-subscribe/) installed, ask pi to
+`subscribe_pr_activity` after opening the PR and end the turn. The next review
+arrives as its own turn, tagged `source="pi-review"`, alongside a `checks.settled`
+verdict — no `gh pr checks` polling, no sleeping. A review posted by the App is
+labelled `bot="true"` from the `[bot]` login; the review marker sets the source
+tag even when it was posted through another identity.
+
+When the agent has a reply to make, posting it with
+`gh pr comment` or `gh api …/comments` is enough: the subscription records the
+returned id, so the agent is not woken by its own comment.
+
 ## One App, many repositories
 
 Create the App once; the wizard then remembers it on this machine:
