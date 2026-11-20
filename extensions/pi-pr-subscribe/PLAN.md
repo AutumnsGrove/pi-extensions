@@ -188,7 +188,7 @@ be tuned without touching the poller. Draft:
 
 ### Prompt injection
 
-The reason for the envelope and rule 4. A PR comment is attacker-controllable text
+The reason for the envelope and rule 5. A PR comment is attacker-controllable text
 that the agent is instructed to act on. Mitigations, in order of strength:
 
 - Event bodies are fenced and labelled untrusted, and truncated (comments to 4 KB,
@@ -258,5 +258,5 @@ that the agent is instructed to act on. Mitigations, in order of strength:
 - **Missed events.** A force-push can delete comments or reset checks. The cursor
   keys on ids and head SHA, and `head.updated` resets the check map.
 - **Notification is not authorization.** The agent acting on a bot review is
-  fine; acting on a human's comment that says "now merge it" is not. Rule 5 and the
+  fine; acting on a human's comment that says "now merge it" is not. Rule 6 and the
   permission model cover it, and it deserves its own test.
