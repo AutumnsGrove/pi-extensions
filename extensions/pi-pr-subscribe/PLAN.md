@@ -57,6 +57,7 @@ subscribe_pr_activity ──► registry (per session, persisted) ──► poll
 | --- | --- | --- |
 | `subscribe_pr_activity` | `owner?`, `repo?`, `pullNumber?` | Start watching. Defaults come from `origin` and the current branch's open PR, so `subscribe_pr_activity({})` works right after `gh pr create`. Returns the rules text and the current state. Idempotent. |
 | `unsubscribe_pr_activity` | same | Stop watching. Idempotent. |
+| `comment_pr_activity` | `body`, `pullNumber?`, `inReplyTo?` | Post a PR comment, or a reply on a review thread, on the agent's behalf. Appends the agent marker and writes the new comment id into the subscription cursor in the same call, so the reply never wakes the agent about itself. This is the only path that gets guaranteed own-comment suppression. |
 | `pr_subscriptions` *(maybe)* | — | List active subscriptions and the last event seen. Could fold into `/subscribe` only; decide in phase 2. |
 
 Parameter names match Claude's, so prompts and `AGENTS.md` lines written for one
@@ -86,11 +87,18 @@ agent's **own** comments are skipped so a reply does not wake the agent about
 itself. Ownership is **not** decided by login: `gh` runs as the user, so a login
 match would drop every comment the user writes from github.com, and it would miss
 anything posted through another identity such as the `pi-review` App. Instead the
-tool that posts on the agent's behalf appends a hidden marker
+`comment_pr_activity` tool (above) appends a hidden marker
 (`<!-- pi-pr-subscribe:agent -->`) and records the posted comment id in the
 cursor; an event is skipped only if it carries the marker or its id is recorded.
-Comments posted outside that path, by the user or anyone else, always wake the
-agent.
+The prompt guidelines tell the agent to reply through that tool rather than
+`gh pr comment`.
+
+A comment the agent posts through raw `gh` has no marker and no recorded id, so it
+**will** wake the agent once. That is accepted: it is indistinguishable from a
+comment the user posted under the same login, and the failure is one extra turn,
+not a lost event. Event coalescing (below) folds it into the next delivery, and the
+rules tell the agent that an event whose author is the authenticated login and
+whose body it just wrote needs no reply.
 
 ### Transport: polling `gh api`, not webhooks
 
@@ -211,7 +219,8 @@ that the agent is instructed to act on. Mitigations, in order of strength:
    fixtures), `poller.ts`, `registry.ts`, `rules.ts`. Tools and delivery. Tests:
    dedupe across reload, settle detection, own-comment filtering, merge ends the
    subscription, backoff on 403/404/5xx.
-2. **Persistence and locking.** `appendEntry` cursor, resume, lock file, compaction
+2. **Persistence and locking.** Includes `comment_pr_activity` and the own-comment
+   test that depends on it. `appendEntry` cursor, resume, lock file, compaction
    reminder, `pi-q-n-a` deferral.
 3. **UI.** `/subscribe`, widget, README, root README row.
 4. **`pi-review` integration.** Tag bot reviews; add one line to the `pi-review`
