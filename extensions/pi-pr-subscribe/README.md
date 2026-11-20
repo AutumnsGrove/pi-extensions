@@ -79,8 +79,11 @@ envelope as untrusted data, and **end the turn** when there is nothing to do.
   review is appended, so a 304 there is meaningful. A page that was exactly full
   is re-read without `If-None-Match`, because the review spilling onto the next
   page would leave it byte-identical.
-- Interval: 20 s while checks are pending, 60 s once they settle, 5 min once a PR
-  has been quiet for an hour. `PI_PR_POLL=<seconds>` overrides the base.
+- Interval: 20 s while checks are pending **and for ten minutes after any
+  event** (a push is when you are watching, and a one-minute blind spot after
+  every commit is noticeable), then 60 s, then 5 min once the PR has been quiet
+  for an hour. `PI_PR_POLL=<seconds>` overrides the base; the other two rates are
+  three times and fifteen times it.
 - Failed checks fetch their job log tail best effort (three per batch, capped at
   64 KB read / 40 lines kept). No tail is worth failing the tick.
 - "Settled" is read from branch protection or rulesets when the token can see

@@ -348,6 +348,12 @@ The live run itself was the phase-0 evidence: six events (three inline comments,
 the sticky summary, the review, and the settle verdict) arrived as one coalesced
 turn on the first PR this branch opened.
 
+10. **The base rate holds for ten minutes after any event.** Observed live: a
+    push right after a settle waited out the 60 s settled interval, and the
+    widget looked stuck. A settled PR now keeps the 20 s rate for ten minutes
+    after its last event, then 60 s, then 5 min. The ETags make the extra polls
+    free; the cost is a `gh` process per request, not API quota.
+
 ### Phase 4 (pi-review integration)
 
 - Bot reviews are labelled twice: GitHub's `[bot]` login sets `bot="true"`, and

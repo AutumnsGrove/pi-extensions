@@ -46,6 +46,8 @@ import {
 
 export const DEFAULT_BASE_POLL_MS = 20_000;
 export const COALESCE_MS = 5_000;
+/** Keep the fast rate for this long after any event, so a push is noticed quickly. */
+export const ACTIVE_AFTER_MS = 10 * 60_000;
 export const QUIET_AFTER_MS = 60 * 60_000;
 export const MAX_POLL_MS = 300_000;
 export const MAX_LOG_FETCHES = 3;
@@ -96,13 +98,21 @@ export function apiForget(sessionId: string): void {
 
 const now = (deps: PollerDeps): number => deps.now?.() ?? Date.now();
 
-/** Pending checks poll at the base rate; quiet PRs back off to five minutes. */
+/**
+ * Pending checks poll at the base rate. A PR that settled keeps that rate for
+ * ten minutes, because a push is exactly when the user is watching and a
+ * one-minute blind spot after every commit is noticeable. After that it drops to
+ * three times the base, and to fifteen times once the PR has been quiet an hour.
+ */
 export function pollInterval(sub: Subscription, deps: PollerDeps, at = now(deps)): number {
 	const base = deps.basePollMs ?? DEFAULT_BASE_POLL_MS;
 	const summary = checkSummary(sub.checks);
 	if (summary.pending > 0) return base;
-	if (sub.lastEventAt && at - sub.lastEventAt > QUIET_AFTER_MS) return Math.min(base * 15, MAX_POLL_MS);
-	return Math.min(base * 3, MAX_POLL_MS);
+	if (sub.lastEventAt === undefined) return base;
+	const sinceEvent = at - sub.lastEventAt;
+	if (sinceEvent < ACTIVE_AFTER_MS) return base;
+	if (sinceEvent < QUIET_AFTER_MS) return Math.min(base * 3, MAX_POLL_MS);
+	return Math.min(base * 15, MAX_POLL_MS);
 }
 
 export function startPoller(sub: Subscription, deps: PollerDeps): void {

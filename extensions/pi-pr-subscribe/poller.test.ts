@@ -3,6 +3,7 @@ import { initCursor } from "./diff.ts";
 import type { Exec } from "./gh.ts";
 import { prKey } from "./ref.ts";
 import {
+	ACTIVE_AFTER_MS,
 	COALESCE_MS,
 	DEFAULT_BASE_POLL_MS,
 	describeEvent,
@@ -287,10 +288,12 @@ describe("pollInterval", () => {
 		pending.checks = [{ key: "a", name: "a", status: "in_progress", conclusion: null }];
 		expect(pollInterval(pending, deps, 10_000)).toBe(20_000);
 
+		// Ten minutes after an event, a settled PR still polls at the base rate.
 		const settled = sub();
 		settled.checks = [{ key: "a", name: "a", status: "completed", conclusion: "success" }];
 		settled.lastEventAt = 10_000;
-		expect(pollInterval(settled, deps, 20_000)).toBe(60_000);
+		expect(pollInterval(settled, deps, 10_000 + ACTIVE_AFTER_MS - 1)).toBe(20_000);
+		expect(pollInterval(settled, deps, 10_000 + ACTIVE_AFTER_MS + 1)).toBe(60_000);
 
 		settled.lastEventAt = 1;
 		expect(pollInterval(settled, deps, 2 * 60 * 60_000)).toBe(300_000);
