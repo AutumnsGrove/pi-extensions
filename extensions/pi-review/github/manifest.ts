@@ -12,21 +12,6 @@ import type { RepoRef } from "../detect.ts";
 /** GitHub rejects App names longer than 34 characters. */
 export const APP_NAME_MAX_LENGTH = 34;
 
-/**
- * What the App asks for. Kept as one object so the manifest and the installer's
- * summary cannot disagree about what a review token may do.
- *
- * `contents: read` is deliberate. GitHub gates `resolveReviewThread` on
- * Contents: write, not Pull requests: write, so the App cannot close its own
- * review threads; granting write would also let a prompt-injected review push
- * to the repository. Thread resolution is reported honestly instead (#55).
- */
-export const MANIFEST_PERMISSIONS: Record<string, "read" | "write"> = {
-	contents: "read",
-	pull_requests: "write",
-	issues: "write",
-};
-
 export interface AppManifest {
 	name: string;
 	url: string;
@@ -70,7 +55,11 @@ export function buildManifest(options: ManifestOptions): AppManifest {
 		redirect_url: options.redirectUrl,
 		public: false,
 		request_oauth_on_install: false,
-		default_permissions: { ...MANIFEST_PERMISSIONS },
+		default_permissions: {
+			contents: "read",
+			pull_requests: "write",
+			issues: "write",
+		},
 		default_events: [],
 	};
 }
