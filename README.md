@@ -239,6 +239,7 @@ pnpm cost report                  # print the ledger without changing anything
 | provider-pinning | $0.417 | 1 |
 | hooks + permissions + sounds | $0.379 | 1 |
 | opencode-go | $0.339 | 1 |
+| pi-pr-subscribe | $0.328 | 1 |
 | pi-background | $0.318 | 1 |
 | parallel | $0.303 | 1 |
 | pi-memory | $0.251 | 1 |
@@ -251,7 +252,7 @@ pnpm cost report                  # print the ledger without changing anything
 | cost-tracker | $0.099 | 2 |
 | git-status | $0.078 | 1 |
 | cooking | $0.068 | 1 |
-| **Total** | **$4.801** | **19** |
+| **Total** | **$5.129** | **20** |
 <!-- COST:END -->
 
 ## License
