@@ -78,7 +78,6 @@ import {
 	setRepoVariable,
 } from "./github/secrets.ts";
 import {
-	DEFAULT_PI_VERSION,
 	SETTINGS_PATH,
 	THINKING_LEVELS,
 	WORKFLOW_PATH,
@@ -769,16 +768,9 @@ async function resolveIdentity(options: InstallOptions, state: Preflight): Promi
 	};
 }
 
-async function detectPiVersion(exec: Exec, cwd: string): Promise<string> {
-	const version = await run(exec, "pi", ["--version"], { cwd, timeout: 15_000 });
-	const clean = version?.trim().replace(/^v/, "");
-	return clean && /^\d+\.\d+\.\d+/.test(clean) ? clean : DEFAULT_PI_VERSION;
-}
-
 async function collectReviewSettings(
 	options: InstallOptions,
 	identity: IdentityMode,
-	piVersion: string,
 	base?: ReviewSettings
 ): Promise<ReviewSettings | undefined> {
 	const { ui } = options;
@@ -792,10 +784,11 @@ async function collectReviewSettings(
 				...(defaults.provider ? { provider: defaults.provider } : {}),
 				...(defaults.model ? { model: defaults.model } : {}),
 				...(defaults.thinking ? { thinking: defaults.thinking } : {}),
-				piVersion,
 			});
+	// The pi version is no longer written here: leaving it unset is what lets the
+	// reusable workflow's default reach the repository, and a pinned value the
+	// maintainer already committed is left untouched.
 	settings.identity = identity;
-	settings.pi = { version: piVersion };
 
 	if (!settings.model) {
 		const model = await ui.input("Model id for reviews (provider/model)", "provider/model");
@@ -1026,7 +1019,6 @@ export async function installPiReview(options: InstallOptions): Promise<InstallO
 	const identity = await resolveIdentity(options, state);
 	if (identity.status === "aborted") return identity;
 
-	const piVersion = await detectPiVersion(exec, cwd);
 	let baseSettings: ReviewSettings | undefined;
 	try {
 		baseSettings = parseSettings(JSON.parse(await readFile(join(cwd, SETTINGS_PATH), "utf8")));
@@ -1036,7 +1028,6 @@ export async function installPiReview(options: InstallOptions): Promise<InstallO
 	const settings = await collectReviewSettings(
 		options,
 		identity.identity,
-		piVersion,
 		baseSettings
 	);
 	if (!settings) {

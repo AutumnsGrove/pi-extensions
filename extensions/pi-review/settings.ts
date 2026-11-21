@@ -89,12 +89,16 @@ export interface ReviewSettings {
 		onProviderFailure: ProviderFailureMode;
 	};
 	paths: { include: string[]; exclude: string[] };
-	pi: { version: string };
+	/**
+	 * Pinned pi version. Left unset by default so the reusable workflow's
+	 * `pi-version` input decides; a repository that needs a specific release can
+	 * still pin one here, and that value wins.
+	 */
+	pi?: { version: string };
 	/** Wall-clock ceiling for the review step. */
 	timeoutMinutes: number;
 }
 
-export const DEFAULT_PI_VERSION = "1.5.0";
 export const DEFAULT_TIMEOUT_MINUTES = 20;
 export const DEFAULT_MAX_INLINE_COMMENTS = 25;
 
@@ -103,7 +107,6 @@ export interface SettingsDefaults {
 	provider?: string;
 	model?: string;
 	thinking?: ThinkingLevel;
-	piVersion?: string;
 }
 
 export function defaultSettings(overrides: SettingsDefaults = {}): ReviewSettings {
@@ -134,9 +137,6 @@ export function defaultSettings(overrides: SettingsDefaults = {}): ReviewSetting
 			onProviderFailure: "fail",
 		},
 		paths: { include: [], exclude: [] },
-		pi: {
-			version: overrides.piVersion ?? DEFAULT_PI_VERSION,
-		},
 		timeoutMinutes: DEFAULT_TIMEOUT_MINUTES,
 	};
 }
@@ -147,6 +147,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function stringValue(value: unknown, fallback: string): string {
 	return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+/** A trimmed string, or undefined when absent, so the key can be left out. */
+function optionalString(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function booleanValue(value: unknown, fallback: boolean): boolean {
@@ -197,6 +202,7 @@ export function parseSettings(value: unknown, defaults = defaultSettings()): Rev
 	const retry = isRecord(review.retry) ? review.retry : {};
 	const paths = isRecord(value.paths) ? value.paths : {};
 	const pi = isRecord(value.pi) ? value.pi : {};
+	const piVersion = optionalString(pi.version);
 
 	const rawTypes = triggers.types;
 	const types = Array.isArray(rawTypes)
@@ -261,9 +267,9 @@ export function parseSettings(value: unknown, defaults = defaultSettings()): Rev
 		},
 		// `packageRef` from an older settings file is ignored: the job runs from
 		// the pi-extensions repository at main, so there is nothing to pin (#34).
-		pi: {
-			version: stringValue(pi.version, defaults.pi.version),
-		},
+		// `pi.version` is optional: absent means "whatever the workflow default
+		// is", which lets one bump in the reusable workflow reach every caller.
+		...(piVersion ? { pi: { version: piVersion } } : {}),
 		timeoutMinutes:
 			Number.isFinite(timeout) && timeout >= 5 && timeout <= 120
 				? Math.trunc(timeout)

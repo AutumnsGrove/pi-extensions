@@ -400,8 +400,10 @@ describe("installPiReview create path", () => {
 			thinking: "medium",
 			tools: { bash: false },
 			review: { event: "COMMENT" },
-			pi: { version: "1.5.0" },
 		});
+		// A fresh install inherits the workflow's version instead of pinning the
+		// local one, so a later default bump reaches this repository too.
+		expect(settings.pi).toBeUndefined();
 		expect(writer.calls[0]!.files[1]!.content).toContain(
 			"uses: AutumnsGrove/pi-extensions/.github/workflows/pi-review-reusable.yml@main"
 		);
@@ -786,6 +788,8 @@ describe("installPiReview re-install", () => {
 				timeoutMinutes: 45,
 				triggers: { skipBots: true, mention: false },
 				review: { strictness: "thorough", resolveStaleThreads: true, maxInlineComments: 10 },
+				// A pin the maintainer committed is not overwritten by a re-install.
+				pi: { version: "1.5.0" },
 			});
 		} finally {
 			await rm(dir, { recursive: true, force: true });

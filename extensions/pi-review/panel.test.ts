@@ -39,7 +39,7 @@ function scripted(script: {
 	};
 }
 
-const base = defaultSettings({ provider: "opencode-go", model: "m", piVersion: "1.5.0" });
+const base = defaultSettings({ provider: "opencode-go", model: "m" });
 
 describe("editSettings", () => {
 	it("saves without changes", async () => {

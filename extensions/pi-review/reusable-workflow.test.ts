@@ -149,7 +149,16 @@ describe("the reusable workflow", () => {
 		]) {
 			expect(text).toContain(`.${key}`);
 		}
-		expect(step("Install pi and dependencies").run).toContain("jq -er '.pi.version'");
+		expect(step("Install pi and dependencies").run).toContain("jq -r '.pi.version // \"\"'");
+		// A pinned settings value wins, the input is the fallback, and neither
+		// fails loudly instead of resolving `@latest`.
+		expect(step("Install pi and dependencies").env?.PI_REVIEW_PI_VERSION).toBe(
+			"${{ inputs.pi-version }}"
+		);
+		expect(step("Install pi and dependencies").run).toContain(
+			"${PI_REVIEW_PI_VERSION:-}"
+		);
+		expect(step("Install pi and dependencies").run).toContain("::error::No pi version");
 		expect(step("Check the settings file").run).toContain("not valid JSON");
 	});
 
@@ -185,13 +194,16 @@ describe("the reusable workflow", () => {
 	});
 
 	it("restores the pi install and the package stores without a caller change", () => {
-		// The cache key includes the settings file (which carries `pi.version`)
-		// and the lockfiles; `restore-keys` falls back to the settings hash so a
-		// lockfile change still seeds the stores and the pi prefix.
+		// The cache key includes the settings file (which carries an optional
+		// `pi.version`) as well as the inherited `pi-version` input, so bumping
+		// the workflow default invalidates the cached pi prefix; `restore-keys`
+		// falls back to the settings hash so a lockfile change still seeds the
+		// stores.
 		expect(workflow.jobs.review["cache-mode"]).toBe("write");
 		const cache = step("Restore pi and package caches");
 		expect(cache.with?.path).toContain("${{ runner.temp }}/pi-review/pi");
 		expect(cache.with?.key).toContain("hashFiles('**/pi-review.json')");
+		expect(cache.with?.key).toContain("${{ inputs.pi-version }}");
 		expect(cache.with?.key).toContain("pnpm-lock.yaml");
 		expect(cache.with?.["restore-keys"]).toContain("pi-review-");
 		// The cache is restored before the install that fills it, and never in a
