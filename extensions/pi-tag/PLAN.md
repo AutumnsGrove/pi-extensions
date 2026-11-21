@@ -5,9 +5,15 @@ Actions as its own App bot, reads the checkout, verifies every label it proposes
 against the repository's label manifest, and leaves one comment on the issue that
 explains what it applied and what it rejected.
 
-Status: **planned, not started.** Phase 0 is a go/no-go: a local dry run over the
-last 40 issues of the target repo. If it does not change any decisions, the
-premise is wrong and the plan is dropped rather than built.
+Status: **phases 0, 1 and 3 built; phase 2 needs one browser session.** The
+premise held: eight open issues and a fix run, no wrong label, every refusal
+naming a file or a doc. What is left is the App identity (phase 2), the installer
+(phase 4), the backfill (phase 5), and retiring the old workflow (phase 6).
+
+Everything that decides anything is a pure module with tests: `manifest`,
+`evidence`, `proposal`, `prompt`, `markers`, `comment`, `gate`, `settings`,
+`workflow`. `cli.ts` is the one entry point, and the workflow calls it — a local
+run and a CI run cannot drift.
 
 First target: [`AutumnsGrove/Lattice`](../../../lattice), whose `.github/labels.yml`
 already carries the vocabulary, the `policy:` block, and the `path:`/`doc:`
@@ -117,15 +123,14 @@ dependency install — nothing runs.
 {
   "labels": [
     { "name": "bug", "rule": "It worked before and now it does not: …" },
-    { "name": "clearing",
-      "evidence": [{ "kind": "title", "phrase": "Clearing" }] },
     { "name": "lattice",
       "evidence": [{ "kind": "path", "path": "libs/shutter/cloudflare/src/index.ts" }] },
     { "name": "pattern:prism",
       "evidence": [{ "kind": "doc", "path": "docs/patterns/prism-pattern.md" }] }
   ],
   "considered": [
-    { "name": "amber", "why_not": "files are in apps/amber and apps/landing; landing is already applied" }
+    { "name": "clearing", "why_not": "the title names Clearing, but the work is in libs/shutter, which is lattice's path; one component only" },
+    { "name": "amber", "why_not": "no file under its path is involved" }
   ]
 }
 ```
@@ -149,6 +154,10 @@ Then the manifest rules the repo's `sync.ts` already enforces on the other side:
 | `pattern` → doc evidence present | drop, "pattern doc not read" |
 | duplicates | dedupe |
 
+A proposal is checked one label at a time, never as a set: a model that offers two
+components gets one applied and the other reported as *that group already has a
+label*, which is why the sample above picks one and says why in `considered`.
+
 Every drop is recorded and rendered into the comment. Nothing disappears
 silently — the principle `review.ts` already applies by folding unattachable
 comments into the summary. This is what makes the output *checkable*: a component
@@ -160,14 +169,16 @@ data rather than inferred from a diff.
 
 ### `@pi fix`: correcting its own work
 
-Removal is allowed, but only on request and only for labels it put there.
+Removal is allowed, but only on request, only for labels in
+`policy.auto_groups`, and only for a label it can **attribute to itself** — or one
+you name in the request. Nothing else is ever taken off.
 
 **Two markers, not one.** The sticky comment carries a human-facing body and a
 machine-facing line:
 
 ```html
 <!-- pi-tag:summary -->
-<!-- pi-tag:applied ["bug","clearing","pattern:prism"] -->
+<!-- pi-tag:applied ["bug","lattice","pattern:prism"] -->
 ```
 
 A later run reads **only** the `applied` marker. That keeps the rule that model
@@ -175,14 +186,26 @@ prose is never fed back as input, while still letting the tagger know exactly wh
 it did last time — the same trick as `REVIEW_MARKER`, which lets an incremental
 re-review find the last commit it saw.
 
+The marker is **attribution, not truth**. It is read only from a comment the bot
+authored, and every removal is intersected with the labels the issue actually
+carries at apply time. Two consequences, both deliberate:
+
+- A marker forged in someone else's comment is ignored. The sticky lookup filters
+  on `user.login == '<slug>[bot]'`; it is not enough that the HTML comment exists.
+- A run cancelled between the label write and the comment write leaves a stale
+  marker, and that is harmless: the intersection can only *under*-remove, never
+  remove something the issue does not have, and never remove a human's label.
+
 Rules for `@pi fix`:
 
 1. The token must be `@pi fix` — `@pi` alone still only adds.
-2. Removal candidates are labels in the previous `applied` marker that the new
-   validated proposal does not include, plus any label the request names
-   explicitly (backticked, or a bare word equal to a label name).
-3. Only `policy.auto_groups` labels are eligible. A human's `priority-high` is not
-   pi-tag's to touch, named or not.
+2. Removal candidates are labels that are, at once: currently on the issue, in
+   `policy.auto_groups`, and either present in the bot's `applied` marker or named
+   explicitly in the request (backticked, or a bare word equal to a label name).
+   Naming is the escape hatch for labels the old labeler applied, which have no
+   marker and cannot be attributed.
+3. A label outside `policy.auto_groups` is never removed. A human's
+   `priority-high` is not pi-tag's to touch, named or not.
 4. If the `applied` marker is missing or unparseable, remove nothing that was not
    named explicitly, and say why in the comment.
 5. If nothing in the manifest explains the removal, it does not happen. "The model
@@ -199,19 +222,21 @@ One comment per issue, edited in place, found by marker. Never a second one.
 
 ```markdown
 <!-- pi-tag:summary -->
-<!-- pi-tag:applied ["bug","clearing","lattice"] -->
-**pi-tag** tagged this issue: `bug` · `clearing` · `lattice` — [run 1234](…)
+<!-- pi-tag:applied ["bug","lattice","pattern:prism"] -->
+**pi-tag** tagged this issue: `bug` · `lattice` · `pattern:prism` — [run 1234](…)
 
 | label | why |
 | --- | --- |
 | `bug` | It worked before and now it does not: the status page reports outages that never happened. |
-| `clearing` | Title names Clearing. |
 | `lattice` | Read `libs/shutter/cloudflare/src/index.ts`, under `lattice`'s `libs/`. |
+| `pattern:prism` | Read `docs/patterns/prism-pattern.md`; the work is the shared token layer. |
 
 <details><summary>Considered, not applied (2)</summary>
 
-- `amber` — already has a `component` label (`landing`).
-- `pattern:songbird` — `docs/patterns/songbird-pattern.md` was not read.
+- `clearing` — that group already has a label (`lattice`); the title names Clearing
+  but the work is in `libs/shutter/`.
+- `pattern:songbird` — `docs/patterns/songbird-pattern.md` was not read, and it
+  scopes itself to Wisp and Thorn.
 
 </details>
 
@@ -320,6 +345,12 @@ Labels are applied and removed in **one** `gh issue edit --add-label …
 --remove-label …` after validation passes, never incrementally. Half-applied is
 the one state we will not produce.
 
+The comment is written after the labels, and a cancellation between the two leaves
+a stale `applied` marker. That is recoverable by design rather than by luck: the
+marker only ever supplies attribution, and every removal is intersected with what
+the issue actually carries (see `@pi fix` above). Ordering it the other way would
+be worse — a marker claiming labels the issue does not have.
+
 ### Prompt shape
 
 System prompt lives in `prompt.ts`, not YAML: read-only tools, the evidence
@@ -356,6 +387,22 @@ Model: `glm-5.3-flash` if Go's chat-completions endpoint gives it tool calls —
 verify with one dispatch. `deepseek-v4.1-flash` is the known-good fallback;
 `pi-review` runs it with tools on the same provider entry. Thinking level `low` →
 `medium`.
+
+## Deviations from the first draft
+
+- **No `submit_labels` tool.** Validation happens once, after the model answers,
+  in `proposal.ts`. A tool would let the model retry inside its own run, which is
+  nicer, but the JSON contract was verified end to end in phase 0 and a refusal
+  is legible in the comment, which is the only feedback anyone reads. Worth
+  revisiting if refusals turn out to be common.
+- **Two jobs, not one.** `gate` decides in code whether a comment or issue may
+  trigger anything; `label` is the only job that costs a model call. The cheap
+  job-level `if:` keeps a non-matching comment from spinning a runner at all.
+- **`triggers.who` is a setting.** The first draft said "you + collaborators" and
+  hard-coded it; the list is now in the settings file, defaulting to
+  OWNER/MEMBER/COLLABORATOR.
+- **The marker records ownership, not this run's additions.** Otherwise a run
+  that changed nothing would erase the attribution a later `@pi fix` needs.
 
 ## Shape
 
@@ -399,9 +446,36 @@ Settings file, committed in the target repo:
 The YAML is generated from this, byte-for-byte, with a test that regenerating
 produces no diff — the property `workflow.test.ts` already enforces.
 
+## Phase 0 result — the premise holds
+
+Run on 2026-11-15 against `lattice` at 8 open issues plus one `@pi fix` run.
+Fifteen to sixty seconds each, 20–40 tool calls, and no wrong label anywhere in
+the set.
+
+| Issue | Old labeler | pi-tag |
+| --- | --- | --- |
+| #1657 `libs/shutter` | `tech-debt`, `pattern:songbird` | `+ lattice` — read `libs/shutter/cloudflare/package.json` |
+| #1657 with `@pi fix` | — | `- pattern:songbird` (named), `+ lattice` |
+| #1648 fonts | proposed `amber`, applied nothing, said nothing | nothing, and named the exact directories it checked |
+| #1625 NCMEC | `pattern:threshold` | refused it: the queue is not request shaping, quoting the doc |
+| #1626 Porch | `ivy` in its history | nothing: `apps/aspen/.../arbor/` is under no `arbor` path |
+| #1632 Rings | — | `+ pattern:loom` after reading the loom doc |
+| #1628 hot/warm/cold | `amber` **and** `patina` | refused `lattice`: that group is already over its cap |
+| #1666, #1636, #1637 | — | nothing, with the reason each time |
+
+Two of these are the failures that caused the previous rewrite, now avoided by
+reading instead of by a prompt rule: #1625's queue labelled as a rate limit, and
+#1626's product named from the body. The difference is that the refusal names
+the file or the doc rather than being a silent "applied nothing".
+
+One bug found and fixed on the way: `execFile` hands the child an open stdin
+pipe, and `pi --print` reads stdin when it is not a terminal, so every run hung
+until the timeout with no output. `spawn` with `stdio: ["ignore", …]` is the fix,
+and `nodeExec` now reports a timeout as a timeout.
+
 ## Milestones
 
-### Phase 0 — baseline, local only (half a session)
+### Phase 0 — baseline, local only (done)
 
 `/pi-tag run --issue N` first: fetch the issue with `gh`, run the agent with tools,
 print the proposal and the validator's verdict, write nothing. No CI, no App. This
@@ -492,7 +566,11 @@ before those are green.
   `<!-- pi-tag:applied … -->`; a body that quotes the whole comment.
 - `@pi fix`: removes an `applied` label the new proposal drops; refuses to remove
   a human's `priority-high` even when named; refuses to remove anything when the
-  marker is absent; refuses with no stated reason.
+  marker is absent; refuses with no stated reason; ignores a forged marker in
+  another author's comment; and under-removes rather than over-removes when the
+  marker lists a label the issue no longer carries.
+- A proposal offering two components: one applied, one reported as "that group
+  already has a label".
 - Mention gate: `@pi-tag`, `@pi` inside a fence, `@pineapple`, a comment from
   `<slug>[bot]`, a comment from another bot, a stranger, and a comment on a PR.
 - Upsert against a paginated comment list; two runs, one comment.
