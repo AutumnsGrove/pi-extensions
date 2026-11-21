@@ -1091,6 +1091,37 @@ describe("renderInstallOutcome", () => {
 		expect(base.model).toBe("m");
 	});
 
+	it("says thread resolution is unavailable in CI for every App install", () => {
+		const created = renderInstallOutcome({
+			status: "created",
+			repo,
+			app: { id: 1234, slug: "pi-review-x", name: "Pi Review" },
+			installed: true,
+			changed: [],
+		});
+		expect(created).toContain("## Thread resolution");
+		expect(created).toContain("Contents: write");
+		expect(created).toContain("contents: read");
+		// The App's own permissions cannot change the answer, so the note does not
+		// depend on them: the workflow narrows the token either way.
+		expect(created).not.toContain("thread resolution: available");
+
+		const existing = renderInstallOutcome({
+			status: "existing",
+			repo,
+			appSlug: "pi-review-x",
+			installed: true,
+			verified: true,
+			changed: [],
+		});
+		expect(existing).toContain("## Thread resolution");
+	});
+
+	it("says nothing about thread resolution when the install was cancelled", () => {
+		const text = renderInstallOutcome({ status: "aborted", changed: [] });
+		expect(text).not.toContain("## Thread resolution");
+	});
+
 	it("points at the install page when it was not confirmed", () => {
 		const text = renderInstallOutcome({
 			status: "created",

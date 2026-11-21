@@ -57,6 +57,7 @@ import {
 	manifestSubmitUrl,
 	parseRedirectUrl,
 } from "./github/manifest.ts";
+import { RESOLVE_REQUIRES_CONTENTS_WRITE } from "./github/threads.ts";
 import { openExternalUrl } from "./github/open.ts";
 import {
 	ManifestCancelledError,
@@ -1151,6 +1152,16 @@ export function renderInstallOutcome(outcome: InstallOutcome): string {
 		);
 		if (!outcome.installed) lines.push(`- install it: ${appInstallUrl(slug)}`);
 	}
+
+	// Nothing an App's own permissions can change: the review token is minted
+	// with `contents: read` either way, so thread resolution never works in CI
+	// (#55). Saying so here beats a review that quietly reports "resolved 0
+	// threads" months later.
+	lines.push(
+		"",
+		"## Thread resolution",
+		`Unavailable in CI. ${RESOLVE_REQUIRES_CONTENTS_WRITE}. The workflow mints the review token with \`contents: read\` on purpose — widening it would let a prompt-injected review push — so the reviewer lists open threads, to avoid repeating a fixed finding, and leaves them open. A local \`/pi-review run --post\` uses your own \`gh\` token and can resolve them.`
+	);
 
 	lines.push("", "## Workflow");
 	if (outcome.workflowSkipped) {
