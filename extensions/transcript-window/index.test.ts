@@ -13,6 +13,18 @@ type Handler = (event: unknown, ctx: unknown) => unknown;
 interface FakeChat extends Component {
 	children: Component[];
 	addChild(component: Component): void;
+	/** pi <= 1.5 layout field. */
+	mouseLayout?: {
+		width: number;
+		children: { component: Component; height: number }[];
+	};
+	/** pi >= 1.6 layout field. */
+	childLines?: {
+		readonly width: number;
+		readonly children: readonly Component[];
+		readonly parts: readonly (readonly string[])[];
+		readonly lines: string[];
+	};
 }
 
 function lineComponent(line: string): Component {
@@ -141,6 +153,29 @@ describe("transcript-window wiring", () => {
 		const lines = chat.render(80);
 		expect(lines[0]).toContain("48 earlier items hidden");
 		expect(lines[1]).toBe("line-49");
+	});
+
+	it("describes the rendered tail for mouse dispatch", () => {
+		const chat = makeChat(150);
+		const { pi, handlers, ctx } = makeHarness(chat);
+		transcriptWindow(pi as never);
+		handlers.get("session_start")?.[0]?.({}, ctx);
+
+		const lines = chat.render(80);
+
+		// pi 1.6 dispatches mouse events through `childLines`, so it has to
+		// describe the window (marker + last 100 items), not all 150 children.
+		const layout = chat.childLines;
+		expect(layout?.width).toBe(80);
+		expect(layout?.parts).toHaveLength(101);
+		expect(layout?.parts.flat()).toEqual(lines);
+		expect(layout?.children).toHaveLength(101);
+		expect(layout?.children[1]).toBe(chat.children[50]);
+
+		// Older releases still read the `mouseLayout` shape.
+		expect(chat.mouseLayout?.width).toBe(80);
+		expect(chat.mouseLayout?.children).toHaveLength(101);
+		expect(chat.mouseLayout?.children[0]?.height).toBe(1);
 	});
 
 	it("reads an existing config on session start", () => {

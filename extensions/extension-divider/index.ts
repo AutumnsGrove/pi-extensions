@@ -99,7 +99,8 @@ export default function extensionDivider(pi: ExtensionAPI): void {
 				dispose: unsubscribe,
 				invalidate() {},
 				render(width: number): string[] {
-					const lines = builtIn.render(width);
+					// FooterComponent may return a cached array; copy before editing it.
+					const lines = [...builtIn.render(width)];
 					const statuses = footerData.getExtensionStatuses();
 					if (statuses.size === 0 || lines.length === 0) {
 						return lines;

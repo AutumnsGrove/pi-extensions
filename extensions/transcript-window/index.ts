@@ -44,13 +44,28 @@ interface MouseLayout {
 }
 
 /**
+ * pi 1.6 replaced `mouseLayout` with this structure, which `Container` keeps
+ * from its last render and hands to `dispatchMouseToChildLines`. It is internal
+ * to pi-tui, so it is mirrored here rather than imported.
+ */
+interface ChildLinesLayout {
+	readonly width: number;
+	readonly children: readonly Component[];
+	readonly parts: readonly (readonly string[])[];
+	readonly lines: string[];
+}
+
+/**
  * The subset of pi's internal `Container` we touch. The fields are runtime
  * properties of the chat container, not public API.
  */
 interface ChatContainer extends Component {
 	children: Component[];
 	addChild(component: Component): void;
+	/** pi <= 1.5 */
 	mouseLayout?: MouseLayout;
+	/** pi >= 1.6 */
+	childLines?: ChildLinesLayout;
 }
 
 interface TranscriptWindowState {
@@ -58,7 +73,7 @@ interface TranscriptWindowState {
 	ctx?: ExtensionContext;
 	tui?: TUI;
 	chat?: ChatContainer;
-	originalRender?: (width: number) => string[];
+	originalRender?: (width: number) => readonly string[];
 	marker: Component;
 }
 
@@ -138,7 +153,7 @@ function installWindow(state: TranscriptWindowState, chat: ChatContainer): void 
 	}
 	const original = state.originalRender ?? chat.render.bind(chat);
 
-	const patched = (width: number): string[] => {
+	const patched = (width: number): readonly string[] => {
 		const config = state.config;
 		if (!config.enabled) {
 			return original(width);
@@ -153,19 +168,30 @@ function installWindow(state: TranscriptWindowState, chat: ChatContainer): void 
 			},
 		});
 
-		// Keep click/hover offsets aligned with what we actually rendered.
-		// The marker contributes one row when older items are hidden.
+		// Keep click/hover offsets aligned with what we actually rendered. Only
+		// the visible tail ran, so the layout must describe the same rows: the
+		// marker (when anything is hidden) followed by each visible component.
+		const rendered: { component: Component; lines: readonly string[] }[] =
+			result.visible.slice();
+		if (result.hidden > 0) {
+			rendered.unshift({
+				component: state.marker,
+				lines: result.parts[0] ?? [],
+			});
+		}
+
+		chat.childLines = {
+			width,
+			children: rendered.map(({ component }) => component),
+			parts: result.parts,
+			lines: result.lines,
+		};
 		chat.mouseLayout = {
 			width,
-			children: [
-				...(result.hidden > 0
-					? [{ component: state.marker, height: 1 }]
-					: []),
-				...result.visible.map(({ component, lines }) => ({
-					component,
-					height: lines.length,
-				})),
-			],
+			children: rendered.map(({ component, lines }) => ({
+				component,
+				height: lines.length,
+			})),
 		};
 
 		return result.lines;
