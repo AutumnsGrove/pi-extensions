@@ -13,12 +13,7 @@ type Handler = (event: unknown, ctx: unknown) => unknown;
 interface FakeChat extends Component {
 	children: Component[];
 	addChild(component: Component): void;
-	/** pi <= 1.5 layout field. */
-	mouseLayout?: {
-		width: number;
-		children: { component: Component; height: number }[];
-	};
-	/** pi >= 1.6 layout field. */
+	/** pi >= 1.6 dispatch layout. */
 	childLines?: {
 		readonly width: number;
 		readonly children: readonly Component[];
@@ -171,11 +166,6 @@ describe("transcript-window wiring", () => {
 		expect(layout?.parts.flat()).toEqual(lines);
 		expect(layout?.children).toHaveLength(101);
 		expect(layout?.children[1]).toBe(chat.children[50]);
-
-		// Older releases still read the `mouseLayout` shape.
-		expect(chat.mouseLayout?.width).toBe(80);
-		expect(chat.mouseLayout?.children).toHaveLength(101);
-		expect(chat.mouseLayout?.children[0]?.height).toBe(1);
 	});
 
 	it("reads an existing config on session start", () => {

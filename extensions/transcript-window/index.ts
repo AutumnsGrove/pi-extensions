@@ -38,15 +38,11 @@ import { createMarkerPlaceholder, renderWindow } from "./window.ts";
 const COMMAND_NAME = "window";
 const STATE_KEY = "__pi_transcript_window_state__";
 
-interface MouseLayout {
-	width: number;
-	children: { component: Component; height: number }[];
-}
-
 /**
- * pi 1.6 replaced `mouseLayout` with this structure, which `Container` keeps
- * from its last render and hands to `dispatchMouseToChildLines`. It is internal
- * to pi-tui, so it is mirrored here rather than imported.
+ * pi 1.6 replaced the chat container's `mouseLayout` field with this
+ * structure, which `Container` keeps from its last render and hands to
+ * `dispatchMouseToChildLines`. It is internal to pi-tui, so it is mirrored here
+ * rather than imported.
  */
 interface ChildLinesLayout {
 	readonly width: number;
@@ -62,9 +58,6 @@ interface ChildLinesLayout {
 interface ChatContainer extends Component {
 	children: Component[];
 	addChild(component: Component): void;
-	/** pi <= 1.5 */
-	mouseLayout?: MouseLayout;
-	/** pi >= 1.6 */
 	childLines?: ChildLinesLayout;
 }
 
@@ -171,27 +164,18 @@ function installWindow(state: TranscriptWindowState, chat: ChatContainer): void 
 		// Keep click/hover offsets aligned with what we actually rendered. Only
 		// the visible tail ran, so the layout must describe the same rows: the
 		// marker (when anything is hidden) followed by each visible component.
-		const rendered: { component: Component; lines: readonly string[] }[] =
-			result.visible.slice();
+		const rendered: Component[] = result.visible.map(
+			({ component }) => component
+		);
 		if (result.hidden > 0) {
-			rendered.unshift({
-				component: state.marker,
-				lines: result.parts[0] ?? [],
-			});
+			rendered.unshift(state.marker);
 		}
 
 		chat.childLines = {
 			width,
-			children: rendered.map(({ component }) => component),
+			children: rendered,
 			parts: result.parts,
 			lines: result.lines,
-		};
-		chat.mouseLayout = {
-			width,
-			children: rendered.map(({ component, lines }) => ({
-				component,
-				height: lines.length,
-			})),
 		};
 
 		return result.lines;
