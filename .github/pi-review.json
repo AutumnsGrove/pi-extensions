@@ -33,5 +33,8 @@
     "include": [],
     "exclude": []
   },
+  "pi": {
+    "version": "1.5.2"
+  },
   "timeoutMinutes": 20
 }
