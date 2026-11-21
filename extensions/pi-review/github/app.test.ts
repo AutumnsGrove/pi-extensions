@@ -108,24 +108,6 @@ describe("fetchAppInfo", () => {
 		);
 	});
 
-	it("reports the App's permissions", async () => {
-		const fetchImpl = fakeFetch({
-			body: JSON.stringify({
-				id: 1234,
-				slug: "pi-review-x",
-				permissions: { contents: "read", pull_requests: "write", metadata: "read" },
-			}),
-		});
-		const info = await fetchAppInfo("JWT", { fetch: fetchImpl });
-		expect(info.permissions).toEqual({ contents: "read", pull_requests: "write", metadata: "read" });
-	});
-
-	it("omits permissions GitHub did not send", async () => {
-		const fetchImpl = fakeFetch({ body: JSON.stringify({ id: 1234, slug: "pi-review-x" }) });
-		const info = await fetchAppInfo("JWT", { fetch: fetchImpl });
-		expect(info.permissions).toBeUndefined();
-	});
-
 	it("reads the client ID when present", async () => {
 		const fetchImpl = fakeFetch({
 			body: JSON.stringify({ id: 1234, client_id: "Iv23abcdef", slug: "pi-review-x" }),

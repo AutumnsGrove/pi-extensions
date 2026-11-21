@@ -183,10 +183,11 @@ permission it wants is **Contents: write**, which also lets its holder push code
 [community#204269](https://github.com/orgs/community/discussions/204269)).
 pi-review asks for `contents: read` on purpose: the reviewer reads untrusted PR
 text and has a shell, so a contents-write token would turn a prompt injection
-into a push.
+into a push. The manifest asks for read and the workflow narrows every minted
+review token to read as well, so even an App that was granted write cannot
+resolve threads in CI.
 
-So the App cannot close its own threads, and the extension says so instead of
-attempting nine refusals:
+The extension therefore says so instead of attempting nine refusals:
 
 - The thread query asks for `viewerCanResolve`, GitHub's own answer for the
 token that is running. No thread is offered for resolution when it is false.

@@ -54,7 +54,6 @@ import {
 	appSettingsUrl,
 	buildManifest,
 	installationsSettingsUrl,
-	MANIFEST_PERMISSIONS,
 	manifestSubmitUrl,
 	parseRedirectUrl,
 } from "./github/manifest.ts";
@@ -169,8 +168,6 @@ interface OutcomeBase {
 	changed: string[];
 	apiKeySet?: boolean;
 	apiKeyPresent?: boolean;
-	/** The App's permissions as GitHub reports them, for the thread-resolution note. */
-	appPermissions?: Record<string, string>;
 	workflow?: WorkflowOutcome;
 	workflowSkipped?: boolean;
 	workflowError?: string;
@@ -306,16 +303,8 @@ type IdentityOutcome = OutcomeBase &
 				installed: boolean;
 				verified: boolean;
 				identity: "app";
-				appPermissions?: Record<string, string>;
 		  }
-		| {
-				status: "created";
-				repo: RepoRef;
-				app: AppIdentity;
-				installed: boolean;
-				identity: "app";
-				appPermissions?: Record<string, string>;
-		  }
+		| { status: "created"; repo: RepoRef; app: AppIdentity; installed: boolean; identity: "app" }
 	);
 
 const PASTE_KEY = "Paste the key (multi-line)…";
@@ -465,7 +454,6 @@ async function tryCachedApp(
 		appSlug: info.slug,
 		installed,
 		verified,
-		...(info.permissions ? { appPermissions: info.permissions } : {}),
 		changed,
 	};
 }
@@ -777,8 +765,6 @@ async function resolveIdentity(options: InstallOptions, state: Preflight): Promi
 		repo,
 		app: { id: app.id, clientId: app.clientId, slug: app.slug, name: app.name },
 		installed,
-		// The manifest we just created is the source of truth for a new App.
-		appPermissions: { ...MANIFEST_PERMISSIONS },
 		changed,
 	};
 }
@@ -1167,17 +1153,15 @@ export function renderInstallOutcome(outcome: InstallOutcome): string {
 		if (!outcome.installed) lines.push(`- install it: ${appInstallUrl(slug)}`);
 	}
 
-	// GitHub gates `resolveReviewThread` on Contents: write, so a review App
-	// cannot close its own threads. Saying so here beats a review that quietly
-	// reports "resolved 0 threads" months later (#55).
-	if (outcome.appPermissions) {
-		const contents = outcome.appPermissions.contents;
-		lines.push(
-			contents === "write"
-				? "- thread resolution: available — the App has Contents: write, so the reviewer can close the threads it verifies are fixed."
-				: `- thread resolution: **unavailable in CI** — ${RESOLVE_REQUIRES_CONTENTS_WRITE}. The reviewer still lists open threads so it does not repeat a fixed finding, and it leaves them open.`
-		);
-	}
+	// Nothing an App's own permissions can change: the review token is minted
+	// with `contents: read` either way, so thread resolution never works in CI
+	// (#55). Saying so here beats a review that quietly reports "resolved 0
+	// threads" months later.
+	lines.push(
+		"",
+		"## Thread resolution",
+		`Unavailable in CI. ${RESOLVE_REQUIRES_CONTENTS_WRITE}. The workflow mints the review token with \`contents: read\` on purpose — widening it would let a prompt-injected review push — so the reviewer lists open threads, to avoid repeating a fixed finding, and leaves them open. A local \`/pi-review run --post\` uses your own \`gh\` token and can resolve them.`
+	);
 
 	lines.push("", "## Workflow");
 	if (outcome.workflowSkipped) {
