@@ -34,6 +34,7 @@ generated from it: edit the settings file rather than the YAML.
 | [`pi-tasks`](extensions/pi-tasks/) | Model-facing `todo` tool (create/update/delete/list) with a live task panel above the editor and a full `/todos` view. State replays from the session branch, so it survives `/reload` and compaction. | working |
 | [`pi-memory`](extensions/pi-memory/) | Automatic, file-based project memory: a small always-loaded index, four memory types, immediate saves, capped per-turn recall, throttled background extraction, `/memory dream` consolidation, and opt-in Claude Code import/shared store. | working (v1) |
 | [`pi-review`](extensions/pi-review/) | Agentic pull-request review, run by pi itself inside GitHub Actions: a validated `submit_review` runner, base-branch guidance, a local dry run, and an installer that creates a scoped Pi GitHub App, stores its secrets, and commits a small caller for the shared reusable job plus a settings branch (`/pi-review install`, `/pi-review run`, `/pi-review status`, `/pi-review settings`). | implemented (runner, installer, auth, follow-up reviews, sticky summary, settings panel, and failure recovery) |
+| [`pi-pr-subscribe`](extensions/pi-pr-subscribe/) | Model-facing `subscribe_pr_activity` / `unsubscribe_pr_activity`: poll a PR through `gh` with ETags and receive CI results, reviews, comments, and merge/close as their own turns, with rules of engagement, coalescing, a cursor that survives `/reload`, one-session-per-PR locking, and `/subscribe` (`/subscribe`, `/subscribe status`). | working (v1) |
 | [`pi-background`](extensions/pi-background/) | Claude-style background shell jobs: `bash` auto-detaches at the deadline, a `jobs` tool lists/reads/waits/kills/searches, completions wake the agent, and a live widget shows running work (`/bg`, `Ctrl+Shift+B`). | working |
 | [`cost-tracker`](extensions/cost-tracker/) | Tracks development cost from pi's own session usage. `/cost start` … `/cost stop` in pi, or `pnpm cost` from a shell; finalizes runs and auto-imports the table below. | working |
 | [`context-window`](extensions/context-window/) | Caps the effective context window by deriving a real reduced-window model (`/context`), so auto-compaction fires sooner, with a bar-charted breakdown of where the context went. | working |
@@ -238,6 +239,7 @@ pnpm cost report                  # print the ledger without changing anything
 | provider-pinning | $0.417 | 1 |
 | hooks + permissions + sounds | $0.379 | 1 |
 | opencode-go | $0.339 | 1 |
+| pi-pr-subscribe | $0.328 | 1 |
 | pi-background | $0.318 | 1 |
 | parallel | $0.303 | 1 |
 | pi-memory | $0.251 | 1 |
@@ -250,7 +252,7 @@ pnpm cost report                  # print the ledger without changing anything
 | cost-tracker | $0.099 | 2 |
 | git-status | $0.078 | 1 |
 | cooking | $0.068 | 1 |
-| **Total** | **$4.801** | **19** |
+| **Total** | **$5.129** | **20** |
 <!-- COST:END -->
 
 ## License

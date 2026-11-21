@@ -665,8 +665,13 @@ jobs:
       # `github.token` deliberately: a comment can only be edited by the identity
       # that wrote it, and the workflow token is always present. Reviews still
       # post as the App, but workflow failures are the workflow's voice (#46).
-      - name: Report an incomplete review
-        if: always()
+      #
+      # A cancelled run is not a failure: a newer push cancels the previous
+      # review on purpose, and the superseded run has no artifact to report. The
+      # comment is also cleared on success, so a stale "could not complete" does
+      # not outlive the failure it described.
+      - name: Report or clear an incomplete review
+        if: always() && !cancelled()
         env:
           PI_REVIEW_CONCLUSION: ${{ runner.temp }}/pi-review/conclusion.json
           GH_TOKEN: ${{ github.token }}
@@ -677,8 +682,16 @@ jobs:
           [ -f "$conclusion" ] || exit 0
           [ -n "${PR_NUMBER:-}" ] || exit 0
           outcome=$(jq -r '.outcome // "failure"' "$conclusion")
+          failure_comment=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100" \
+            --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | contains("<!-- pi-review:failed -->")) | .id' \
+            2>/dev/null | tail -n 1 || true)
           case "$outcome" in
-            success|recovered) exit 0 ;;
+            success|recovered)
+              if [ -n "$failure_comment" ]; then
+                gh api --method DELETE "repos/$GITHUB_REPOSITORY/issues/comments/$failure_comment" > /dev/null 2>&1 \
+                  || echo "::warning::Could not clear the pi-review failure comment."
+              fi
+              exit 0 ;;
           esac
           reason=$(jq -r '.reason // "the review did not complete"' "$conclusion")
           kind=$(jq -r '.kind // "unknown"' "$conclusion")
@@ -695,11 +708,8 @@ jobs:
           fi
           body="${body}"$'\n\n'"Fix the cause and re-run the workflow. This comment is updated in place, not duplicated."
           jq -n --arg body "$body" '{body:$body}' > "$RUNNER_TEMP/pi-review/comment.json"
-          existing=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100" \
-            --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | contains("<!-- pi-review:failed -->")) | .id' \
-            2>/dev/null | tail -n 1 || true)
-          if [ -n "$existing" ]; then
-            if gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" \
+          if [ -n "$failure_comment" ]; then
+            if gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$failure_comment" \
               --input "$RUNNER_TEMP/pi-review/comment.json" > /dev/null 2>&1; then
               exit 0
             fi

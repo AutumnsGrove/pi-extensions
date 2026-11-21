@@ -112,7 +112,7 @@ describe("the reusable workflow", () => {
 		for (const line of guardLines) expect(line).toContain("--repo");
 		// The recovery and failure-comment steps use the REST API, which needs
 		// the repository named explicitly when the checkout was skipped.
-		for (const name of ["Recover the review", "Report an incomplete review"]) {
+		for (const name of ["Recover the review", "Report or clear an incomplete review"]) {
 			const apiLines = (step(name).run ?? "").split("\n").filter((line) => /\bgh api\b/.test(line));
 			expect(apiLines.length).toBeGreaterThan(0);
 			for (const line of apiLines) expect(line).toContain("$GITHUB_REPOSITORY");
@@ -275,8 +275,11 @@ describe("the reusable workflow", () => {
 	});
 
 	it("edits one failure comment in place with the workflow token", () => {
-		const report = step("Report an incomplete review");
-		expect(report.if).toBe("always()");
+		const report = step("Report or clear an incomplete review");
+		expect(report.if).toBe("always() && !cancelled()");
+		// A cancelled run is a superseded review, not a failure worth reporting.
+		expect(report.run).toContain("--method DELETE");
+		expect(report.run).toContain("success|recovered");
 		expect(report.env?.GH_TOKEN).toBe("${{ github.token }}");
 		expect(report.run).toContain("<!-- pi-review:failed -->");
 		expect(report.run).toContain("github-actions[bot]");
