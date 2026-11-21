@@ -349,6 +349,21 @@ describe("session lifecycle", () => {
 		expect(sub.timer).toBeDefined();
 	});
 
+	it("leaves a blocked subscription to the retry loop on reload", async () => {
+		const h = load();
+		await call(h, "subscribe_pr_activity");
+		const sub = getSubscription(ref);
+		if (!sub) throw new Error("expected a subscription");
+		sub.lock = undefined;
+		sub.blockedBy = "another session";
+		if (sub.timer) clearTimeout(sub.timer);
+		sub.timer = undefined;
+		sub.paused = true;
+		await h.emit("session_start", { type: "session_start", reason: "reload" });
+		expect(sub.paused).toBe(true);
+		expect(sub.timer).toBeUndefined();
+	});
+
 	it("reminds a compacted session what it is watching", async () => {
 		const h = load();
 		await call(h, "subscribe_pr_activity");

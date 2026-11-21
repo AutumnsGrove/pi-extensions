@@ -471,6 +471,9 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 			// (machine suspended mid-request) the subscription would otherwise stay
 			// wedged until it was unsubscribed.
 			for (const sub of listSubscriptions(currentSessionId)) {
+				// A blocked subscription has no lock; `retryBlocked` re-acquires it
+				// before polling, and this loop must not shortcut that.
+				if (sub.blockedBy) continue;
 				startPoller(sub, { ...deps, cwd: sub.cwd });
 			}
 		}

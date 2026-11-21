@@ -112,7 +112,9 @@ a duplicated page, or a clock skew cannot double-fire one.
   Delivery, persistence, `pi.exec`, and painting are looked up from the registry
   at call time, and a reload re-arms every running poller on the new module — so
   a poll interrupted by a suspended machine is unstuck by `/reload` rather than
-  by unsubscribing. The same applies to the `in-flight` guard, which treats a
+  by unsubscribing. Subscriptions waiting for the lock are left to the retry
+  loop, which re-acquires the lock before polling; a reload must not shortcut
+  that. The same applies to the `in-flight` guard, which treats a
   poll older than two minutes as abandoned, and every request carries its own
   local timeout for the case where `pi.exec` never settles.
 - A comment is skipped only when its id is already recorded. The session's own
@@ -129,8 +131,9 @@ a duplicated page, or a clock skew cannot double-fire one.
   heartbeat (5 min) or a dead pid releases the lock.
 - A heartbeat never overwrites a lock that changed hands. If a suspended laptop
   wakes to find another session took the PR, the poller notices, stops, and
-  leaves the subscription for the take-back loop — which resumes with a
-  catch-up, so events are late, not lost.
+  leaves the subscription for the take-back loop. The ownership check runs
+  **before** the diff is committed, so the cursor is untouched and the next
+  owner re-diffs the same window: events are late, not lost.
 - At most five subscriptions per session.
 
 ## Security

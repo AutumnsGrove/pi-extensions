@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initCursor } from "./diff.ts";
 import type { Exec } from "./gh.ts";
@@ -9,10 +10,20 @@ import {
 	describeEvent,
 	pollInterval,
 	resetPollers,
+	startPoller,
 	tick,
 	type PollerDeps,
 } from "./poller.ts";
-import { getSubscription, registry, resetRegistry, type Subscription } from "./registry.ts";
+import {
+	acquireLock,
+	getSubscription,
+	lockPath,
+	registry,
+	releaseLock,
+	resetRegistry,
+	type Subscription,
+} from "./registry.ts";
+import { rmSync, writeFileSync } from "node:fs";
 import type { Snapshot } from "./snapshot.ts";
 
 const ref = { owner: "AutumnsGrove", repo: "pi-extensions", number: 32 };
@@ -99,7 +110,7 @@ interface Harness {
 
 let savedDir: string | undefined;
 
-function setup(overrides: { checks?: unknown[]; issueComments?: unknown[] } = {}): Harness {
+function setup(overrides: { checks?: unknown[]; issueComments?: unknown[]; lock?: boolean } = {}): Harness {
 	resetRegistry();
 	resetPollers();
 	savedDir = process.env.PI_PR_SUBSCRIBE_STATE_DIR;
@@ -131,6 +142,11 @@ function setup(overrides: { checks?: unknown[]; issueComments?: unknown[] } = {}
 		pending: [],
 		pendingLogs: new Map(),
 	};
+	if (overrides.lock) {
+		const acquired = acquireLock(ref, "session-1");
+		if (!acquired.ok) throw new Error("expected to acquire the test lock");
+		sub.lock = acquired.lock;
+	}
 	registry().subs.set(prKey(ref), sub);
 	const deps: PollerDeps = { cwd: "/tmp", basePollMs: 20_000, coalesceMs: COALESCE_MS, now: () => Date.now() };
 	return { server, sub, deps, delivered, persisted: () => persisted };
@@ -250,6 +266,34 @@ describe("polling", () => {
 		await tick(h.sub, h.deps);
 		expect(h.sub.consecutiveErrors).toBe(0);
 		expect(h.sub.notifiedErrors).toEqual([]);
+	});
+
+	it("keeps the cursor put when the lock changed hands, then delivers on take-back", async () => {
+		const h = setup({ lock: true });
+		h.server.issueComments = [{ id: 10, body: "while asleep", created_at: "2026-11-20T21:00:00Z" }];
+		// Another session took the PR while this one was suspended.
+		const path = lockPath(ref);
+		const taken = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+		writeFileSync(path, JSON.stringify({ ...taken, sessionId: "session-2" }));
+
+		await tick(h.sub, h.deps);
+		expect(h.sub.paused).toBe(true);
+		expect(h.sub.blockedBy).toContain("taken over");
+		expect(h.delivered).toEqual([]);
+		// Nothing was committed: the next owner can diff the same window.
+		expect(h.sub.cursor.commentIds).not.toContain("10");
+
+		// The other session stops; take the lock back and resume.
+		rmSync(path);
+		const again = acquireLock(ref, "session-1");
+		if (!again.ok) throw new Error("expected to reclaim the lock");
+		h.sub.lock = again.lock;
+		h.sub.blockedBy = undefined;
+		startPoller(h.sub, h.deps);
+		await tick(h.sub, h.deps);
+		vi.advanceTimersByTime(COALESCE_MS);
+		expect(h.delivered.at(-1)).toContain("while asleep");
+		releaseLock(again.lock);
 	});
 
 	it("does not wedge when a request never settles", async () => {

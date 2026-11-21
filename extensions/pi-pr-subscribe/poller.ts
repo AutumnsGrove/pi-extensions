@@ -202,6 +202,23 @@ async function pollOnce(sub: Subscription, deps: PollerDeps): Promise<void> {
 		}
 
 		const result = diffSnapshot(snapshot, sub.cursor, { required: sub.required, now: at });
+
+		// The ownership check comes before anything is committed. Diffing is pure,
+		// so a tick that lost the lock can walk away with the cursor exactly where
+		// it was: the next owner re-diffs the same window, and events are late
+		// rather than lost.
+		if (sub.lock) {
+			const touched = touchLock(sub.lock, at);
+			if (!touched) {
+				sub.lock = undefined;
+				sub.blockedBy = "another session (the lock was taken over)";
+				pausePoller(sub);
+				paint(deps);
+				return;
+			}
+			sub.lock = touched;
+		}
+
 		sub.cursor = advanceSince(result.cursor, snapshot);
 		sub.checks = snapshot.checks;
 		sub.state = snapshot.pull.state;
@@ -213,20 +230,6 @@ async function pollOnce(sub: Subscription, deps: PollerDeps): Promise<void> {
 		sub.lastErrorKind = undefined;
 		sub.notifiedErrors = [];
 		sub.lastPollAt = at;
-		if (sub.lock) {
-			const touched = touchLock(sub.lock, at);
-			if (!touched) {
-				// Another session took the PR while this one was suspended or behind.
-				// Stop quietly; `/subscribe` retries the lock and resumes with a
-				// catch-up, so no event is lost, only late.
-				sub.lock = undefined;
-				sub.blockedBy = "another session (the lock was taken over)";
-				pausePoller(sub);
-				paint(deps);
-				return;
-			}
-			sub.lock = touched;
-		}
 
 		if (result.events.length > 0) {
 			await attachLogs(sub, result.events, deps);

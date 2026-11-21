@@ -405,6 +405,19 @@ The phase-0 note about the escalation ladder still holds: the first poll after a
 wake is immediate (the timer is overdue), and the backoff is capped at five
 minutes.
 
+Two follow-up review findings tightened the same code:
+
+- The lock ownership check now runs **before** the diff is committed. It used to
+  run after `sub.cursor` was replaced, so the tick that lost the lock walked
+  away from events its own diff had just found — the exact wake-after-sleep
+  window the check exists for. Diffing is pure, so moving the check up makes
+  "late, not lost" true rather than aspirational.
+- `/reload` re-arms running pollers but skips subscriptions with `blockedBy`.
+  Those have no lock, and `startPoller` would have cleared `paused` and polled
+  anyway; the retry loop must re-acquire the lock first, or a reload in the
+  waiting session quietly creates the two-sessions-one-PR state the lock
+  prevents.
+
 ### Phase 4 (pi-review integration)
 
 - Bot reviews are labelled twice: GitHub's `[bot]` login sets `bot="true"`, and
