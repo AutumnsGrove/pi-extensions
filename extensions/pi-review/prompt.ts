@@ -11,6 +11,7 @@
  */
 
 import { type GuidanceFile, type ReviewTarget } from "./context.ts";
+import { RESOLVE_REQUIRES_CONTENTS_WRITE } from "./github/threads.ts";
 import type { ReviewStrictness } from "./settings.ts";
 import { parseDiff, summarizeDiff } from "./diff.ts";
 
@@ -48,7 +49,15 @@ export interface PromptOptions {
 	/** How much to report; defaults to `significant`. */
 	strictness?: ReviewStrictness;
 	/** Unresolved bot review threads the reviewer may resolve. */
-	openThreads?: { id: string; path: string; line?: number; body: string; isOutdated?: boolean }[];
+	openThreads?: {
+		id: string;
+		path: string;
+		line?: number;
+		body: string;
+		isOutdated?: boolean;
+		/** `false` when GitHub says this token may not resolve the thread. */
+		canResolve?: boolean;
+	}[];
 	/** A maintainer's `@pi` comment that asked for this review. */
 	request?: string;
 }
@@ -168,7 +177,9 @@ export function buildReviewPrompt(
 			: "";
 	const threadNote =
 		openThreads.length > 0
-			? "\n\nThe context lists open bot review threads. If the diff verifies that a listed finding is fixed, call resolve_review_threads with its id and a one-line reason. Only resolve what you can verify; leave the rest unresolved."
+			? openThreads.some((thread) => thread.canResolve !== false)
+				? "\n\nThe context lists open bot review threads. If the diff verifies that a listed finding is fixed, call resolve_review_threads with its id and a one-line reason. Only resolve what you can verify; leave the rest unresolved."
+				: `\n\nThe context lists open bot review threads. Check each listing against the diff so a finding is not repeated, but do not call resolve_review_threads: ${RESOLVE_REQUIRES_CONTENTS_WRITE}. Leave them open, and do not claim in the summary that a thread was resolved.`
 			: "";
 	const requestBlock = options.request
 		? `\n<maintainer-request>\n${truncate(neutralizeFences(options.request), 4_000).text}\n</maintainer-request>\n`

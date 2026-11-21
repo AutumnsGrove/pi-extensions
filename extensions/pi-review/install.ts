@@ -54,9 +54,11 @@ import {
 	appSettingsUrl,
 	buildManifest,
 	installationsSettingsUrl,
+	MANIFEST_PERMISSIONS,
 	manifestSubmitUrl,
 	parseRedirectUrl,
 } from "./github/manifest.ts";
+import { RESOLVE_REQUIRES_CONTENTS_WRITE } from "./github/threads.ts";
 import { openExternalUrl } from "./github/open.ts";
 import {
 	ManifestCancelledError,
@@ -167,6 +169,8 @@ interface OutcomeBase {
 	changed: string[];
 	apiKeySet?: boolean;
 	apiKeyPresent?: boolean;
+	/** The App's permissions as GitHub reports them, for the thread-resolution note. */
+	appPermissions?: Record<string, string>;
 	workflow?: WorkflowOutcome;
 	workflowSkipped?: boolean;
 	workflowError?: string;
@@ -302,8 +306,16 @@ type IdentityOutcome = OutcomeBase &
 				installed: boolean;
 				verified: boolean;
 				identity: "app";
+				appPermissions?: Record<string, string>;
 		  }
-		| { status: "created"; repo: RepoRef; app: AppIdentity; installed: boolean; identity: "app" }
+		| {
+				status: "created";
+				repo: RepoRef;
+				app: AppIdentity;
+				installed: boolean;
+				identity: "app";
+				appPermissions?: Record<string, string>;
+		  }
 	);
 
 const PASTE_KEY = "Paste the key (multi-line)…";
@@ -453,6 +465,7 @@ async function tryCachedApp(
 		appSlug: info.slug,
 		installed,
 		verified,
+		...(info.permissions ? { appPermissions: info.permissions } : {}),
 		changed,
 	};
 }
@@ -764,6 +777,8 @@ async function resolveIdentity(options: InstallOptions, state: Preflight): Promi
 		repo,
 		app: { id: app.id, clientId: app.clientId, slug: app.slug, name: app.name },
 		installed,
+		// The manifest we just created is the source of truth for a new App.
+		appPermissions: { ...MANIFEST_PERMISSIONS },
 		changed,
 	};
 }
@@ -1150,6 +1165,18 @@ export function renderInstallOutcome(outcome: InstallOutcome): string {
 			`- installation: ${outcome.installed ? "confirmed on this repository" : "**not confirmed yet**"}`
 		);
 		if (!outcome.installed) lines.push(`- install it: ${appInstallUrl(slug)}`);
+	}
+
+	// GitHub gates `resolveReviewThread` on Contents: write, so a review App
+	// cannot close its own threads. Saying so here beats a review that quietly
+	// reports "resolved 0 threads" months later (#55).
+	if (outcome.appPermissions) {
+		const contents = outcome.appPermissions.contents;
+		lines.push(
+			contents === "write"
+				? "- thread resolution: available — the App has Contents: write, so the reviewer can close the threads it verifies are fixed."
+				: `- thread resolution: **unavailable in CI** — ${RESOLVE_REQUIRES_CONTENTS_WRITE}. The reviewer still lists open threads so it does not repeat a fixed finding, and it leaves them open.`
+		);
 	}
 
 	lines.push("", "## Workflow");

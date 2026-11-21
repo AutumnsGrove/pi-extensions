@@ -158,26 +158,50 @@ The mention path only runs when:
 The workflow listens to `issue_comment` for this (default on); set
 `triggers.mention: false` to disable it. Auto-reviews on push are unchanged.
 
-## Resolving stale threads
+## Previous review threads
 
-On follow-ups, the reviewer can close the threads it already opened once it
-verifies the new changes fixed them. Opt in per repository:
+On follow-ups, the reviewer is shown the threads it already opened so it does
+not repeat a finding that is already on the pull request, and so it can say
+whether an earlier one still holds. Opt in per repository:
 
 ```json
 { "review": { "resolveStaleThreads": true } }
 ```
 
 When enabled, the runner fetches the PR's unresolved review threads that were
-started by a bot and lists them (id, path:line, body) in the review context. If
-the diff verifies one is fixed, the agent calls `resolve_review_threads` with
-the id and a one-line reason. The tool only accepts ids from that fetched set,
-so it cannot resolve a human's thread or invent one, and the prompt tells it to
-leave anything it cannot verify open. Threads that are already resolved or
-written by people are never offered.
+started by a bot and lists them (id, path:line, body) in the review context.
+Threads that are already resolved or written by people are never offered, and
+the text is treated as untrusted data like the rest of the PR.
 
-Resolving is a mutation, so it only happens on a real run: `/pi-review run`
-needs `--post`, and the runner refuses to register the tool when
-`PI_REVIEW_DRY_RUN=1`, even if the setting is on.
+### Why the reviewer does not resolve them in CI
+
+GitHub's `resolveReviewThread` mutation forbids a token that has *Pull requests:
+write* but only *Contents: read* (`Resource not accessible by integration`). The
+permission it wants is **Contents: write**, which also lets its holder push code
+— GitHub's pull-requests team called that alignment intentional
+([gh-aw#35726](https://github.com/github/gh-aw/issues/35726),
+[community#204269](https://github.com/orgs/community/discussions/204269)).
+pi-review asks for `contents: read` on purpose: the reviewer reads untrusted PR
+text and has a shell, so a contents-write token would turn a prompt injection
+into a push.
+
+So the App cannot close its own threads, and the extension says so instead of
+attempting nine refusals:
+
+- The thread query asks for `viewerCanResolve`, GitHub's own answer for the
+token that is running. No thread is offered for resolution when it is false.
+- The reviewer is told to check each listing against the diff but not to call
+  `resolve_review_threads`, and not to claim a thread was resolved.
+- The job log carries one line naming the reason, and the tool (if called
+  anyway) refuses without a request.
+- `/pi-review install` reports it in its summary.
+
+A local `/pi-review run --post` uses your own `gh` token, so resolution works
+there whenever your account may resolve threads. Resolving is still a mutation,
+so it only happens on a real run: `PI_REVIEW_DRY_RUN=1` never registers the
+tool, even when the setting is on. When the token may resolve threads, the tool
+accepts only ids from the fetched set, so it cannot resolve a human's thread or
+invent one.
 
 ## Review strictness
 

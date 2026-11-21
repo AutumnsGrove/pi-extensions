@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Exec } from "../detect.ts";
 import {
 	type ResolveResult,
 	createResolveThreadsTool,
 	fetchBotThreads,
+	isPermissionRefusal,
 	resolveThreads,
 } from "./threads.ts";
 
@@ -19,6 +20,7 @@ const payload = {
 							id: "T1",
 							isResolved: false,
 							isOutdated: false,
+							viewerCanResolve: true,
 							path: "src/app.ts",
 							line: 3,
 							comments: {
@@ -34,6 +36,7 @@ const payload = {
 							id: "T2",
 							isResolved: true,
 							isOutdated: false,
+							viewerCanResolve: true,
 							path: "src/app.ts",
 							line: 9,
 							comments: {
@@ -77,10 +80,37 @@ describe("fetchBotThreads", () => {
 				isOutdated: false,
 				body: "The null check is missing.",
 				author: "pi-review-x[bot]",
+				canResolve: true,
 			},
 		]);
 		expect(exec.calls[0]).toContain("graphql");
 		expect(exec.calls[0]!.join(" ")).toContain("owner=owner");
+		expect(exec.calls[0]!.join(" ")).toContain("viewerCanResolve");
+	});
+
+	it("treats a missing viewerCanResolve as no", async () => {
+		const payload = {
+			data: {
+				repository: {
+					pullRequest: {
+						reviewThreads: {
+							nodes: [
+								{
+									id: "T1",
+									isResolved: false,
+									path: "src/app.ts",
+									comments: {
+										nodes: [{ body: "x", author: { login: "bot", __typename: "Bot" } }],
+									},
+								},
+							],
+						},
+					},
+				},
+			},
+		};
+		const threads = await fetchBotThreads(fakeExec({ stdout: JSON.stringify(payload) }), "/repo", repo, 3);
+		expect(threads.map((thread) => thread.canResolve)).toEqual([false]);
 	});
 
 	it("throws when gh fails", async () => {
@@ -109,6 +139,46 @@ describe("resolveThreads", () => {
 		expect(result.resolved).toEqual(["T1"]);
 		expect(result.failed).toEqual([{ id: "T2", error: "boom" }]);
 	});
+
+	it("names the thread and quotes GitHub in the log", async () => {
+		const logged: string[] = [];
+		const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+			logged.push(args.map(String).join(" "));
+		});
+		try {
+			await resolveThreads(
+				fakeExec({ code: 1, stderr: "gh: Resource not accessible by integration" }),
+				"/repo",
+				["PRRT_1"]
+			);
+		} finally {
+			spy.mockRestore();
+		}
+		expect(logged).toEqual([
+			"pi-review: could not resolve review thread PRRT_1: gh: Resource not accessible by integration",
+		]);
+	});
+
+	it("does not count a GraphQL error response as resolved", async () => {
+		const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+		let result: Awaited<ReturnType<typeof resolveThreads>>;
+		try {
+			result = await resolveThreads(
+				fakeExec({
+					stdout: JSON.stringify({
+						data: { resolveReviewThread: null },
+						errors: [{ type: "FORBIDDEN", message: "Resource not accessible by integration" }],
+					}),
+				}),
+				"/repo",
+				["PRRT_1"]
+			);
+		} finally {
+			spy.mockRestore();
+		}
+		expect(result.resolved).toEqual([]);
+		expect(isPermissionRefusal(result)).toBe(true);
+	});
 });
 
 describe("resolve_review_threads tool", () => {
@@ -118,6 +188,7 @@ describe("resolve_review_threads tool", () => {
 		line: 3,
 		isOutdated: false,
 		body: "finding",
+		canResolve: true,
 	};
 
 	function tool(
@@ -168,5 +239,49 @@ describe("resolve_review_threads tool", () => {
 		const instance = tool(async () => ({ resolved: [], failed: [{ id: "T1", error: "boom" }] }));
 		const result = await instance.execute("call", { threadIds: ["T1"] }, undefined, undefined, {} as never);
 		expect(result.isError).toBe(true);
+	});
+
+	it("does not call the API for a thread this token cannot resolve", async () => {
+		const calls: string[][] = [];
+		const instance = createResolveThreadsTool({
+			getThreads: async () => [{ ...thread, canResolve: false }],
+			resolve: async (ids) => {
+				calls.push(ids);
+				return { resolved: ids, failed: [] };
+			},
+		});
+		const result = await instance.execute("call", { threadIds: ["T1"] }, undefined, undefined, {} as never);
+		expect(calls).toEqual([]);
+		expect(result.isError).toBe(true);
+		const first = result.content[0];
+		const text = first && first.type === "text" ? first.text : "";
+		expect(text).toContain("cannot resolve");
+		expect(text).toContain("Contents: write");
+	});
+
+	it("sends a resolvable id and passes over a refused one", async () => {
+		const calls: string[][] = [];
+		const instance = createResolveThreadsTool({
+			getThreads: async () => [
+				{ ...thread, id: "T1" },
+				{ ...thread, id: "T2", canResolve: false },
+			],
+			resolve: async (ids) => {
+				calls.push(ids);
+				return { resolved: ids, failed: [] };
+			},
+		});
+		const result = await instance.execute(
+			"call",
+			{ threadIds: ["T1", "T2"] },
+			undefined,
+			undefined,
+			{} as never
+		);
+		expect(calls).toEqual([["T1"]]);
+		const first = result.content[0];
+		const text = first && first.type === "text" ? first.text : "";
+		expect(text).toContain("Resolved 1 thread");
+		expect(text).toContain("Not resolvable by this token: T2");
 	});
 });

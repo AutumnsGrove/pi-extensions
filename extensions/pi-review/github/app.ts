@@ -111,6 +111,13 @@ export interface AppInfo {
 	slug: string;
 	name: string;
 	owner?: string;
+	/**
+	 * The permission levels GitHub reports for the App. This is the App-level
+	 * grant (what the manifest asked for), not an installation's, which can only
+	 * be narrower. It is enough to say whether thread resolution is possible:
+	 * `resolveReviewThread` needs `contents: write` (#55).
+	 */
+	permissions?: Record<string, string>;
 }
 
 /**
@@ -139,6 +146,7 @@ export async function fetchAppInfo(jwt: string, deps: { fetch?: FetchLike } = {}
 		slug?: unknown;
 		name?: unknown;
 		owner?: { login?: unknown };
+		permissions?: unknown;
 	};
 	try {
 		parsed = JSON.parse(body);
@@ -148,12 +156,20 @@ export async function fetchAppInfo(jwt: string, deps: { fetch?: FetchLike } = {}
 	if (typeof parsed.id !== "number" || typeof parsed.slug !== "string" || !parsed.slug) {
 		throw new Error("GitHub returned an App without an id and slug.");
 	}
+	const permissions = Object.fromEntries(
+		Object.entries(
+			typeof parsed.permissions === "object" && parsed.permissions !== null
+				? (parsed.permissions as Record<string, unknown>)
+				: {}
+		).filter((entry): entry is [string, string] => typeof entry[1] === "string")
+	);
 	return {
 		id: parsed.id,
 		...(typeof parsed.client_id === "string" && parsed.client_id ? { clientId: parsed.client_id } : {}),
 		slug: parsed.slug,
 		name: typeof parsed.name === "string" ? parsed.name : "",
 		...(typeof parsed.owner?.login === "string" ? { owner: parsed.owner.login } : {}),
+		...(Object.keys(permissions).length > 0 ? { permissions } : {}),
 	};
 }
 

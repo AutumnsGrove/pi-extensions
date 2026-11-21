@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Exec } from "./detect.ts";
 import { isReviewRunner, registerReviewRunner } from "./runner.ts";
@@ -213,6 +213,7 @@ describe("registerReviewRunner", () => {
 									id: "T1",
 									isResolved: false,
 									isOutdated: false,
+									viewerCanResolve: true,
 									path: "src/app.ts",
 									line: 2,
 									comments: {
@@ -257,6 +258,76 @@ describe("registerReviewRunner", () => {
 		expect(result.message.content).toContain("<open-review-threads>");
 		expect(result.message.content).toContain("id: `T1`");
 		expect(result.systemPrompt).toContain("resolve_review_threads");
+	});
+
+	it("lists open threads but drops the resolve instruction when the token cannot resolve", async () => {
+		const threadsPayload = {
+			data: {
+				repository: {
+					pullRequest: {
+						reviewThreads: {
+							nodes: [
+								{
+									id: "T1",
+									isResolved: false,
+									isOutdated: false,
+									viewerCanResolve: false,
+									path: "src/app.ts",
+									line: 2,
+									comments: {
+										nodes: [
+											{
+												body: "The null check is missing.",
+												author: { login: "pi-review-x[bot]", __typename: "Bot" },
+											},
+										],
+									},
+								},
+							],
+						},
+					},
+				},
+			},
+		};
+		const warnings: string[] = [];
+		const spy = vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+			warnings.push(args.map(String).join(" "));
+		});
+		const exec: Exec = async (command, args) => {
+			if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
+				return { stdout: JSON.stringify(threadsPayload), stderr: "", code: 0 };
+			}
+			const key = `${command} ${args.join(" ")}`;
+			const table: Record<string, { stdout?: string; code?: number }> = {
+				"git remote get-url origin": { stdout: "git@github.com:owner/repo.git" },
+				"gh pr view 5 --json number,title,body,author,baseRefName,baseRefOid,headRefOid": {
+					stdout: JSON.stringify(view),
+				},
+				"gh pr diff 5": { stdout: diff },
+			};
+			const hit = table[key] ?? { code: 1 };
+			return { stdout: hit.stdout ?? "", stderr: "", code: hit.code ?? 0 };
+		};
+		const { pi, events } = fakePi(exec);
+		registerReviewRunner(pi, {
+			env: { PI_REVIEW: "1", PR_NUMBER: "5", PI_REVIEW_RESOLVE_THREADS: "1" },
+		});
+		let result: { systemPrompt: string; message: { content: string } };
+		try {
+			result = (await events.get("before_agent_start")!(
+				{ messageType: "user", prompt: "x", systemPrompt: "BASE" },
+				{ cwd: "/repo" }
+			)) as { systemPrompt: string; message: { content: string } };
+		} finally {
+			spy.mockRestore();
+		}
+		// The finding is still shown, so the reviewer does not repeat it...
+		expect(result.message.content).toContain("<open-review-threads>");
+		expect(result.message.content).toContain("id: `T1`");
+		// ...but it is told not to attempt a mutation GitHub will refuse.
+		expect(result.systemPrompt).not.toContain("If the diff verifies that a listed finding is fixed");
+		expect(result.systemPrompt).toContain("Contents: write");
+		expect(warnings.join("\n")).toContain("cannot resolve them");
 	});
 
 	it("never registers the resolve tool in a dry run", () => {

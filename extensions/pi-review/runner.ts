@@ -26,6 +26,7 @@ import { type ValidatedReview, renderReviewMarkdown } from "./review.ts";
 import { createSubmitReviewTool, postReview, upsertStickyComment } from "./submit.ts";
 import {
 	type ReviewThread,
+	RESOLVE_REQUIRES_CONTENTS_WRITE,
 	createResolveThreadsTool,
 	fetchBotThreads,
 	resolveThreads,
@@ -106,6 +107,15 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 				if (resolveStaleThreads && target.repo && target.number) {
 					try {
 						threads = await fetchBotThreads(exec, cwd, target.repo, target.number);
+						// GitHub answers `viewerCanResolve` per thread, so this is a fact
+						// about the token, not a guess. The threads are still listed: the
+						// reviewer uses them to check whether an earlier finding holds, and
+						// saying so once in the log beats nine refused mutations (#55).
+						if (threads.length > 0 && !threads.some((thread) => thread.canResolve)) {
+							console.warn(
+								`pi-review: listing ${threads.length} open bot review thread${threads.length === 1 ? "" : "s"}, but this token cannot resolve them: ${RESOLVE_REQUIRES_CONTENTS_WRITE}.`
+							);
+						}
 					} catch (error) {
 						console.error(
 							`pi-review: could not read review threads: ${error instanceof Error ? error.message : String(error)}`

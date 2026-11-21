@@ -260,6 +260,10 @@ jobs:
             tools="$tools,bash"
           fi
           tools="$tools,submit_review"
+          # Offered, not promised: the runner only lets the tool resolve threads
+          # GitHub answered `viewerCanResolve` true for (#55). The App token is
+          # narrowed to contents: read, and `resolveReviewThread` requires
+          # contents: write, so on the App identity this tool always declines.
           if [ "$(jq -r '.review.resolveStaleThreads // false' "$settings")" = "true" ]; then
             tools="$tools,resolve_review_threads"
           fi

@@ -1091,6 +1091,44 @@ describe("renderInstallOutcome", () => {
 		expect(base.model).toBe("m");
 	});
 
+	it("says thread resolution is unavailable for a read-only Contents App", () => {
+		const text = renderInstallOutcome({
+			status: "created",
+			repo,
+			app: { id: 1234, slug: "pi-review-x", name: "Pi Review" },
+			installed: true,
+			changed: [],
+			appPermissions: { contents: "read", pull_requests: "write" },
+		});
+		expect(text).toContain("thread resolution: **unavailable in CI**");
+		expect(text).toContain("Contents: write");
+	});
+
+	it("says thread resolution works when the App has Contents: write", () => {
+		const text = renderInstallOutcome({
+			status: "existing",
+			repo,
+			appSlug: "pi-review-x",
+			installed: true,
+			verified: true,
+			changed: [],
+			appPermissions: { contents: "write", pull_requests: "write" },
+		});
+		expect(text).toContain("thread resolution: available");
+	});
+
+	it("says nothing about thread resolution when GitHub reported no permissions", () => {
+		const text = renderInstallOutcome({
+			status: "existing",
+			repo,
+			appSlug: "pi-review-x",
+			installed: true,
+			verified: true,
+			changed: [],
+		});
+		expect(text).not.toContain("thread resolution:");
+	});
+
 	it("points at the install page when it was not confirmed", () => {
 		const text = renderInstallOutcome({
 			status: "created",

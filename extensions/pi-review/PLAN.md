@@ -630,6 +630,26 @@ Decisions made while building the runner, where it differs from the design above
   not shown.
 - The prompt is explicit: resolve only what the diff verifies, and leave the
   rest. A failed mutation is reported back, not thrown.
+- **#55: `resolveReviewThread` needs Contents: write, not Pull requests:
+  write.** The App token is minted with `permission-contents: read`, so every
+  resolution was refused with `Resource not accessible by integration` while the
+  review itself posted fine. GitHub's permission mapping for that mutation is
+  `contents`, and their PR team described the choice as deliberate (aligning a
+  thread resolution with merge-level permissions); public reports confirm
+  `contents: read` + `pull_requests: write` is refused and `contents: write`
+  passes. Granting write would also let a prompt-injected review push, so the
+  answer is not to escalate:
+  - The thread query reads `viewerCanResolve`, which is GitHub's answer for the
+    token at hand, and only such threads are offered to
+    `resolve_review_threads`. The tool refuses the rest without a request.
+  - With nothing resolvable the prompt keeps the listing (so a fixed finding is
+    not repeated) but replaces the resolve instruction with a sentence saying
+    threads stay open; the runner logs the reason once; the installer reports
+    the App's contents level in its summary.
+  - Each failure is logged with its id and GitHub's own message, and a GraphQL
+    `errors` array is a failure even when `gh` exits zero, so a review summary
+    can no longer be the only evidence of what happened.
+  - Local `--post` runs still resolve when the user's own `gh` token may.
 
 ## Implementation notes (milestone 6, part 6): `@pi` mentions
 

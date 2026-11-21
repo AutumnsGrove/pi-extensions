@@ -17,7 +17,23 @@ export interface ReviewThread {
 	isOutdated: boolean;
 	body: string;
 	author?: string;
+	/**
+	 * `viewerCanResolve`: whether *this token* may resolve the thread. GitHub
+	 * gates `resolveReviewThread` on Contents: write, not Pull requests: write,
+	 * so a review token narrowed to `contents: read` can open a thread and post
+	 * on it and still be refused when it tries to close it (#55). Asking GitHub
+	 * is the only reliable answer; no setting can know it.
+	 */
+	canResolve: boolean;
 }
+
+/**
+ * The refusal every `contents: read` review token gets, and why. Kept as one
+ * string so the runner log, the prompt, the tool result, and the installer all
+ * say the same thing.
+ */
+export const RESOLVE_REQUIRES_CONTENTS_WRITE =
+	"resolveReviewThread requires the Contents: write permission, not Pull requests: write, so a review token narrowed to contents: read cannot resolve review threads";
 
 const THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
@@ -27,6 +43,7 @@ const THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
           id
           isResolved
           isOutdated
+          viewerCanResolve
           path
           line
           comments(first: 1) {
@@ -55,6 +72,7 @@ interface GraphQLNode {
 	id?: unknown;
 	isResolved?: unknown;
 	isOutdated?: unknown;
+	viewerCanResolve?: unknown;
 	path?: unknown;
 	line?: unknown;
 	comments?: { nodes?: unknown };
@@ -111,6 +129,8 @@ export async function fetchBotThreads(
 			isOutdated: raw.isOutdated === true,
 			body: typeof first?.body === "string" ? first.body : "",
 			...(typeof author.login === "string" ? { author: author.login } : {}),
+			// Absent means GitHub did not say, which is not permission to try.
+			canResolve: raw.viewerCanResolve === true,
 		});
 	}
 	return threads;
@@ -119,6 +139,29 @@ export async function fetchBotThreads(
 export interface ResolveResult {
 	resolved: string[];
 	failed: { id: string; error: string }[];
+}
+
+/** Messages from a GraphQL response's `errors` array, if it has one. */
+function graphqlErrors(stdout: string): string[] {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(stdout);
+	} catch {
+		return [];
+	}
+	const errors = asRecord(parsed)?.errors;
+	if (!Array.isArray(errors)) return [];
+	return errors.map((entry) => {
+		const message = asRecord(entry)?.message;
+		return typeof message === "string" && message ? message : "GraphQL error";
+	});
+}
+
+const NOT_ACCESSIBLE = /not accessible by integration|resource not accessible|FORBIDDEN/i;
+
+/** A refusal that is about the token, not about the request. */
+export function isPermissionRefusal(result: ResolveResult): boolean {
+	return result.failed.length > 0 && result.failed.every((entry) => NOT_ACCESSIBLE.test(entry.error));
 }
 
 export interface ResolveDetails extends ResolveResult {
@@ -141,8 +184,19 @@ export async function resolveThreads(
 			["api", "graphql", "-f", `query=${RESOLVE_MUTATION}`, "-f", `threadId=${threadId}`],
 			{ cwd, timeout: timeoutMs }
 		);
-		if ((result.code ?? 0) === 0) resolved.push(threadId);
-		else failed.push({ id: threadId, error: (result.stderr || result.stdout).trim() || "gh failed" });
+		// `gh` exits non-zero on a GraphQL `errors` array, but a response that
+		// carries errors with exit 0 must not be counted as resolved either.
+		const errors = graphqlErrors(result.stdout);
+		if ((result.code ?? 0) === 0 && errors.length === 0) {
+			resolved.push(threadId);
+			continue;
+		}
+		const detail = (result.stderr || result.stdout).trim() || errors.join("; ") || "gh failed";
+		failed.push({ id: threadId, error: detail });
+		// A summary line that only says "resolved 0 threads" hides whether this
+		// was a permission refusal or a bad node id, so name the id and quote
+		// GitHub in the job log, where an operator can see it (#55).
+		console.error(`pi-review: could not resolve review thread ${threadId}: ${detail}`);
 	}
 	return { resolved, failed };
 }
@@ -159,7 +213,7 @@ export function createResolveThreadsTool(deps: {
 		name: "resolve_review_threads",
 		label: "Resolve review threads",
 		description:
-			"Mark review threads as resolved after verifying the new changes fixed them. Only ids from the open threads provided in the review context are accepted.",
+			"Mark review threads as resolved after verifying the new changes fixed them. Only ids from the open threads provided in the review context are accepted, and only when this token is allowed to resolve them.",
 		promptSnippet: "Resolve review threads that the new changes fixed",
 		promptGuidelines: [
 			"Use resolve_review_threads only for threads listed in the review context whose finding you can verify is fixed by the diff. Leave every thread you are unsure about unresolved.",
@@ -177,29 +231,37 @@ export function createResolveThreadsTool(deps: {
 		async execute(_toolCallId, params) {
 			const threads = await deps.getThreads();
 			const allowed = new Map(threads.map((thread) => [thread.id, thread]));
-			const valid = params.threadIds.filter((id) => allowed.has(id));
+			const known = params.threadIds.filter((id) => allowed.has(id));
 			const ignored = params.threadIds.filter((id) => !allowed.has(id));
+			// `viewerCanResolve` is GitHub's own answer, so a thread this token may
+			// not close is refused here instead of costing one doomed mutation each.
+			const valid = known.filter((id) => allowed.get(id)?.canResolve === true);
+			const refused = known.filter((id) => allowed.get(id)?.canResolve !== true);
 			if (valid.length === 0) {
 				const details: ResolveDetails = { resolved: [], failed: [], ignored };
+				const text =
+					refused.length > 0
+						? `This token cannot resolve ${refused.length === 1 ? "that thread" : "those threads"} (${refused.join(", ")}): ${RESOLVE_REQUIRES_CONTENTS_WRITE}. Leave them open and say in the summary that they remain open.`
+						: `None of those thread ids are open bot threads on this repository${ignored.length > 0 ? ` (ignored: ${ignored.join(", ")})` : ""}. Use the ids from <open-review-threads>.`;
 				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `None of those thread ids are open bot threads on this repository${ignored.length > 0 ? ` (ignored: ${ignored.join(", ")})` : ""}. Use the ids from <open-review-threads>.`,
-						},
-					],
+					content: [{ type: "text" as const, text }],
 					details,
 					isError: true,
 				};
 			}
 			const result = await deps.resolve(valid);
+			const permission = isPermissionRefusal(result);
 			const lines = [
 				`Resolved ${result.resolved.length} thread${result.resolved.length === 1 ? "" : "s"}.`,
 				...(params.reason ? [`Reason: ${params.reason}`] : []),
 				...(ignored.length > 0 ? [`Ignored unknown ids: ${ignored.join(", ")}`] : []),
+				...(refused.length > 0
+					? [`Not resolvable by this token: ${refused.join(", ")} (${RESOLVE_REQUIRES_CONTENTS_WRITE})`]
+					: []),
 				...(result.failed.length > 0
 					? [`Failed: ${result.failed.map((entry) => `${entry.id} (${entry.error})`).join(", ")}`]
 					: []),
+				...(permission ? ["The token lacks the permission, so say in the summary that the threads remain open."] : []),
 			];
 			const details: ResolveDetails = { ...result, ignored };
 			return {
