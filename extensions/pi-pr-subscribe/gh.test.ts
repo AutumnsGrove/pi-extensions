@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { diffSnapshot, initCursor } from "./diff.ts";
 import {
 	GhApi,
@@ -39,6 +39,10 @@ function fakeExec(replies: Array<{ match: string; reply: Reply }>): { exec: Exec
 	};
 	return { exec, calls };
 }
+
+afterEach(() => {
+	vi.useRealTimers();
+});
 
 const pull = {
 	number: 32,
@@ -151,6 +155,39 @@ describe("GhApi", () => {
 			status: 304,
 			notModified: true,
 			body: { number: 32 },
+		});
+	});
+
+	it("abandons a request that never settles", async () => {
+		vi.useFakeTimers();
+		const api = new GhApi({
+			exec: () => new Promise(() => {}),
+			cwd: "/tmp",
+			timeoutMs: 1_000,
+		});
+		const pending = api.get("repos/o/r/pulls/1");
+		const assertion = expect(pending).rejects.toMatchObject({
+			kind: "network",
+			message: expect.stringContaining("abandoned"),
+		});
+		await vi.advanceTimersByTimeAsync(6_000);
+		await assertion;
+	});
+
+	it("explains an empty response instead of echoing the exit code", async () => {
+		const suspended = new GhApi({ exec: async () => ({ stdout: "", code: 0 }), cwd: "/tmp" });
+		await expect(suspended.get("x")).rejects.toMatchObject({
+			kind: "network",
+			message: expect.stringContaining("no response"),
+		});
+
+		const killed = new GhApi({
+			exec: async () => ({ stdout: "", code: 0, killed: true }) as never,
+			cwd: "/tmp",
+		});
+		await expect(killed.get("x")).rejects.toMatchObject({
+			kind: "network",
+			message: expect.stringContaining("interrupted"),
 		});
 	});
 
@@ -361,14 +398,25 @@ describe("pagination", () => {
 		const oldest = Array.from({ length: 100 }, (_, index) => ({ id: index + 1, body: `old ${index + 1}` }));
 		const newest = Array.from({ length: 50 }, (_, index) => ({ id: index + 101, body: `new ${index + 101}` }));
 		const calls: string[][] = [];
+		const conditional = (args: string[]): boolean => args.some((arg) => arg.startsWith("If-None-Match"));
 		const exec: Exec = async (_command, args) => {
 			calls.push(args);
 			const path = args.at(-1) ?? "";
-			if (path.includes("issues/32/comments?per_page=100&page=2")) return { stdout: included(200, newest), code: 0 };
+			if (path.includes("issues/32/comments?per_page=100&page=2")) {
+				// The page-2 read is cached; a 304 must serve the same newest page.
+				if (conditional(args)) return { stdout: included(304, undefined, { Etag: '"p2"' }), code: 1 };
+				return { stdout: included(200, newest, { Etag: '"p2"' }), code: 0 };
+			}
 			if (path.includes("issues/32/comments")) {
-				// A warm cache would 304 here; the seed must not be conditional.
-				if (args.includes("If-None-Match")) return { stdout: included(304, undefined), code: 1 };
-				return { stdout: included(200, oldest, { Link: `<https://api.github.com/x?page=2>; rel="last"` }), code: 0 };
+				// A conditional seed would 304 here and fall back to the oldest page.
+				if (conditional(args)) return { stdout: included(304, undefined, { Etag: '"p1"' }), code: 1 };
+				return {
+					stdout: included(200, oldest, {
+						Etag: '"p1"',
+						Link: `<https://api.github.com/x?page=2>; rel="last"`,
+					}),
+					code: 0,
+				};
 			}
 			if (path.includes("reviews")) return { stdout: included(200, []), code: 0 };
 			if (path.includes("pulls/32/comments")) return { stdout: included(200, []), code: 0 };
@@ -382,8 +430,12 @@ describe("pagination", () => {
 		expect(first.comments).toHaveLength(50);
 		expect(second.comments).toHaveLength(50);
 		expect(second.comments.at(-1)?.id).toBe("150");
-		const seedCalls = calls.filter((args) => (args.at(-1) ?? "").includes("issues/32/comments"));
-		expect(seedCalls.every((args) => !args.includes("If-None-Match"))).toBe(true);
+		const firstPageSeeds = calls.filter(
+			(args) =>
+				(args.at(-1) ?? "").includes("issues/32/comments") && !/[&?]page=\d/.test(args.at(-1) ?? "")
+		);
+		expect(firstPageSeeds.length).toBe(2);
+		expect(firstPageSeeds.every((args) => !args.some((arg) => arg.startsWith("If-None-Match")))).toBe(true);
 	});
 
 	it("re-reads a full last page without a conditional, so a spill is not missed", async () => {
@@ -417,17 +469,18 @@ describe("review page boundaries", () => {
 
 	/** A fake `gh` with mutable pages and honest conditional requests. */
 	function pagedReviews(pages: Record<number, unknown[]>) {
-		const etags = new Map<string, number>();
+		const requests: string[][] = [];
 		const exec: Exec = async (_command, args) => {
+			requests.push(args);
 			const path = args.at(-1) ?? "";
 			if (path.includes("/reviews")) {
 				const page = Number(/[?&]page=(\d+)/.exec(path)?.[1] ?? "1");
 				const body = pages[page] ?? [];
 				const etag = `"p${page}-${body.length}"`;
-				if (args.includes("If-None-Match") && args.includes(`If-None-Match: ${etag}`)) {
+				const sent = args.find((arg) => arg.startsWith("If-None-Match"));
+				if (sent === `If-None-Match: ${etag}`) {
 					return { stdout: included(304, undefined, { Etag: etag }), code: 1 };
 				}
-				etags.set(path, page);
 				const last = Math.max(...Object.keys(pages).map(Number));
 				const headers: Record<string, string> = { Etag: etag };
 				if (page < last) {
@@ -441,7 +494,7 @@ describe("review page boundaries", () => {
 			if (path.includes("/status")) return { stdout: included(200, { statuses: [] }), code: 0 };
 			return { stdout: included(200, pull), code: 0 };
 		};
-		return { exec };
+		return { exec, requests };
 	}
 
 	it("does not lose the review that fills a page in the same read as its spill", async () => {
@@ -473,6 +526,31 @@ describe("review page boundaries", () => {
 		const snapshot = await fetchSnapshot(api, { owner: "o", repo: "r", number: 32 });
 		expect(snapshot.reviews).toHaveLength(100);
 		expect(snapshot.reviews.at(-1)?.id).toBe("100");
+	});
+
+	it("serves the cached last page on a 304", async () => {
+		const pages: Record<number, unknown[]> = {
+			1: Array.from({ length: 100 }, (_, index) => review(index + 1)),
+			2: [review(101)],
+		};
+		const fake = pagedReviews(pages);
+		const api = new GhApi({ exec: fake.exec, cwd: "/tmp" });
+		const first = await fetchSnapshot(api, { owner: "o", repo: "r", number: 32 });
+		expect(first.reviews.at(-1)?.id).toBe("101");
+
+		const before = fake.requests.length;
+		const second = await fetchSnapshot(api, { owner: "o", repo: "r", number: 32 });
+		expect(second.reviews.map((r) => r.id)).toEqual(["101"]);
+		const page2 = fake.requests
+			.slice(before)
+			.map((args) => args.at(-1) ?? "")
+			.find((path) => path.includes("page=2"));
+		expect(page2).toBeDefined();
+		expect(
+			fake.requests
+				.slice(before)
+				.some((args) => args.some((arg) => arg === 'If-None-Match: "p2-1"'))
+		).toBe(true);
 	});
 
 	it("follows a spill once the full page gains its next review", async () => {

@@ -65,7 +65,10 @@ export interface PollerDeps {
 }
 
 const apis = new Map<string, GhApi>();
-const inFlight = new Set<string>();
+/** When a poll started. A stale entry is treated as abandoned, not as a lock. */
+const inFlight = new Map<string, number>();
+const inFlightTokens = new Map<string, symbol>();
+export const WEDGED_INFLIGHT_MS = 120_000;
 
 /** One client per session, so ETags survive across polls and reloads. */
 export function apiFor(sessionId: string, deps: PollerDeps, exec?: Exec): GhApi {
@@ -90,6 +93,7 @@ export function apiFor(sessionId: string, deps: PollerDeps, exec?: Exec): GhApi 
 export function resetPollers(): void {
 	apis.clear();
 	inFlight.clear();
+	inFlightTokens.clear();
 }
 
 export function apiForget(sessionId: string): void {
@@ -118,7 +122,18 @@ export function pollInterval(sub: Subscription, deps: PollerDeps, at = now(deps)
 
 export function startPoller(sub: Subscription, deps: PollerDeps): void {
 	if (sub.ended) return;
+	sub.paused = false;
 	schedule(sub, deps, 0);
+}
+
+/** Stop the timer without ending the subscription, so it can be resumed. */
+export function pausePoller(sub: Subscription): void {
+	sub.paused = true;
+	if (sub.timer) clearTimeout(sub.timer);
+	sub.timer = undefined;
+	if (sub.flushTimer) clearTimeout(sub.flushTimer);
+	sub.flushTimer = undefined;
+	inFlight.delete(prKey(sub.ref));
 }
 
 export function stopPoller(sub: Subscription): void {
@@ -128,10 +143,11 @@ export function stopPoller(sub: Subscription): void {
 	if (sub.flushTimer) clearTimeout(sub.flushTimer);
 	sub.flushTimer = undefined;
 	inFlight.delete(prKey(sub.ref));
+	inFlightTokens.delete(prKey(sub.ref));
 }
 
 function schedule(sub: Subscription, deps: PollerDeps, delay: number): void {
-	if (sub.ended) return;
+	if (sub.ended || sub.paused) return;
 	if (sub.timer) clearTimeout(sub.timer);
 	sub.nextPollAt = now(deps) + delay;
 	sub.timer = setTimeout(() => {
@@ -144,16 +160,27 @@ function schedule(sub: Subscription, deps: PollerDeps, delay: number): void {
 /** One poll. Never throws; failures become a delayed retry and an error event. */
 export async function tick(sub: Subscription, deps: PollerDeps): Promise<void> {
 	const key = prKey(sub.ref);
-	if (sub.ended || inFlight.has(key)) {
-		schedule(sub, deps, pollInterval(sub, deps));
+	const startedAt = inFlight.get(key);
+	// A poll that has been "running" for longer than any request could is
+	// abandoned. Without this an interrupted request wedges the subscription
+	// permanently: the guard stays set and every later tick returns early.
+	if (startedAt !== undefined && now(deps) - startedAt < WEDGED_INFLIGHT_MS) {
+		if (!sub.ended && !sub.paused) schedule(sub, deps, pollInterval(sub, deps));
 		return;
 	}
-	inFlight.add(key);
+	if (sub.ended || sub.paused) return;
+	const token = Symbol(key);
+	inFlight.set(key, now(deps));
+	inFlightTokens.set(key, token);
 	try {
 		await pollOnce(sub, deps);
 		schedule(sub, deps, sub.nextPollAt ? Math.max(0, sub.nextPollAt - now(deps)) : 0);
 	} finally {
-		inFlight.delete(key);
+		// An abandoned poll must not clear a newer one's guard.
+		if (inFlightTokens.get(key) === token) {
+			inFlight.delete(key);
+			inFlightTokens.delete(key);
+		}
 	}
 }
 
@@ -186,7 +213,20 @@ async function pollOnce(sub: Subscription, deps: PollerDeps): Promise<void> {
 		sub.lastErrorKind = undefined;
 		sub.notifiedErrors = [];
 		sub.lastPollAt = at;
-		if (sub.lock) sub.lock = touchLock(sub.lock, at);
+		if (sub.lock) {
+			const touched = touchLock(sub.lock, at);
+			if (!touched) {
+				// Another session took the PR while this one was suspended or behind.
+				// Stop quietly; `/subscribe` retries the lock and resumes with a
+				// catch-up, so no event is lost, only late.
+				sub.lock = undefined;
+				sub.blockedBy = "another session (the lock was taken over)";
+				pausePoller(sub);
+				paint(deps);
+				return;
+			}
+			sub.lock = touched;
+		}
 
 		if (result.events.length > 0) {
 			await attachLogs(sub, result.events, deps);

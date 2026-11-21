@@ -457,13 +457,21 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 		registry().paint = () => paint();
 
 		if (event.reason !== "reload") {
-			// Jobs and subscriptions from an earlier session in this process must
-			// not keep running invisibly. A `/reload` deliberately keeps them.
+			// Subscriptions from an earlier session in this process must not keep
+			// running invisibly. A `/reload` deliberately keeps them.
 			for (const sub of listSubscriptions()) {
 				if (sub.sessionId === currentSessionId) continue;
 				stopPoller(sub);
 				releaseLock(sub.lock);
 				removeSubscription(sub.ref);
+			}
+		} else {
+			// Re-arm every running poller on the new module. The old timers belong
+			// to the previous module instance, and if one of them was interrupted
+			// (machine suspended mid-request) the subscription would otherwise stay
+			// wedged until it was unsubscribed.
+			for (const sub of listSubscriptions(currentSessionId)) {
+				startPoller(sub, { ...deps, cwd: sub.cwd });
 			}
 		}
 		restore(ctx);

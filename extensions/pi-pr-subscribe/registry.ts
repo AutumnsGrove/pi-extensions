@@ -61,6 +61,8 @@ export interface Subscription {
 	lock?: LockInfo;
 	/** True once the lock is held by another session. */
 	blockedBy?: string;
+	/** Timers are off; the session-level retry may resume it. */
+	paused?: boolean;
 	ended: boolean;
 	timer?: ReturnType<typeof setTimeout>;
 	flushTimer?: ReturnType<typeof setTimeout>;
@@ -281,14 +283,23 @@ export function acquireLock(
 	return { ok: true, lock };
 }
 
-export function touchLock(lock: LockInfo, now = Date.now()): LockInfo {
+/**
+ * Refresh the heartbeat, unless the lock is no longer ours.
+ *
+ * A suspended laptop stops heartbeating; after five minutes another session may
+ * legitimately take the lock. Writing our heartbeat over theirs would give two
+ * sessions the same PR, so an ownership check comes first and `undefined` means
+ * "we lost it".
+ */
+export function touchLock(lock: LockInfo, now = Date.now()): LockInfo | undefined {
 	const next = { ...lock, heartbeatAt: now };
-	if (next.path) {
-		try {
-			writeFileSync(next.path, `${JSON.stringify(next, null, 2)}\n`, "utf8");
-		} catch {
-			// Ignore: the heartbeat is an optimization, not a correctness barrier.
-		}
+	if (!next.path) return next;
+	const current = readLockByPath(next.path);
+	if (current && (current.pid !== next.pid || current.sessionId !== next.sessionId)) return undefined;
+	try {
+		writeFileSync(next.path, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+	} catch {
+		// Ignore: the heartbeat is an optimization, not a correctness barrier.
 	}
 	return next;
 }

@@ -110,8 +110,16 @@ describe("lock", () => {
 		const acquired = acquireLock(ref, "session-1", 1000);
 		if (!acquired.ok) throw new Error("expected a lock");
 		const touched = touchLock(acquired.lock, 9000);
-		expect(touched.heartbeatAt).toBe(9000);
+		expect(touched?.heartbeatAt).toBe(9000);
 		expect(JSON.parse(readFileSync(lockPath(ref), "utf8")).heartbeatAt).toBe(9000);
+	});
+
+	it("refuses to heartbeat a lock another session took", () => {
+		const acquired = acquireLock(ref, "session-1", 1000);
+		if (!acquired.ok) throw new Error("expected a lock");
+		writeFileSync(lockPath(ref), JSON.stringify({ ...acquired.lock, pid: process.pid, sessionId: "session-2" }));
+		expect(touchLock(acquired.lock, 9000)).toBeUndefined();
+		expect(JSON.parse(readFileSync(lockPath(ref), "utf8")).sessionId).toBe("session-2");
 	});
 
 	it("treats an unreadable lock file as no lock", () => {

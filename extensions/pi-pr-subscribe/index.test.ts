@@ -335,6 +335,20 @@ describe("session lifecycle", () => {
 		expect(sub?.catchUp).toBe(true);
 	});
 
+	it("re-arms a running poller on reload", async () => {
+		const h = load();
+		await call(h, "subscribe_pr_activity");
+		const sub = getSubscription(ref);
+		if (!sub) throw new Error("expected a subscription");
+		// Simulate a poller that was interrupted mid-request: no timer, not ended.
+		if (sub.timer) clearTimeout(sub.timer);
+		sub.timer = undefined;
+		sub.paused = true;
+		await h.emit("session_start", { type: "session_start", reason: "reload" });
+		expect(sub.paused).toBe(false);
+		expect(sub.timer).toBeDefined();
+	});
+
 	it("reminds a compacted session what it is watching", async () => {
 		const h = load();
 		await call(h, "subscribe_pr_activity");

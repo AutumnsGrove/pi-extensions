@@ -110,7 +110,11 @@ a duplicated page, or a clock skew cannot double-fire one.
   re-subscribes and its first delivery says **"While you were away"**.
 - Pollers and the registry live on `globalThis`, so `/reload` keeps them running.
   Delivery, persistence, `pi.exec`, and painting are looked up from the registry
-  at call time, which lets the re-evaluated module take over a running timer.
+  at call time, and a reload re-arms every running poller on the new module — so
+  a poll interrupted by a suspended machine is unstuck by `/reload` rather than
+  by unsubscribing. The same applies to the `in-flight` guard, which treats a
+  poll older than two minutes as abandoned, and every request carries its own
+  local timeout for the case where `pi.exec` never settles.
 - A comment is skipped only when its id is already recorded. The session's own
   comments get there by watching the `bash` results it already produces: a
   successful `gh pr comment`, `gh pr review`, or `gh api …/comments` prints a URL
@@ -123,6 +127,10 @@ a duplicated page, or a clock skew cannot double-fire one.
   session subscribes successfully and is told it will not receive events; it
   retries the lock every minute and takes over when the holder stops. A stale
   heartbeat (5 min) or a dead pid releases the lock.
+- A heartbeat never overwrites a lock that changed hands. If a suspended laptop
+  wakes to find another session took the PR, the poller notices, stops, and
+  leaves the subscription for the take-back loop — which resumes with a
+  catch-up, so events are late, not lost.
 - At most five subscriptions per session.
 
 ## Security
@@ -158,6 +166,10 @@ instruction; rule 6 and the permission model say so, and there is a test for it.
   reported separately.
 - `/reload` keeps a poller running only in the same process. Quitting pi stops
   the watch; resume restores it from the session branch.
+- A machine that sleeps for longer than the lock's five-minute heartbeat lets
+  another session take the PR; the sleeper notices on wake and stands down. Two
+  sessions on one PR is the thing the lock exists to prevent, so the loser
+  deliberately does not force its way back.
 
 ## Layout
 

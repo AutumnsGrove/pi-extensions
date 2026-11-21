@@ -378,6 +378,33 @@ All three have tests that fail on the previous behaviour, including the boundary
 probe from the review: 99 reviews, then 100 and 101 in one read, must deliver
 both.
 
+### After the laptop slept
+
+Closing the lid for seven hours produced a real failure worth keeping:
+
+- Every request that was in flight when the machine suspended left a promise
+  that never settled. `pi.exec` has a timeout, but the child could die without
+  reporting an exit, so the promise outlived the tick that started it. The
+  in-flight guard then stayed set and every later tick returned early: no polls,
+  no heartbeat, a frozen widget, and a poller that was "running" but dead. The
+  guard now treats a poll older than two minutes as abandoned, and each request
+  races a local timeout of its own (plus a five-second grace), so a hung runner
+  cannot wedge a subscription.
+- A reload now re-arms running pollers on the new module. Before this, `/reload`
+  replaced the callbacks but left the old timers (and their wedged guard) in
+  charge, so the only way out of the failure above was to unsubscribe.
+- A heartbeat no longer overwrites a lock that changed hands while the machine
+  was suspended. `touchLock` returns "lost", the poller pauses and reports it,
+  and the session-level retry takes the lock back when the other session stops.
+  Events are late, not lost: the cursor is untouched.
+- The error text was honest about the wrong thing ("gh exited 0 with no
+  response"). It now says the network was unavailable or the machine was
+  suspended, and a killed child says so.
+
+The phase-0 note about the escalation ladder still holds: the first poll after a
+wake is immediate (the timer is overdue), and the backoff is capped at five
+minutes.
+
 ### Phase 4 (pi-review integration)
 
 - Bot reviews are labelled twice: GitHub's `[bot]` login sets `bot="true"`, and

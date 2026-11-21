@@ -252,6 +252,24 @@ describe("polling", () => {
 		expect(h.sub.notifiedErrors).toEqual([]);
 	});
 
+	it("does not wedge when a request never settles", async () => {
+		const h = setup();
+		const healthy = h.server.exec;
+		registry().exec = () => new Promise(() => {});
+		const pending = tick(h.sub, h.deps);
+		// Past the client's local timeout, the request is abandoned.
+		await vi.advanceTimersByTimeAsync(40_000);
+		await pending;
+		expect(h.sub.lastErrorKind).toBe("network");
+
+		// The next tick polls again instead of early-returning forever.
+		registry().exec = healthy;
+		h.server.issueComments = [{ id: 10, body: "after the nap", created_at: "2026-11-20T21:00:00Z" }];
+		await tick(h.sub, h.deps);
+		vi.advanceTimersByTime(COALESCE_MS);
+		expect(h.delivered.at(-1)).toContain("after the nap");
+	});
+
 	it("holds a batch while a question is open, then sends it", async () => {
 		const h = setup();
 		h.server.issueComments = [{ id: 10, body: "hello", created_at: "2026-11-15T21:00:00Z" }];

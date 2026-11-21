@@ -62,6 +62,31 @@ interface CacheEntry {
 
 const STATUS_LINE = /^HTTP\/[\d.]+ (\d{3})/;
 
+/**
+ * Bound a request even if the runner never settles.
+ *
+ * `pi.exec` has a timeout, but a suspended machine can leave a child that never
+ * reports an exit, and the promise then hangs for the life of the process. That
+ * used to wedge the poller: the in-flight guard stayed set, so every later tick
+ * returned early and nothing was ever polled again.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string, path: string): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(() => reject(new GhApiError("network", message, path)), ms);
+		timer.unref?.();
+		promise.then(
+			(value) => {
+				clearTimeout(timer);
+				resolve(value);
+			},
+			(error: unknown) => {
+				clearTimeout(timer);
+				reject(error);
+			}
+		);
+	});
+}
+
 /** Split `gh api --include` output into status, headers, and body. */
 export function parseIncludedResponse(raw: string): {
 	status: number;
@@ -160,20 +185,26 @@ export class GhApi {
 
 	async get(
 		path: string,
-		options: { etagKey?: string; accept?: string; timeoutMs?: number } = {}
+		options: { etagKey?: string; accept?: string; timeoutMs?: number; ifNoneMatch?: boolean } = {}
 	): Promise<GhResponse> {
 		const key = options.etagKey;
 		const cached = key ? this.cache.get(key) : undefined;
 		const args = ["api", "--include", "-H", `Accept: ${options.accept ?? "application/vnd.github+json"}`];
-		if (cached) args.push("-H", `If-None-Match: ${cached.etag}`);
+		// `ifNoneMatch: false` still records the ETag for later, but does not trust
+		// it now: a page that is full can stay byte-identical while the next page
+		// changes under it.
+		if (cached && options.ifNoneMatch !== false) args.push("-H", `If-None-Match: ${cached.etag}`);
 		args.push(path);
 
+		const timeoutMs = options.timeoutMs ?? this.options.timeoutMs ?? 30_000;
 		let result: ExecResultLike;
 		try {
-			result = await this.options.exec("gh", args, {
-				cwd: this.options.cwd,
-				timeout: options.timeoutMs ?? this.options.timeoutMs ?? 30_000,
-			});
+			result = await withTimeout(
+				this.options.exec("gh", args, { cwd: this.options.cwd, timeout: timeoutMs }),
+				timeoutMs + 5_000,
+				`gh did not return within ${Math.round((timeoutMs + 5_000) / 1000)}s; the request was abandoned`,
+				path
+			);
 		} catch (error) {
 			// `gh` exits 1 on a 304 and on every 4xx. `pi.exec` reports that as a
 			// result, but a runner that throws on a non-zero exit still carries the
@@ -197,8 +228,17 @@ export class GhApi {
 
 		const parsed = parseIncludedResponse(result.stdout ?? "");
 		if (parsed.status === 0) {
-			const message = (result.stderr ?? "").trim() || `gh exited ${result.code ?? "?"} with no response`;
-			throw new GhApiError(classify(0, message, parsed.headers), message, path);
+			// A suspended machine or a killed child can produce an empty stdout with
+			// exit 0. Say what that means instead of echoing the exit code.
+			const stderr = (result.stderr ?? "").trim();
+			const killed = (result as { killed?: unknown }).killed === true;
+			const message = killed
+				? "the request was interrupted (the process was killed)"
+				: stderr ||
+					((result.stdout ?? "").trim()
+						? "gh returned a response with no status line"
+						: "gh returned no response; the network was unavailable or the machine was suspended");
+			throw new GhApiError(killed ? "network" : classify(0, message, parsed.headers), message, path);
 		}
 
 		if (parsed.status === 304) {
@@ -386,7 +426,10 @@ async function fetchReviews(api: GhApi, ref: PrRef): Promise<{ list: unknown }> 
 	let lastWasFull = false;
 
 	for (let reads = 0; reads < MAX_PAGES; reads += 1) {
-		const response = await api.get(`${base}&page=${page}`, conditional ? { etagKey: `${key}:p${page}` } : {});
+		const response = await api.get(`${base}&page=${page}`, {
+			etagKey: `${key}:p${page}`,
+			ifNoneMatch: conditional,
+		});
 		conditional = false;
 		const pageItems = items(response.body);
 
