@@ -13,7 +13,6 @@ describe("defaultSettings", () => {
 		const settings = defaultSettings({
 			provider: "opencode-go",
 			model: "deepseek-v4.1-flash",
-			piVersion: "1.5.0",
 		});
 		expect(settings).toMatchObject({
 			version: 1,
@@ -30,8 +29,9 @@ describe("defaultSettings", () => {
 				onProviderFailure: "fail",
 			},
 			timeoutMinutes: DEFAULT_TIMEOUT_MINUTES,
-			pi: { version: "1.5.0" },
 		});
+		// No pin by default: the reusable workflow's `pi-version` decides.
+		expect(settings.pi).toBeUndefined();
 		expect(settings.triggers.types).toEqual(["opened", "synchronize", "ready_for_review", "reopened"]);
 		expect(settings.triggers.skipDrafts).toBe(true);
 		expect(settings.paths).toEqual({ include: [], exclude: [] });
@@ -50,6 +50,20 @@ describe("parseSettings", () => {
 		expect(settings.tools.bash).toBe(true);
 		expect(settings.identity).toBe("app");
 		expect(settings.triggers.skipDrafts).toBe(true);
+	});
+
+	it("keeps a pinned pi version and omits an absent one", () => {
+		expect(parseSettings({ pi: { version: "1.5.2" } }).pi).toEqual({ version: "1.5.2" });
+		expect(parseSettings({}).pi).toBeUndefined();
+		expect(parseSettings({ pi: { version: "  " } }).pi).toBeUndefined();
+	});
+
+	it("does not write an empty pi block when rendering", () => {
+		const rendered = renderSettings(parseSettings({}));
+		expect(rendered).not.toContain('"pi"');
+		expect(renderSettings(parseSettings({ pi: { version: "1.5.2" } }))).toContain(
+			'"version": "1.5.2"'
+		);
 	});
 
 	it("parses strictness and rejects unknown levels", () => {

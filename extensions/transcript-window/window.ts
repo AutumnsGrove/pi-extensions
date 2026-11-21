@@ -26,7 +26,8 @@ export interface WindowRenderOptions {
 
 export interface VisibleComponent {
 	component: Component;
-	lines: string[];
+	/** Lines are the component's own render output, which callers must not modify. */
+	lines: readonly string[];
 }
 
 export interface WindowRenderResult {
@@ -35,6 +36,8 @@ export interface WindowRenderResult {
 	hidden: number;
 	/** Components that were rendered, in transcript order. */
 	visible: VisibleComponent[];
+	/** Lines per rendered child, including the marker row, for mouse dispatch. */
+	parts: readonly (readonly string[])[];
 }
 
 /** Normalize a user-supplied item limit. Non-finite values disable the cap. */
@@ -58,10 +61,13 @@ export function renderWindow(
 	const hidden = limit > 0 ? Math.max(0, total - limit) : 0;
 	const lines: string[] = [];
 	const visible: VisibleComponent[] = [];
+	const parts: (readonly string[])[] = [];
 
 	if (hidden > 0) {
 		const marker = options.marker(hidden, total);
-		lines.push(truncateToWidth(options.styleMarker(marker), width));
+		const line = truncateToWidth(options.styleMarker(marker), width);
+		lines.push(line);
+		parts.push([line]);
 	}
 
 	for (let index = hidden; index < total; index += 1) {
@@ -69,12 +75,13 @@ export function renderWindow(
 		if (!component) continue;
 		const childLines = component.render(width);
 		visible.push({ component, lines: childLines });
+		parts.push(childLines);
 		for (const line of childLines) {
 			lines.push(line);
 		}
 	}
 
-	return { lines, hidden, visible };
+	return { lines, hidden, visible, parts };
 }
 
 /** A zero-height component used to keep mouse offsets aligned with the marker row. */

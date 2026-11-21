@@ -488,7 +488,7 @@ async function describeReviewSetup(
 		`- verdict: ${settings.review.event} · max ${settings.review.maxInlineComments} inline comments`,
 		`- strictness: ${settings.review.strictness}`,
 		`- retries: ${settings.review.retry.maxRetries} agent · ${settings.review.retry.providerMaxRetries} provider · provider failure ${settings.review.onProviderFailure}`,
-		`- pi: ${settings.pi.version}`,
+		`- pi: ${settings.pi?.version ?? "workflow default"}`,
 	];
 
 	if (repo) {

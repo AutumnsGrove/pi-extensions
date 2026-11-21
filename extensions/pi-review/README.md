@@ -404,7 +404,18 @@ small caller that points at
 the job lives once. A change to that file reaches every project that installed
 pi-review on its next run, with no commit in the project (issue #34).
 
-The pi CLI version stays in the project: `.github/pi-review.json` → `pi.version`.
+The pi CLI version is inherited, not pinned. The reusable workflow declares a
+`pi-version` input with a default that every caller gets, so bumping that
+single default moves every project that has not pinned one. A project that needs
+a specific release can still set `pi.version` in `.github/pi-review.json`, and
+that value wins; `/pi-review install` no longer writes a pin, so re-installing
+cannot opt a project out of the inherited default by accident.
+
+Unpinning a project is a two-step change, because callers fetch the reusable
+workflow from `@main` while reading settings from their own commit. Removing
+`pi.version` before the workflow that tolerates its absence is on `main` makes
+the old workflow fail the install step: the settings it requires are gone. Land
+the workflow change first, then drop the pin.
 
 What still needs a local change is the caller, and only when a setting that
 GitHub has to know before the job starts changes: the triggers, the path filter,

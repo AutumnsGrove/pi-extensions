@@ -66,6 +66,35 @@ describe("renderWindow", () => {
 		}
 	});
 
+	it("reports one line group per rendered child, marker first", () => {
+		const first = component("old");
+		const second = component("middle", "two");
+		const third = component("new");
+
+		const result = renderWindow([first, second, third], 40, {
+			...options,
+			maxItems: 2,
+		});
+
+		// Mouse dispatch walks `parts` against the visible children, so the
+		// groups must line up with them and add up to the rendered lines.
+		expect(result.parts).toEqual([
+			["hidden:1/3"],
+			["middle", "two"],
+			["new"],
+		]);
+		expect(result.parts.flat()).toEqual(result.lines);
+	});
+
+	it("reports no marker group when nothing is hidden", () => {
+		const result = renderWindow([component("a")], 40, {
+			...options,
+			maxItems: 10,
+		});
+
+		expect(result.parts).toEqual([["a"]]);
+	});
+
 	it("truncates a marker that is wider than the terminal", () => {
 		const result = renderWindow([component("a"), component("b")], 10, {
 			maxItems: 1,

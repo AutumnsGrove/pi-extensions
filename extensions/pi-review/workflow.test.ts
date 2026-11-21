@@ -12,7 +12,6 @@ function settings(overrides: Partial<ReviewSettings> = {}): ReviewSettings {
 	const base = defaultSettings({
 		provider: "opencode-go",
 		model: "deepseek-v4.1-flash",
-		piVersion: "1.5.0",
 	});
 	return { ...base, ...overrides };
 }

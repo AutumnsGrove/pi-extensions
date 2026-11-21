@@ -21,6 +21,13 @@ on:
         description: Where the caller keeps its pi-review settings.
         type: string
         default: .github/pi-review.json
+      pi-version:
+        description: >-
+          pi release to review with. A `pi.version` in the caller's settings
+          file wins; this default is what every caller inherits otherwise, so
+          bumping it here moves every repository that does not pin one.
+        type: string
+        default: "1.6.0"
       review-timeout-minutes:
         description: Time allowed for the review step.
         type: number
@@ -131,7 +138,7 @@ jobs:
             ~/.bun/install/cache
             ~/.cache/pip
             ~/.cache/uv
-          key: ${{ runner.os }}-pi-review-${{ hashFiles('**/pi-review.json') }}-${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json', '**/yarn.lock', '**/bun.lock', '**/bun.lockb', '**/uv.lock', '**/poetry.lock', '**/Pipfile.lock', '**/requirements.txt') }}
+          key: ${{ runner.os }}-pi-review-${{ hashFiles('**/pi-review.json') }}-${{ hashFiles('**/pnpm-lock.yaml', '**/package-lock.json', '**/yarn.lock', '**/bun.lock', '**/bun.lockb', '**/uv.lock', '**/poetry.lock', '**/Pipfile.lock', '**/requirements.txt') }}-${{ inputs.pi-version }}
           restore-keys: |
             ${{ runner.os }}-pi-review-${{ hashFiles('**/pi-review.json') }}-
 
@@ -150,10 +157,20 @@ jobs:
         env:
           PI_REVIEW_INSTALL_COMMAND: ${{ inputs.install-command }}
           PI_REVIEW_INSTALL_DEPS: ${{ inputs.install-dependencies }}
+          PI_REVIEW_PI_VERSION: ${{ inputs.pi-version }}
         run: |
           set -uo pipefail
           prefix="$RUNNER_TEMP/pi-review/pi"
-          version=$(jq -er '.pi.version' "$PI_REVIEW_SETTINGS")
+          # A pinned `pi.version` in the caller's settings is an opt-out from the
+          # workflow default. Without this check an absent key left `version`
+          # empty and the install below silently resolved `@latest`.
+          version=$(jq -r '.pi.version // ""' "$PI_REVIEW_SETTINGS")
+          version=${version:-${PI_REVIEW_PI_VERSION:-}}
+          if [ -z "$version" ]; then
+            echo "::error::No pi version to run: set pi.version in $PI_REVIEW_SETTINGS or pass pi-version to the reusable workflow."
+            exit 1
+          fi
+          echo "pi-review will run pi $version"
           pi_install=""
           if [ "$("$prefix/bin/pi" --version 2>/dev/null)" = "$version" ]; then
             echo "pi $version came from the cache"
