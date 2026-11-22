@@ -92,6 +92,20 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 	 */
 	let generation = 0;
 
+	/**
+	 * Everything a decision needs, captured when its turn starts settling: the
+	 * turn counter, the facts, and the session it belongs to. A log line must name
+	 * the session whose transcript produced it, not whichever session is current
+	 * by the time the model answers.
+	 */
+	interface TurnSnapshot {
+		generation: number;
+		facts: TurnFacts;
+		ctx?: ExtensionContext;
+	}
+
+	const snapshotOf = (): TurnSnapshot => ({ generation, facts, ...(ctxRef ? { ctx: ctxRef } : {}) });
+
 	const reload = (): void => {
 		try {
 			loaded = normalizeAttentionConfig(readAttentionConfig(pi.getSettings()), "settings.json");
@@ -117,26 +131,32 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 	function publish(
 		update: AttentionUpdate,
 		record: Partial<VerdictRecord> = {},
-		turn: TurnFacts = facts,
+		snapshot: TurnSnapshot = snapshotOf(),
 	): void {
 		if (!config().enabled) return;
 		const same = isSameUpdate(last, update);
 		last = update;
+		const turn = snapshot.facts;
 		if (config().log) {
 			writeLog({
 				at: now(),
-				// Which session and directory this came from: the point of the log is
-				// to go back to the transcript later and label what should have been.
-				...(ctxRef ? { session: ctxRef.sessionManager.getSessionId(), cwd: ctxRef.cwd } : {}),
 				state: update.state,
 				source: update.source,
 				reason: update.reason,
 				...(update.confidence !== undefined ? { confidence: update.confidence } : {}),
 				...record,
+				// Provenance goes after `record` on purpose: a caller cannot silently
+				// relabel which session or thresholds produced this verdict.
 				thresholds: {
 					needsYouAt: config().needsYouAt,
 					nothingToDoAt: config().nothingToDoAt,
 				},
+				...(snapshot.ctx
+					? {
+							session: snapshot.ctx.sessionManager.getSessionId(),
+							cwd: snapshot.ctx.cwd,
+						}
+					: {}),
 				input: {
 					...(turn.wake
 						? {
@@ -175,10 +195,11 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 	};
 
 	/** Decide the state for the turn that just settled. Never throws, never blocks. */
-	async function settle(turn = generation, settling = facts): Promise<void> {
+	async function settle(snapshot: TurnSnapshot = snapshotOf()): Promise<void> {
+		const { facts: settling } = snapshot;
 		/** Only clear the facts if this turn still owns them. */
 		const finish = (): void => {
-			if (generation === turn) facts = freshFacts();
+			if (generation === snapshot.generation) facts = freshFacts();
 		};
 		if (!config().enabled) {
 			finish();
@@ -186,7 +207,7 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 		}
 		const rules = decideRules(settling);
 		if (rules.kind === "decided") {
-			publish(rules.update, {}, settling);
+			publish(rules.update, {}, snapshot);
 			finish();
 			return;
 		}
@@ -200,16 +221,17 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 					reason: "ambiguous wake, and no decision model is configured",
 				},
 				{},
-				settling,
+				snapshot,
 			);
 			finish();
 			return;
 		}
 
 		const result = await runModel(settling);
-		// A new turn started while the model was thinking. Its facts are the
-		// truth now, and this answer belongs to a turn that no longer exists.
-		if (generation !== turn) return;
+		// A new turn — or a new session — started while the model was thinking.
+		// That state is the truth now, and this answer belongs to a turn that no
+		// longer exists: publishing it would mislabel the log and overwrite it.
+		if (generation !== snapshot.generation) return;
 		let update: AttentionUpdate;
 		const record: Partial<VerdictRecord> = { model: result.ok ? result.model : undefined, durationMs: result.durationMs };
 		if (!result.ok) {
@@ -225,7 +247,7 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 			record.answers = result.answers;
 			if (!interpreted) record.error = "missing answer";
 		}
-		publish(update, record, settling);
+		publish(update, record, snapshot);
 		finish();
 	}
 
@@ -258,6 +280,7 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 
 	pi.on("session_start", (_event, ctx) => {
 		ctxRef = ctx;
+		generation += 1;
 		reload();
 		if (ctx.hasUI && ctx.mode === "tui") {
 			for (const warning of loaded.warnings) ctx.ui.notify(warning, "warning");
@@ -266,6 +289,9 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 	});
 
 	pi.on("session_shutdown", (event) => {
+		// A new session is not this session: a decision still in flight belongs to
+		// the old one and must not be logged against the new transcript.
+		generation += 1;
 		// A reload re-announces from the new module instance.
 		if (event.reason !== "reload") retractAttention();
 		facts = freshFacts();
@@ -313,14 +339,13 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 
 	pi.on("agent_settled", (event) => {
 		facts.aborted = event.aborted;
-		const turn = generation;
-		const settling = facts;
+		const snapshot = snapshotOf();
 		// Fire and forget: the model path must not delay settlement.
-		void settle(turn, settling).catch(() => {
+		void settle(snapshot).catch(() => {
 			// The same guard as the normal path: a failure of a turn that has been
 			// replaced must not publish over the new turn or clear its facts.
-			if (generation !== turn) return;
-			publish({ state: "needs_you", source: "model", reason: "the attention check failed" }, {}, settling);
+			if (generation !== snapshot.generation) return;
+			publish({ state: "needs_you", source: "model", reason: "the attention check failed" }, {}, snapshot);
 			facts = freshFacts();
 		});
 	});
