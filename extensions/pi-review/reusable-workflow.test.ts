@@ -323,6 +323,60 @@ describe("the reusable workflow", () => {
 		expect(run(events).trim()).toBe("Three findings, submitting.");
 	});
 
+	it("records what the run cost, summed over the model calls", () => {
+		// Every `message_end` carries the usage of one model call, so the run
+		// total is the sum. Nothing else reports cost: it would be in the
+		// artifact, which nobody downloads to answer "was that review worth it".
+		const review = step("Review");
+		const program = (review.run ?? "").match(/if ! jq -Rrs '([\s\S]*?)' "\$PI_REVIEW_EVENTS" > "\$work\/usage\.json"/)?.[1];
+		expect(program).toBeTruthy();
+
+		const totals = (lines: unknown[]) =>
+			JSON.parse(
+				execFileSync("jq", ["-Rrs", program as string], {
+					input: lines.map((line) => JSON.stringify(line)).join("\n") + "\n",
+					encoding: "utf8",
+				})
+			);
+		const call = (fields: Record<string, number> = {}, role = "assistant") => ({
+			type: "message_end",
+			message: {
+				role,
+				content: [],
+				usage: {
+					input: 100,
+					output: 10,
+					cacheRead: 1000,
+					cacheWrite: 0,
+					totalTokens: 1110,
+					cost: { total: 0.0001 },
+					...fields,
+				},
+			},
+		});
+
+		// No completed message: absent, not zeroed, so "the provider said
+		// nothing" and "this review was free" stay distinguishable.
+		expect(totals([])).toEqual({});
+
+		const summed = totals([call(), call({ input: 200 })]);
+		expect(summed.calls).toBe(2);
+		expect(summed.input).toBe(300);
+		expect(summed.totalTokens).toBe(2220);
+		// A tool result's usage is nested model work, which is not part of the
+		// main model call.
+		expect(totals([call(), call({}, "toolResult")]).calls).toBe(1);
+
+		// The conclusion carries it, and the summary line prints it.
+		const conclude = step("Conclude the review");
+		expect(conclude.env?.PI_REVIEW_RUN_META).toBe("${{ runner.temp }}/pi-review/run-meta.json");
+		expect(conclude.run).toContain("usage:$usage");
+		// `--slurpfile` on a missing run-meta would fail the step that decides
+		// the outcome, so the value is read defensively into a variable.
+		expect(conclude.run).toContain('usage_json=$(jq -c \'.usage // {}\' "$run_meta"');
+		expect(conclude.run).toContain('echo "- usage:');
+	});
+
 	it("writes a patient retry policy into a throwaway agent directory", () => {
 		const settings = step("Read the settings");
 		expect(settings.run).toContain('agent_dir="$RUNNER_TEMP/pi-review/agent"');
