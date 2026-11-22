@@ -331,11 +331,15 @@ describe("subscribe_pr_activity", () => {
 		const h = load();
 		await call(h, "subscribe_pr_activity");
 		// A registry the write cannot reach. The watch must still stop, and the
-		// result must say what did and did not happen.
+		// result must say what did and did not happen — in the details too, which
+		// consumers forward as `tool_response.details`.
 		registry().releases = {} as never;
 		const result = await call(h, "unsubscribe_pr_activity", { done: true, reason: "green" });
 		expect(result.content[0]?.text).toContain("Unsubscribed from AutumnsGrove/pi-extensions#32");
 		expect(result.content[0]?.text).toContain("could not be recorded");
+		expect(result.details).toMatchObject({ released: false, done: false });
+		expect(result.details).not.toHaveProperty("reason");
+		expect(result.details).not.toHaveProperty("alreadyReleased");
 		expect(getSubscription(ref)).toBeUndefined();
 		expect(h.hookEvents).toEqual([]);
 	});

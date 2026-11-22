@@ -136,6 +136,16 @@ interface UnsubscribeOptions {
 	reason?: string;
 }
 
+interface UnsubscribeResult {
+	text: string;
+	/**
+	 * The release this call recorded. Absent when nothing was recorded — the PR
+	 * was already released, or the write failed — which is what the tool's
+	 * details report, so a failed release is never forwarded as a success.
+	 */
+	release?: ReleaseInfo;
+}
+
 function basePollMs(env: NodeJS.ProcessEnv = process.env): number {
 	const seconds = Number(env.PI_PR_POLL);
 	return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 20_000;
@@ -467,9 +477,9 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 		};
 	}
 
-	function unsubscribe(ref: PrRef, options: UnsubscribeOptions = {}): string {
+	function unsubscribe(ref: PrRef, options: UnsubscribeOptions = {}): UnsubscribeResult {
 		const sub = getSubscription(ref);
-		if (!sub || sub.ended) return releaseNote(ref);
+		if (!sub || sub.ended) return { text: releaseNote(ref) };
 		stopPoller(sub);
 		releaseLock(sub.lock);
 		removeSubscription(ref);
@@ -478,19 +488,28 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 			release = recordRelease(ref, { done: options.done === true, reason: options.reason });
 		} catch (error) {
 			// The watch is already stopped, so throwing here would report a failure
-			// and leave the caller to guess what was recorded. Say what happened.
+			// and leave the caller to guess what was recorded. Say what happened,
+			// and return no release: nothing was recorded.
 			persist();
 			paint();
 			const why = error instanceof Error ? error.message : String(error);
-			return `Unsubscribed from ${prKey(ref)}, but the release could not be recorded (${why}). No more events will arrive for it.`;
+			return {
+				text: `Unsubscribed from ${prKey(ref)}, but the release could not be recorded (${why}). No more events will arrive for it.`,
+			};
 		}
 		persist();
 		paint();
 		if (release.done) {
 			emitHookEvent(pi, "PrReadyToMerge", readyToMergePayload(ref, release.reason));
-			return `Released ${prKey(ref)} as done${release.reason ? ` — ${release.reason}` : ""}. No more events will arrive for it.`;
+			return {
+				release,
+				text: `Released ${prKey(ref)} as done${release.reason ? ` — ${release.reason}` : ""}. No more events will arrive for it.`,
+			};
 		}
-		return `Unsubscribed from ${prKey(ref)}. No more events will arrive for it.`;
+		return {
+			release,
+			text: `Unsubscribed from ${prKey(ref)}. No more events will arrive for it.`,
+		};
 	}
 
 	/**
@@ -746,17 +765,17 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 			}
 			const { ref } = resolved.target;
 			const wasSubscribed = getSubscription(ref) !== undefined;
-			const text = unsubscribe(ref, { done: params.done, reason: params.reason });
-			return toolResult(text, {
+			const result = unsubscribe(ref, { done: params.done, reason: params.reason });
+			return toolResult(result.text, {
 				owner: ref.owner,
 				repo: ref.repo,
 				number: ref.number,
 				subscribed: false,
-				released: wasSubscribed,
+				released: result.release !== undefined,
 				// Only a recorded release is a done release.
-				done: wasSubscribed && params.done === true,
-				...(params.reason ? { reason: params.reason } : {}),
-				...(!wasSubscribed && getRelease(ref) ? { alreadyReleased: true } : {}),
+				done: result.release?.done === true,
+				...(result.release?.reason ? { reason: result.release.reason } : {}),
+				...(result.release === undefined && !wasSubscribed && getRelease(ref) ? { alreadyReleased: true } : {}),
 			});
 		},
 	});
@@ -825,7 +844,7 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 						notify(ctx, resolved.error ?? "Could not resolve the pull request.", "warning");
 						return;
 					}
-					notify(ctx, unsubscribe(resolved.target.ref));
+					notify(ctx, unsubscribe(resolved.target.ref).text);
 					return;
 				}
 				const parsed = parsePrSpec(spec);
@@ -838,7 +857,7 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 					notify(ctx, `Could not resolve ${spec}.`, "warning");
 					return;
 				}
-				notify(ctx, unsubscribe(ref));
+				notify(ctx, unsubscribe(ref).text);
 				return;
 			}
 
