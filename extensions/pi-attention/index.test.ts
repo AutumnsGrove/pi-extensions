@@ -368,6 +368,50 @@ describe("the decision model", () => {
 		expect(states(h)).toEqual(["working", "needs_you"]);
 	});
 
+	it("asks for you, and does not clobber a newer turn, when the check itself fails", async () => {
+		let rejectDecide: ((error: Error) => void) | undefined;
+		const h = await load({
+			deps: {
+				log: () => undefined,
+				decide: () =>
+					new Promise((_resolve, reject) => {
+						rejectDecide = reject;
+					}),
+			},
+		});
+		await h.handler("session_start")?.({ type: "session_start", reason: "startup" }, h.ctx);
+
+		h.emit("pi-hooks:emit", wake(true));
+		await h.handler("agent_start")?.({ type: "agent_start" }, h.ctx);
+		await h.handler("tool_call")?.({ toolName: "bash" }, h.ctx);
+		await h.handler("agent_settled")?.({ type: "agent_settled", aborted: false }, h.ctx);
+
+		// A newer turn starts, then the old one rejects.
+		h.emit("pi-hooks:emit", wake(false));
+		await h.handler("agent_start")?.({ type: "agent_start" }, h.ctx);
+		await h.settle();
+		rejectDecide?.(new Error("malformed answer"));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(states(h)).toEqual(["working", "needs_you"]);
+
+		// With no newer turn, the failure is reported rather than swallowed.
+		const fresh = await load({
+			deps: {
+				log: () => undefined,
+				decide: async () => {
+					throw new Error("malformed answer");
+				},
+			},
+		});
+		await fresh.handler("session_start")?.({ type: "session_start", reason: "startup" }, fresh.ctx);
+		fresh.emit("pi-hooks:emit", wake(true));
+		await fresh.handler("agent_start")?.({ type: "agent_start" }, fresh.ctx);
+		await fresh.handler("tool_call")?.({ toolName: "bash" }, fresh.ctx);
+		await fresh.settle();
+		expect(states(fresh).at(-1)).toBe("needs_you");
+		expect(String(fresh.hookEvents.at(-1)?.input.reason)).toBe("the attention check failed");
+	});
+
 	it("does not call a model when the rules already decided", async () => {
 		let calls = 0;
 		const h = await load({

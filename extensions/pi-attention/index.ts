@@ -168,9 +168,7 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 	};
 
 	/** Decide the state for the turn that just settled. Never throws, never blocks. */
-	async function settle(): Promise<void> {
-		const turn = generation;
-		const settling = facts;
+	async function settle(turn = generation, settling = facts): Promise<void> {
 		/** Only clear the facts if this turn still owns them. */
 		const finish = (): void => {
 			if (generation === turn) facts = freshFacts();
@@ -308,9 +306,14 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 
 	pi.on("agent_settled", (event) => {
 		facts.aborted = event.aborted;
+		const turn = generation;
+		const settling = facts;
 		// Fire and forget: the model path must not delay settlement.
-		void settle().catch(() => {
-			publish({ state: "needs_you", source: "model", reason: "the attention check failed" });
+		void settle(turn, settling).catch(() => {
+			// The same guard as the normal path: a failure of a turn that has been
+			// replaced must not publish over the new turn or clear its facts.
+			if (generation !== turn) return;
+			publish({ state: "needs_you", source: "model", reason: "the attention check failed" }, {}, settling);
 			facts = freshFacts();
 		});
 	});
