@@ -275,6 +275,14 @@ level, tools, retry policy, last stream event, last stop reason, and pi's exit
 code, so "it finished without submitting" can be diagnosed from the artifact
 rather than a grep through the job log.
 
+It also records `usage`: the run's model calls, tokens and cost, summed over the
+assistant messages in the stream (a tool's nested model work is not part of the
+main call and is not counted). `conclusion.json` carries the same object, and
+the step summary prints one line — `2 call(s), 34 754 tokens (2 319 in, 819 out,
+31 616 cache read) · $0.000934` — so the cost of a review is visible without
+downloading anything. A run where the provider reported nothing leaves the
+object empty rather than zeroed, and the summary says `not reported`.
+
 ## Verifying with tests
 
 Reviews are much better when the agent can run the suite. Two settings cooperate:

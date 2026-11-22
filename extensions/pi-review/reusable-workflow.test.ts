@@ -323,6 +323,73 @@ describe("the reusable workflow", () => {
 		expect(run(events).trim()).toBe("Three findings, submitting.");
 	});
 
+	it("records what the run cost, summed over the model calls", () => {
+		// Every `message_end` carries the usage of one model call, so the run
+		// total is the sum. Nothing else reports cost: it would be in the
+		// artifact, which nobody downloads to answer "was that review worth it".
+		const review = step("Review");
+		const program = (review.run ?? "").match(/if ! jq -Rrs '([\s\S]*?)' "\$PI_REVIEW_EVENTS" > "\$work\/usage\.json"/)?.[1];
+		expect(program).toBeTruthy();
+
+		const totals = (lines: unknown[]) =>
+			JSON.parse(
+				execFileSync("jq", ["-Rrs", program as string], {
+					input: lines.map((line) => JSON.stringify(line)).join("\n") + "\n",
+					encoding: "utf8",
+				})
+			);
+		const call = (fields: Record<string, number> = {}, role = "assistant") => ({
+			type: "message_end",
+			message: {
+				role,
+				content: [],
+				usage: {
+					input: 100,
+					output: 10,
+					cacheRead: 1000,
+					cacheWrite: 0,
+					totalTokens: 1110,
+					cost: { total: 0.0001 },
+					...fields,
+				},
+			},
+		});
+
+		// No completed message: absent, not zeroed, so "the provider said
+		// nothing" and "this review was free" stay distinguishable.
+		expect(totals([])).toEqual({});
+
+		const summed = totals([call(), call({ input: 200 })]);
+		expect(summed.calls).toBe(2);
+		expect(summed.input).toBe(300);
+		expect(summed.totalTokens).toBe(2220);
+		// A tool result's usage is nested model work, which is not part of the
+		// main model call.
+		expect(totals([call(), call({}, "toolResult")]).calls).toBe(1);
+
+		// The conclusion carries it, and the summary line prints it.
+		const conclude = step("Conclude the review");
+		expect(conclude.env?.PI_REVIEW_RUN_META).toBe("${{ runner.temp }}/pi-review/run-meta.json");
+		expect(conclude.run).toContain("usage:$usage");
+		// `--slurpfile` on a missing run-meta would fail the step that decides
+		// the outcome, so the value is read defensively into a variable.
+		expect(conclude.run).toContain('usage_json=$(jq -c \'.usage // {}\' "$run_meta"');
+
+		// Executed, not string-matched: the first draft of this line passed the
+		// object as a trailing argument, which jq read as a file name, and every
+		// run printed "not reported" while a contains() assertion stayed green.
+		const summaryProgram = (conclude.run ?? "").match(
+			/usage_line=\$\(jq -rn --argjson usage "\$usage_json" '([\s\S]*?)' 2>\/dev\/null/
+		)?.[1];
+		expect(summaryProgram).toBeTruthy();
+		const summaryLine = (object: unknown) =>
+			execFileSync("jq", ["-rn", "--argjson", "usage", JSON.stringify(object), summaryProgram as string], {
+				encoding: "utf8",
+			}).trim();
+		expect(summaryLine(summed)).toBe("2 call(s), 2220 tokens (300 in, 20 out, 2000 cache read) · $0.0002");
+		expect(summaryLine({})).toBe("not reported");
+	});
+
 	it("writes a patient retry policy into a throwaway agent directory", () => {
 		const settings = step("Read the settings");
 		expect(settings.run).toContain('agent_dir="$RUNNER_TEMP/pi-review/agent"');

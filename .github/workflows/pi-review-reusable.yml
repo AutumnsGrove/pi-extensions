@@ -460,11 +460,37 @@ jobs:
             echo "pi wrote to stderr:"
             quiet < "$work/stderr.log" | tail -n 40 | cut -c1-500
           fi
+          # What the run cost. Every `message_end` carries the usage of that one
+          # model call, so the sum over assistant messages is the run total. A
+          # tool result can carry usage for nested model work, which its own docs
+          # keep out of the main model call, so it is deliberately not counted.
+          # No completed message leaves `{}` rather than zeros, so "the provider
+          # reported nothing" and "this review was free" stay distinguishable.
+          if ! jq -Rrs '
+            split("\n")
+            | map(select(length > 0) | (fromjson? // empty))
+            | map(select(.type == "message_end" and .message.role == "assistant") | .message.usage? // empty)
+            | if length == 0 then {}
+              else {
+                calls: length,
+                input: (map(.input // 0) | add),
+                output: (map(.output // 0) | add),
+                cacheRead: (map(.cacheRead // 0) | add),
+                cacheWrite: (map(.cacheWrite // 0) | add),
+                totalTokens: (map(.totalTokens // 0) | add),
+                cost: (map(.cost.total // 0) | add),
+                providerReported: (map(.cost.totalFromProvider // false) | any)
+              }
+              end
+          ' "$PI_REVIEW_EVENTS" > "$work/usage.json" 2>/dev/null; then
+            echo '{}' > "$work/usage.json"
+          fi
           if jq --argjson exit "$status" \
             --arg lastEvent "$last_event" \
             --arg lastStopReason "$last_stop" \
             --arg lastError "$last_error" \
-            '. + {piExit:$exit, lastEvent:$lastEvent, lastStopReason:$lastStopReason, lastError:$lastError}' \
+            --slurpfile usage "$work/usage.json" \
+            '. + {piExit:$exit, lastEvent:$lastEvent, lastStopReason:$lastStopReason, lastError:$lastError, usage:($usage[0] // {})}' \
             "$work/run-meta.json" > "$work/run-meta.next"; then
             mv "$work/run-meta.next" "$work/run-meta.json"
           else
@@ -594,11 +620,13 @@ jobs:
           PI_REVIEW_OUTPUT: ${{ runner.temp }}/pi-review/review.json
           PI_REVIEW_RECOVERY: ${{ runner.temp }}/pi-review/recovery.json
           PI_REVIEW_CONCLUSION: ${{ runner.temp }}/pi-review/conclusion.json
+          PI_REVIEW_RUN_META: ${{ runner.temp }}/pi-review/run-meta.json
         run: |
           set -uo pipefail
           artifact="$PI_REVIEW_OUTPUT"
           recovery="$PI_REVIEW_RECOVERY"
           conclusion="$PI_REVIEW_CONCLUSION"
+          run_meta="$PI_REVIEW_RUN_META"
           kind=""
           detail=""
           url=""
@@ -687,9 +715,17 @@ jobs:
           fi
           detail=$(printf '%s' "$detail" | tr '\n' ' ' | cut -c1-500 | sed 's/[[:space:]]*$//')
 
+          # `{}` when the Review step never wrote metadata, or wrote it before
+          # this field existed. `--argjson` on a variable keeps this step from
+          # failing where `--slurpfile` would: a missing file must not stop a
+          # conclusion, because the two steps below act on it.
+          usage_json=$(jq -c '.usage // {}' "$run_meta" 2>/dev/null || true)
+          [ -n "$usage_json" ] || usage_json='{}'
+
           jq -n --arg outcome "$outcome" --arg kind "$kind" --arg reason "$reason" \
             --arg detail "$detail" --arg url "$url" --argjson retryable "$retryable" \
-            '{outcome:$outcome, kind:$kind, reason:$reason, detail:$detail, url:$url, retryable:$retryable}' \
+            --argjson usage "$usage_json" \
+            '{outcome:$outcome, kind:$kind, reason:$reason, detail:$detail, url:$url, retryable:$retryable, usage:$usage}' \
             > "$conclusion"
 
           {
@@ -706,6 +742,19 @@ jobs:
             if [ -n "$detail" ]; then echo "- detail: \`$detail\`"; fi
             if [ -n "$url" ]; then echo "- review: $url"; fi
             echo "- pi exit: \`${PI_PI_EXIT:-unknown}\`"
+            # Cost is a run property nobody can read anywhere else: the artifact
+            # has it, but only if you download it. Round to the micro-dollar the
+            # providers actually bill in.
+            #
+            # `--argjson ... -n`: the object is already the usage, and passing it
+            # as a trailing argument would make jq read it as a file name.
+            usage_line=$(jq -rn --argjson usage "$usage_json" '
+              ($usage // {})
+              | if .calls then
+                  "\(.calls) call(s), \(.totalTokens) tokens (\(.input) in, \(.output) out, \(.cacheRead) cache read) · $\((.cost * 1000000 | round) / 1000000)"
+                else "not reported" end
+            ' 2>/dev/null || true)
+            echo "- usage: \`${usage_line:-not reported}\`"
             echo "- run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           } >> "$GITHUB_STEP_SUMMARY"
 
