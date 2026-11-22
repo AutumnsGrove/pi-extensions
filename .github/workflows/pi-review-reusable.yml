@@ -745,12 +745,15 @@ jobs:
             # Cost is a run property nobody can read anywhere else: the artifact
             # has it, but only if you download it. Round to the micro-dollar the
             # providers actually bill in.
-            usage_line=$(jq -r '
-              (.usage // {})
+            #
+            # `--argjson ... -n`: the object is already the usage, and passing it
+            # as a trailing argument would make jq read it as a file name.
+            usage_line=$(jq -rn --argjson usage "$usage_json" '
+              ($usage // {})
               | if .calls then
                   "\(.calls) call(s), \(.totalTokens) tokens (\(.input) in, \(.output) out, \(.cacheRead) cache read) · $\((.cost * 1000000 | round) / 1000000)"
                 else "not reported" end
-            ' "$usage_json" 2>/dev/null || true)
+            ' 2>/dev/null || true)
             echo "- usage: \`${usage_line:-not reported}\`"
             echo "- run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           } >> "$GITHUB_STEP_SUMMARY"

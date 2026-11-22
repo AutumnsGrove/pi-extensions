@@ -374,7 +374,20 @@ describe("the reusable workflow", () => {
 		// `--slurpfile` on a missing run-meta would fail the step that decides
 		// the outcome, so the value is read defensively into a variable.
 		expect(conclude.run).toContain('usage_json=$(jq -c \'.usage // {}\' "$run_meta"');
-		expect(conclude.run).toContain('echo "- usage:');
+
+		// Executed, not string-matched: the first draft of this line passed the
+		// object as a trailing argument, which jq read as a file name, and every
+		// run printed "not reported" while a contains() assertion stayed green.
+		const summaryProgram = (conclude.run ?? "").match(
+			/usage_line=\$\(jq -rn --argjson usage "\$usage_json" '([\s\S]*?)' 2>\/dev\/null/
+		)?.[1];
+		expect(summaryProgram).toBeTruthy();
+		const summaryLine = (object: unknown) =>
+			execFileSync("jq", ["-rn", "--argjson", "usage", JSON.stringify(object), summaryProgram as string], {
+				encoding: "utf8",
+			}).trim();
+		expect(summaryLine(summed)).toBe("2 call(s), 2220 tokens (300 in, 20 out, 2000 cache read) · $0.0002");
+		expect(summaryLine({})).toBe("not reported");
 	});
 
 	it("writes a patient retry policy into a throwaway agent directory", () => {
