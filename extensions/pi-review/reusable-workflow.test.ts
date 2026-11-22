@@ -4,6 +4,7 @@
  * first, no secret reaches the dependency install, the App token is conditional,
  * and the extension source is fetched at the commit that defined the job.
  */
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
@@ -246,11 +247,46 @@ describe("the reusable workflow", () => {
 		expect(review.run).toContain("--tools \"$PI_REVIEW_TOOLS\"");
 		expect(review.run).toContain("--thinking \"$PI_REVIEW_THINKING\"");
 		expect(review.run).toContain('"Review pull request #$PR_NUMBER."');
-		expect(review.run).toContain('status=${PIPESTATUS[0]}');
+		expect(review.run).toContain("status=$?");
 		expect(review.run).toContain("PI_PI_EXIT=$status");
 		expect(review.run).toContain("run-meta.json");
 		expect(review.env?.PI_REVIEW_REQUEST).toBe("${{ github.event.comment.body }}");
 		expect(review.env?.PI_CODING_AGENT_DIR).toBe("${{ runner.temp }}/pi-review/agent");
+	});
+
+	it("keeps the agent's own text off stdout, where the runner reads commands", () => {
+		// Issue #71: `pi --mode json | tee` put model text on stdout, and the
+		// runner finds `##[` *anywhere* in a line (`ActionCommand.TryParse` uses
+		// `IndexOf`, not a prefix check), so checking `actions/*` source printed
+		// `##[add-matcher]` as a command and failed an already-posted review.
+		const review = step("Review");
+		expect(review.run).not.toContain("| tee");
+		expect(review.run).toContain('> "$PI_REVIEW_EVENTS" 2> "$work/stderr.log"');
+
+		// Anything echoed from the run goes through the neutraliser, so a future
+		// `echo` cannot reopen the hole.
+		const definition = (review.run ?? "").match(/quiet\(\) \{[^\n]*?\}/)?.[0];
+		expect(definition).toBeTruthy();
+		const echoes = (review.run ?? "")
+			.split("\n")
+			.filter((line) => line.includes("quiet") && !line.includes("quiet() {"));
+		expect(echoes.length).toBeGreaterThanOrEqual(2);
+		for (const line of echoes) expect(line).toMatch(/(\| quiet|quiet <)/);
+
+		// And the neutraliser actually neutralises, for both command forms.
+		const quiet = (input: string) =>
+			execFileSync("bash", ["-c", `${definition}\nprintf '%s\\n' "$1" | quiet`, "_", input], {
+				encoding: "utf8",
+			});
+		const read = JSON.stringify({
+			type: "tool_execution_update",
+			output: "core.info(`##[add-matcher]${matchersPath}`);",
+		});
+		expect(quiet(read)).not.toContain("##[");
+		expect(quiet("::set-output name=url::x").trimStart().startsWith("::")).toBe(false);
+		// The runner trims leading whitespace before it looks for `::`, so
+		// indenting is not a defence.
+		expect(quiet("        ::error::nested").trimStart().startsWith("::")).toBe(false);
 	});
 
 	it("writes a patient retry policy into a throwaway agent directory", () => {

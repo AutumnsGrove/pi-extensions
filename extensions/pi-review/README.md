@@ -467,6 +467,12 @@ provider-failure policy, and a real failure, and a report step edits the one
 failure comment. The step summary and the uploaded transcript always exist, so a
 failure is explainable from the run itself.
 
+The Review step's log is a neutralised summary, not the model stream: the runner
+reads a workflow command out of any line, not just the start of one, and a
+reviewer that reads an action's source prints literals like
+`core.info(\`##[add-matcher]…\`)` (#71). The transcript reaches the operator
+through the artifact instead.
+
 Three choices in that job are deliberate:
 
 - **The runner is pinned** to `ubuntu-26.04`, not `ubuntu-latest`, so a GitHub
