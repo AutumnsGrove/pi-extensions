@@ -47,8 +47,7 @@ describe("isInformational", () => {
 				},
 			])
 		).toBe(false);
-		expect(isInformational([{ type: "head.updated", to: "bbb" }])).toBe(false);
-		expect(isInformational([{ type: "subscription.error", kind: "auth", message: "bad" }])).toBe(false);
+		expect(isInformational([{ type: "head.updated", to: "bbb" }])).toBe(false);		expect(isInformational([{ type: "subscription.error", kind: "auth", message: "bad" }])).toBe(false);
 		expect(isInformational([{ type: "subscription.expired", quietMs: 1 }])).toBe(false);
 		expect(isInformational([{ type: "pr.merged", number: 1 }])).toBe(false);
 		expect(isInformational([{ type: "pr.closed", number: 1 }])).toBe(false);
@@ -56,6 +55,15 @@ describe("isInformational", () => {
 
 	it("is false when green and not-green are mixed", () => {
 		expect(isInformational([check("success"), comment()])).toBe(false);
+	});
+
+	it("is true for a head move onto the session's own tip", () => {
+		const own = new Set(["bbb"]);
+		expect(isInformational([{ type: "head.updated", to: "bbb" }], own)).toBe(true);
+		expect(isInformational([{ type: "head.updated", to: "bbb" }, check("success")], own)).toBe(true);
+		// Someone else's push, or a batch with anything else in it, still wakes.
+		expect(isInformational([{ type: "head.updated", to: "ccc" }], own)).toBe(false);
+		expect(isInformational([{ type: "head.updated", to: "bbb" }, comment()], own)).toBe(false);
 	});
 });
 
@@ -85,6 +93,12 @@ describe("wake payloads", () => {
 		const summary = wakeSummary(many);
 		expect(summary).toHaveLength(MAX_SUMMARY);
 		expect(summary.endsWith("…")).toBe(true);
+	});
+
+	it("summarizes an own push as one, and a foreign one as a plain head move", () => {
+		const own = new Set(["bbb"]);
+		expect(wakeSummary([{ type: "head.updated", to: "bbb" }], own)).toContain("this session's own push");
+		expect(wakeSummary([{ type: "head.updated", to: "ccc" }], own)).toBe("new commits, head ccc");
 	});
 
 	it("builds a ready-to-merge payload with and without a reason", () => {

@@ -456,6 +456,48 @@ describe("wake signals", () => {
 		expect(h.wakes).toHaveLength(1);
 		expect(h.wakes[0]).toMatchObject({ informational: false, eventTypes: ["subscription.expired"] });
 	});
+
+	it("treats the session's own push as informational, and only that one", async () => {
+		const h = setup();
+		h.deps.headOf = async () => "bbb";
+		h.server.pull = { ...h.server.pull, head: { sha: "bbb", ref: "feat" } };
+		await tick(h.sub, h.deps);
+		vi.advanceTimersByTime(COALESCE_MS);
+		expect(h.wakes[0]).toMatchObject({ informational: true, eventTypes: ["head.updated"] });
+		// The hint is per delivery: a later push from elsewhere is not covered.
+		expect(h.sub.ownHeads).toBeUndefined();
+
+		const foreign = setup();
+		foreign.deps.headOf = async () => "ccc";
+		foreign.server.pull = { ...foreign.server.pull, head: { sha: "bbb", ref: "feat" } };
+		await tick(foreign.sub, foreign.deps);
+		vi.advanceTimersByTime(COALESCE_MS);
+		expect(foreign.wakes[0]).toMatchObject({ informational: false, eventTypes: ["head.updated"] });
+	});
+
+	it("stays loud on a head move when git cannot say what the tip is", async () => {
+		const h = setup();
+		h.deps.headOf = async () => {
+			throw new Error("not a repository");
+		};
+		h.server.pull = { ...h.server.pull, head: { sha: "bbb", ref: "feat" } };
+		await tick(h.sub, h.deps);
+		vi.advanceTimersByTime(COALESCE_MS);
+		expect(h.wakes[0]?.informational).toBe(false);
+	});
+
+	it("keeps a comment mixed with an own push loud", async () => {
+		const h = setup();
+		h.deps.headOf = async () => "bbb";
+		h.server.pull = { ...h.server.pull, head: { sha: "bbb", ref: "feat" } };
+		h.server.issueComments = [{ id: 10, body: "one more thing", created_at: "2026-11-15T21:00:00Z" }];
+		await tick(h.sub, h.deps);
+		vi.advanceTimersByTime(COALESCE_MS);
+		expect(h.wakes[0]).toMatchObject({
+			informational: false,
+			eventTypes: ["head.updated", "comment.created"],
+		});
+	});
 });
 
 describe("pollInterval", () => {

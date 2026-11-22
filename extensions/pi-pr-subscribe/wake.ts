@@ -11,6 +11,11 @@
  * passing check is the only thing a wake can be silent about. A comment, a
  * review, a failure, a head move, an error, or a close is something a person or
  * the agent has to look at.
+ *
+ * The one head move that is not: the session's own push. The agent pushes, CI
+ * restarts, and the resulting `head.updated` would otherwise wake it to say
+ * "that was me". The caller passes the heads it has verified against the local
+ * branch tip, so a push from anywhere else stays a wake.
  */
 
 import type { PrReadyToMergePayload, PrWakePayload } from "../_shared/hook-events.ts";
@@ -19,12 +24,19 @@ import type { PrRef } from "./ref.ts";
 
 const PASSING_CONCLUSIONS = new Set(["success", "neutral", "skipped"]);
 
-/** A batch is informational only when every event is a pass or an all-green settle. */
-export function isInformational(events: PrEvent[]): boolean {
+/**
+ * A batch is informational only when every event is a pass, an all-green
+ * settle, or a head move onto a tip this session pushed itself.
+ */
+export function isInformational(
+	events: PrEvent[],
+	ownHeads: ReadonlySet<string> = new Set(),
+): boolean {
 	if (events.length === 0) return false;
 	return events.every((event) => {
 		if (event.type === "check.completed") return PASSING_CONCLUSIONS.has(event.conclusion);
 		if (event.type === "checks.settled") return event.state === "success" && event.failed.length === 0;
+		if (event.type === "head.updated") return ownHeads.has(event.to);
 		return false;
 	});
 }
@@ -37,7 +49,7 @@ export function wakeEventTypes(events: PrEvent[]): string[] {
 const shortSha = (sha: string): string => (sha.length > 7 ? sha.slice(0, 7) : sha);
 
 /** One compact line per event, for a classifier or a log. Not user-facing prose. */
-function describe(event: PrEvent): string {
+function describe(event: PrEvent, ownHeads: ReadonlySet<string>): string {
 	switch (event.type) {
 		case "check.completed":
 			return `check "${event.name}" finished: ${event.conclusion}`;
@@ -50,7 +62,9 @@ function describe(event: PrEvent): string {
 		case "comment.created":
 			return `${event.comment.kind === "review" ? "inline comment" : "comment"} by ${event.comment.author ?? "someone"}`;
 		case "head.updated":
-			return `new commits, head ${shortSha(event.to)}`;
+			return ownHeads.has(event.to)
+				? `new commits, head ${shortSha(event.to)} (this session's own push)`
+				: `new commits, head ${shortSha(event.to)}`;
 		case "pr.merged":
 			return "pull request merged";
 		case "pr.closed":
@@ -65,20 +79,24 @@ function describe(event: PrEvent): string {
 export const MAX_SUMMARY = 800;
 
 /** A short description of the batch, capped so a noisy PR cannot bloat a hook payload. */
-export function wakeSummary(events: PrEvent[]): string {
-	const lines = events.map(describe);
+export function wakeSummary(events: PrEvent[], ownHeads: ReadonlySet<string> = new Set()): string {
+	const lines = events.map((event) => describe(event, ownHeads));
 	const text = lines.join("; ");
 	return text.length > MAX_SUMMARY ? `${text.slice(0, MAX_SUMMARY - 1)}…` : text;
 }
 
-export function wakePayload(ref: PrRef, events: PrEvent[]): PrWakePayload {
+export function wakePayload(
+	ref: PrRef,
+	events: PrEvent[],
+	ownHeads: ReadonlySet<string> = new Set(),
+): PrWakePayload {
 	return {
 		owner: ref.owner,
 		repo: ref.repo,
 		pullNumber: ref.number,
 		eventTypes: wakeEventTypes(events),
-		informational: isInformational(events),
-		summary: wakeSummary(events),
+		informational: isInformational(events, ownHeads),
+		summary: wakeSummary(events, ownHeads),
 	};
 }
 

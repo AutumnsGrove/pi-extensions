@@ -79,6 +79,12 @@ export interface PollerDeps {
 	now?: () => number;
 	/** Injected in tests; production uses `fetchJobLog`. */
 	logTail?: (jobId: string) => Promise<string | undefined>;
+	/**
+	 * Injected in tests; production reads `git rev-parse HEAD` in the
+	 * subscription's own checkout. Undefined means the tip is unknown, which
+	 * only makes a head move noisier, never silent.
+	 */
+	headOf?: (cwd: string) => Promise<string | undefined>;
 }
 
 const apis = new Map<string, GhApi>();
@@ -270,6 +276,7 @@ async function pollOnce(sub: Subscription, deps: PollerDeps): Promise<void> {
 
 		if (result.events.length > 0) {
 			await attachLogs(sub, result.events, deps);
+			await markOwnHeads(sub, result.events, deps);
 			queueEvents(sub, result.events, deps);
 			registry().persist?.();
 		} else if (result.dirty) {
@@ -300,6 +307,41 @@ function advanceSince(cursor: Cursor, snapshot: Snapshot): Cursor {
 	if (!newest) return cursor;
 	if (cursor.commentSince && cursor.commentSince >= newest) return cursor;
 	return { ...cursor, commentSince: newest };
+}
+
+/** The checkout's branch tip, or undefined when git cannot be read. */
+async function localHead(cwd: string, deps: PollerDeps): Promise<string | undefined> {
+	try {
+		if (deps.headOf) return (await deps.headOf(cwd))?.trim() || undefined;
+		const runner = registry().exec;
+		if (!runner) return undefined;
+		const result = await runner("git", ["rev-parse", "HEAD"], { cwd, timeout: 5_000 });
+		if (result.code !== undefined && result.code !== 0) return undefined;
+		return result.stdout.trim() || undefined;
+	} catch {
+		// No repository, no git, no answer: the head move stays a wake.
+		return undefined;
+	}
+}
+
+/**
+ * Mark the head moves this batch can prove are the session's own push.
+ *
+ * One `git rev-parse` per head move, and only ever on a push: the poll loop is
+ * already talking to GitHub, so the extra process is noise next to it. A push
+ * from another machine (or a worktree this session is not in) does not match,
+ * which is the safe direction — it still wakes the agent.
+ */
+async function markOwnHeads(sub: Subscription, events: PrEvent[], deps: PollerDeps): Promise<void> {
+	const moved = events.filter((event) => event.type === "head.updated");
+	if (moved.length === 0) return;
+	const head = (await localHead(sub.cwd, deps))?.toLowerCase();
+	if (!head) return;
+	for (const event of moved) {
+		if (event.type !== "head.updated") continue;
+		if (event.to.toLowerCase() !== head) continue;
+		(sub.ownHeads ??= new Set()).add(event.to);
+	}
 }
 
 async function attachLogs(sub: Subscription, events: PrEvent[], deps: PollerDeps): Promise<void> {
@@ -376,7 +418,8 @@ export function flush(sub: Subscription, deps: PollerDeps, options: { force?: bo
 	sub.pending = [];
 	sub.pendingLogs = new Map();
 	sub.catchUp = false;
-	deliver({ text, wake: wakePayload(sub.ref, events) });
+	deliver({ text, wake: wakePayload(sub.ref, events, sub.ownHeads) });
+	sub.ownHeads = undefined;
 }
 
 /** Flush every subscription (after a `pi-q-n-a` form closes). */
