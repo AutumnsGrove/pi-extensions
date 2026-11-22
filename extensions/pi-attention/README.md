@@ -90,16 +90,20 @@ runs for wakes the rules could not settle.
 ## Verdict log
 
 `~/.pi/agent/attention.jsonl` (`PI_ATTENTION_LOG` overrides the path), one JSON
-line per decision with the compact inputs (the wake summary and the agent's last
-message), the answers, the model, the latency, and the error when there was one.
+line per decision with the session id and cwd, the thresholds in force, the
+compact inputs (the wake summary and the agent's last message), the answers, the
+model, the latency, and the error when there was one. The session id is what
+makes a line traceable back to its transcript later, which is how the calibration
+bench ([#66](https://github.com/AutumnsGrove/pi-extensions/issues/66)) gets its
+labelled cases.
 It holds the agent's last message, so treat it as a session artifact rather than
 something to publish. Past 1 MB the file keeps its newest half. `/attention log`
 prints the tail.
 
-The log is the input to a real calibration pass: replay recorded states through a
-candidate cascade, compare thresholds against what actually happened, and only
-then trust `nothingToDoAt`. That measurement is not built yet — see the follow-up
-issue, along with the `notify` mapping.
+The log is the input to a real calibration pass: use the extension for a while,
+go back through the sessions it points at, label what each decision should have
+been, and replay those cases through a candidate cascade. That measurement is not
+built yet — see the follow-up issue, along with the `notify` mapping.
 
 ## What sounds does with it
 

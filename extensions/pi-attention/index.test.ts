@@ -273,6 +273,10 @@ describe("the decision model", () => {
 			lastText: "Checked the logs; all fine.",
 			toolCalls: 1,
 		});
+		// Traceable back to the transcript, with the thresholds that produced it.
+		expect(verdict?.session).toBe("session-1");
+		expect(verdict?.cwd).toBe("/tmp/project");
+		expect(verdict?.thresholds).toEqual({ needsYouAt: 0.5, nothingToDoAt: 0.85 });
 	});
 
 	it("needs you when the model reports something", async () => {

@@ -125,11 +125,18 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 		if (config().log) {
 			writeLog({
 				at: now(),
+				// Which session and directory this came from: the point of the log is
+				// to go back to the transcript later and label what should have been.
+				...(ctxRef ? { session: ctxRef.sessionManager.getSessionId(), cwd: ctxRef.cwd } : {}),
 				state: update.state,
 				source: update.source,
 				reason: update.reason,
 				...(update.confidence !== undefined ? { confidence: update.confidence } : {}),
 				...record,
+				thresholds: {
+					needsYouAt: config().needsYouAt,
+					nothingToDoAt: config().nothingToDoAt,
+				},
 				input: {
 					...(turn.wake
 						? {
