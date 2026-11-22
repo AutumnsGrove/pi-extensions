@@ -16,5 +16,5 @@
     "forceConsistentCasingInFileNames": true,
     "noUncheckedIndexedAccess": true
   },
-  "include": ["extensions/**/*.ts", "themes/**/*.ts"]
+  "include": ["extensions/**/*.ts", "scripts/**/*.ts", "themes/**/*.ts"]
 }
