@@ -64,6 +64,9 @@ export const HOOK_EVENTS = [
 	"ToolExecutionEnd",
 	"SessionCompactFailed",
 	"ThinkingLevelSelect",
+	// Emitted by another extension through `pi-hooks:emit`
+	"PrWake",
+	"PrReadyToMerge",
 ] as const;
 
 export type HookEventName = (typeof HOOK_EVENTS)[number];
@@ -97,6 +100,9 @@ export const SUPPORTED_EVENTS: readonly HookEventName[] = [
 	"ToolExecutionEnd",
 	"SessionCompactFailed",
 	"ThinkingLevelSelect",
+	// External producers, through `pi-hooks:emit`. Observe-only.
+	"PrWake",
+	"PrReadyToMerge",
 ];
 
 export type HookHandlerType = "command" | "http" | "prompt" | "agent";

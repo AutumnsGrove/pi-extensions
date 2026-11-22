@@ -21,6 +21,7 @@ import type { Cursor, ErrorKind, PrEvent } from "./diff.ts";
 import type { Exec } from "./gh.ts";
 import { prKey, type PrRef } from "./ref.ts";
 import type { CheckEntry, PullState } from "./snapshot.ts";
+import type { PrWakePayload } from "../_shared/hook-events.ts";
 
 export const LOCK_STALE_MS = 5 * 60_000;
 export const MAX_SUBSCRIPTIONS = 5;
@@ -77,13 +78,19 @@ export interface RegistryState {
 	/** Last deliberate release per PR, so a done release is visible afterwards. */
 	releases: Map<string, ReleaseInfo>;
 	/** Batches held while a `pi-q-n-a` form is open. */
-	deferred: string[];
+	deferred: Delivery[];
 	/** Set by the extension on every session start, so a reload can swap it. */
-	deliver: ((text: string) => void) | undefined;
+	deliver: ((delivery: Delivery) => void) | undefined;
 	exec: Exec | undefined;
 	paint: (() => void) | undefined;
 	persist: (() => void) | undefined;
 	blocked: (() => boolean) | undefined;
+}
+
+/** One delivery: the message the agent gets and the signal consumers get with it. */
+export interface Delivery {
+	text: string;
+	wake: PrWakePayload;
 }
 
 const REGISTRY_KEY = Symbol.for("pi-extensions.pr-subscribe");

@@ -176,6 +176,22 @@ a duplicated page, or a clock skew cannot double-fire one.
   is watching) it stays expired rather than polling while marked expired: run
   the command again once the other session stops.
 
+## Hook events
+
+Each delivery also publishes a hook event, because a batch is a custom message
+and not user input: nothing outside this extension can tell whether the wake
+needs action. `pi-pr-subscribe` emits through `pi-hooks:emit`, so both
+configured hooks and in-process consumers (`pi-attention`) can see it:
+
+| Event | Fields | Fires when |
+| --- | --- | --- |
+| `PrWake` | `owner`, `repo`, `pullNumber`, `eventTypes`, `informational`, `summary` | A batch is delivered. `informational` is true only for passing checks and all-green settles, with no comment, review, failure, head move, error, or close. |
+| `PrReadyToMerge` | `owner`, `repo`, `pullNumber`, `reason?` | A deliberate done release (`unsubscribe_pr_activity({ done: true })`). Merge, close, expiry, `/subscribe off`, and a plain unsubscribe do not emit it. |
+
+The event goes out before the message, so a consumer knows which turn is about
+to start. Emitting is safe when `hooks` is not loaded: the channel is a plain
+`pi.events` one and nothing listens.
+
 ## Security
 
 A PR comment is attacker-controllable text, and this extension deliberately wakes

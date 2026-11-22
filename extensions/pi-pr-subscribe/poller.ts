@@ -36,11 +36,13 @@ import {
 import { formatBatch } from "./format.ts";
 import { prKey } from "./ref.ts";
 import { checkSummary, oldestFirst, type Snapshot } from "./snapshot.ts";
+import { wakePayload } from "./wake.ts";
 import {
 	releaseLock,
 	removeSubscription,
 	registry,
 	touchLock,
+	type Delivery,
 	type Subscription,
 } from "./registry.ts";
 
@@ -373,7 +375,7 @@ export function flush(sub: Subscription, deps: PollerDeps, options: { force?: bo
 	sub.pending = [];
 	sub.pendingLogs = new Map();
 	sub.catchUp = false;
-	deliver(text);
+	deliver({ text, wake: wakePayload(sub.ref, events) });
 }
 
 /** Flush every subscription (after a `pi-q-n-a` form closes). */
@@ -381,14 +383,14 @@ export function flushAll(subs: Subscription[], deps: PollerDeps): void {
 	for (const sub of subs) flush(sub, deps);
 }
 
-function deliver(text: string): void {
+function deliver(delivery: Delivery): void {
 	const state = registry();
 	if (!state.deliver) return;
 	if (state.blocked?.()) {
-		state.deferred.push(text);
+		state.deferred.push(delivery);
 		return;
 	}
-	state.deliver(text);
+	state.deliver(delivery);
 }
 
 function paint(deps: PollerDeps): void {

@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -164,5 +167,122 @@ describe("hooks extension wiring", () => {
 		} as ToolCallEvent;
 		const result = (await fire(h, "tool_call", event, ctxOf(h))) as { block?: boolean };
 		expect(result.block).toBe(true);
+	});
+});
+
+describe("external producers", () => {
+	const emit = (h: Harness, payload: unknown): void => {
+		h.bus.get("pi-hooks:emit")?.forEach((handler) => handler(payload));
+	};
+
+	it("dispatches PrWake to in-process handlers with the session envelope", async () => {
+		const h = harness({});
+		const seen: Array<Record<string, unknown>> = [];
+		h.bus.get("pi-hooks:register")?.forEach((handler) =>
+			handler({
+				event: "PrWake",
+				source: "attention",
+				handler: (input: Record<string, unknown>) => {
+					seen.push(input);
+				},
+			}),
+		);
+
+		await fire(h, "session_start", { type: "session_start", reason: "startup" }, ctxOf(h));
+		emit(h, {
+			event: "PrWake",
+			input: {
+				owner: "o",
+				repo: "r",
+				pullNumber: 7,
+				eventTypes: ["checks.settled"],
+				informational: true,
+				summary: "checks settled: success",
+			},
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(seen).toHaveLength(1);
+		expect(seen[0]).toMatchObject({
+			hook_event_name: "PrWake",
+			session_id: "session-1",
+			owner: "o",
+			repo: "r",
+			pullNumber: 7,
+			informational: true,
+		});
+	});
+
+	it("runs configured hooks for a produced event", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-hooks-emit-"));
+		const out = join(dir, "seen.json");
+		try {
+			const h = harness({
+				hooks: {
+					PrReadyToMerge: [
+						{
+							hooks: [
+								{
+									type: "command",
+									command: process.execPath,
+									args: [
+										"-e",
+										`process.stdin.pipe(require("fs").createWriteStream(${JSON.stringify(out)}))`,
+									],
+								},
+							],
+						},
+					],
+				},
+			});
+			await fire(h, "session_start", { type: "session_start", reason: "startup" }, ctxOf(h));
+			emit(h, {
+				event: "PrReadyToMerge",
+				input: { owner: "o", repo: "r", pullNumber: 7, reason: "green" },
+			});
+
+			let seen: Record<string, unknown> | undefined;
+			for (let attempt = 0; attempt < 40 && !seen; attempt += 1) {
+				await new Promise((resolve) => setTimeout(resolve, 25));
+				try {
+					seen = JSON.parse(readFileSync(out, "utf8")) as Record<string, unknown>;
+				} catch {
+					// The hook has not written yet.
+				}
+			}
+			expect(seen).toMatchObject({
+				hook_event_name: "PrReadyToMerge",
+				session_id: "session-1",
+				pullNumber: 7,
+				reason: "green",
+			});
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("ignores an unknown event, a malformed payload, and a missing session", async () => {
+		const h = harness({});
+		const seen: string[] = [];
+		h.bus.get("pi-hooks:register")?.forEach((handler) =>
+			handler({
+				event: "PrWake",
+				source: "test",
+				handler: (input: Record<string, unknown>) => {
+					seen.push(String(input.hook_event_name));
+				},
+			}),
+		);
+		// No session_start yet: there is no context to build an envelope from.
+		emit(h, { event: "PrWake", input: { informational: true } });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(seen).toEqual([]);
+
+		await fire(h, "session_start", { type: "session_start", reason: "startup" }, ctxOf(h));
+		emit(h, "not an emission");
+		emit(h, { event: "NotAnEvent", input: {} });
+		emit(h, { event: "PreToolUse", input: { tool_name: "bash" } });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(seen).toEqual([]);
 	});
 });

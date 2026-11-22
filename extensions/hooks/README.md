@@ -145,6 +145,8 @@ result. Command hooks receive `CLAUDE_PROJECT_DIR`, `CLAUDE_HOOK_EVENT`,
 | `ToolExecutionStart` / `ToolExecutionEnd` | `tool_execution_start` / `tool_execution_end` | |
 | `SessionCompactFailed` | `session_compact_failed` | |
 | `ThinkingLevelSelect` | `thinking_level_select` | |
+| `PrWake` | `pi-hooks:emit` | Emitted by `pi-pr-subscribe` for each delivered batch. |
+| `PrReadyToMerge` | `pi-hooks:emit` | Emitted by `pi-pr-subscribe` on a deliberate done release. |
 
 The rest of Claude's events (`Notification`, `SubagentStart`, `ConfigChange`,
 `CwdChanged`, `WorktreeCreate`, …) are not exposed by pi 1.x. They load with a
@@ -174,6 +176,39 @@ register();
 Handlers receive the same `HookInput` as command hooks and may return a
 `HookOutput` or nothing. `pi-hooks:unregister` with `{ source }` removes all of
 a source's handlers.
+
+### Events from other extensions
+
+Some events only another extension can see. `pi-pr-subscribe` knows whether a
+delivery demands action; `pi-attention` knows whether a session needs you. They
+publish through `pi-hooks:emit` — the same bus, a different direction:
+
+```ts
+import { emitHookEvent } from "../_shared/hook-events.ts";
+
+emitHookEvent(pi, "PrWake", {
+  owner: "AutumnsGrove",
+  repo: "pi-extensions",
+  pullNumber: 63,
+  eventTypes: ["checks.settled"],
+  informational: true,
+  summary: "checks settled on 7d62b8f: success (1 total)",
+});
+```
+
+The engine adds the usual envelope (`session_id`, `cwd`, `transcript_path`,
+`hook_event_name`) and dispatches to configured hooks and in-process handlers
+alike. Emitting is safe when this extension is not loaded: nothing listens. An
+unsupported event name, a malformed payload, or an emission before
+`session_start` is dropped.
+
+| Event | Fields | Fires when |
+| --- | --- | --- |
+| `PrWake` | `owner`, `repo`, `pullNumber`, `eventTypes`, `informational`, `summary` | A PR batch is delivered to the agent. `informational` is true only when the batch is passing checks and all-green settles, with no comment, review, failure, head move, error, or close. |
+| `PrReadyToMerge` | `owner`, `repo`, `pullNumber`, `reason?` | The agent released a subscription deliberately as done. A merge, a close, an expiry, `/subscribe off`, and a plain unsubscribe do not emit it. |
+
+These two are observe-only and have no matcher: they carry no `tool_name`.
+
 
 ## Commands
 
