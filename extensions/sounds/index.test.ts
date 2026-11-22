@@ -5,7 +5,7 @@ import { createSounds } from "./index.ts";
 interface Registration {
 	event: string;
 	source: string;
-	handler: (input: { hook_event_name?: string }) => unknown;
+	handler: (input: { hook_event_name?: string; state?: string }) => unknown;
 }
 
 interface Harness {
@@ -87,6 +87,7 @@ function harness(settings: unknown, deps: { play: (file: string) => void; now: (
 
 afterEach(() => {
 	(globalThis as Record<string, unknown>).__piHooksReady = false;
+	(globalThis as Record<string, unknown>).__piAttentionActive = false;
 });
 
 const handlerFor = (h: Harness, event: string) =>
@@ -150,5 +151,72 @@ describe("sounds extension", () => {
 		await h.commands.get("sounds")?.("test Stop", h.ctx);
 		expect(played).toEqual(["/sounds/stop.wav"]);
 		expect(h.notices.join("\n")).toContain("stop.wav");
+	});
+});
+
+describe("attention states", () => {
+	const active = (): void => {
+		(globalThis as Record<string, unknown>).__piAttentionActive = true;
+	};
+
+	it("plays the state's own cue", async () => {
+		active();
+		const played: string[] = [];
+		const h = harness({ sounds: { directory: "/sounds" } }, { play: (file) => played.push(file), now: () => 0 });
+		await h.fire("session_start", { type: "session_start", reason: "startup" });
+		handlerFor(h, "AttentionChanged")?.({ hook_event_name: "AttentionChanged", state: "needs_you" });
+		expect(played).toEqual(["/sounds/notification.wav"]);
+	});
+
+	it("plays the dedicated ready-to-merge cue", async () => {
+		active();
+		const played: string[] = [];
+		const h = harness({ sounds: { directory: "/sounds" } }, { play: (file) => played.push(file), now: () => 0 });
+		await h.fire("session_start", { type: "session_start", reason: "startup" });
+		handlerFor(h, "AttentionChanged")?.({ hook_event_name: "AttentionChanged", state: "ready" });
+		expect(played).toEqual(["/sounds/ready_to_merge.wav"]);
+	});
+
+	it("stays silent while waiting and working", async () => {
+		active();
+		const played: string[] = [];
+		const h = harness({ sounds: { directory: "/sounds" } }, { play: (file) => played.push(file), now: () => 0 });
+		await h.fire("session_start", { type: "session_start", reason: "startup" });
+		const handler = handlerFor(h, "AttentionChanged");
+		handler?.({ hook_event_name: "AttentionChanged", state: "waiting" });
+		handler?.({ hook_event_name: "AttentionChanged", state: "working" });
+		expect(played).toEqual([]);
+	});
+
+	it("replaces the settle cue while attention is loaded", async () => {
+		active();
+		const played: string[] = [];
+		const h = harness({ sounds: { directory: "/sounds" } }, { play: (file) => played.push(file), now: () => 0 });
+		await h.fire("session_start", { type: "session_start", reason: "startup" });
+		handlerFor(h, "Stop")?.({ hook_event_name: "Stop" });
+		handlerFor(h, "AgentSettled")?.({ hook_event_name: "AgentSettled" });
+		handlerFor(h, "AttentionChanged")?.({ hook_event_name: "AttentionChanged", state: "idle" });
+		expect(played).toEqual(["/sounds/response_end.wav"]);
+	});
+
+	it("keeps the settle cue when attention takeover is off", async () => {
+		active();
+		const played: string[] = [];
+		const h = harness(
+			{ sounds: { directory: "/sounds", attention: false } },
+			{ play: (file) => played.push(file), now: () => 0 },
+		);
+		await h.fire("session_start", { type: "session_start", reason: "startup" });
+		handlerFor(h, "AgentSettled")?.({ hook_event_name: "AgentSettled" });
+		expect(played).toEqual(["/sounds/response_end.wav"]);
+	});
+
+	it("ignores an attention state with no mapping", async () => {
+		active();
+		const played: string[] = [];
+		const h = harness({ sounds: { directory: "/sounds" } }, { play: (file) => played.push(file), now: () => 0 });
+		await h.fire("session_start", { type: "session_start", reason: "startup" });
+		handlerFor(h, "AttentionChanged")?.({ hook_event_name: "AttentionChanged", state: "something-new" });
+		expect(played).toEqual([]);
 	});
 });

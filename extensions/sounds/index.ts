@@ -15,6 +15,7 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { attentionActive } from "../_shared/attention.ts";
 import { SUPPORTED_EVENTS, type HookInput } from "../hooks/types.ts";
 import {
 	describeSounds,
@@ -24,6 +25,13 @@ import {
 	type SoundsConfig,
 } from "./config.ts";
 import { createPlayer } from "./player.ts";
+
+/**
+ * Cues that `pi-attention` replaces when it is loaded: it decides after the turn
+ * settles, so the old unconditional "finished" sound would play first and be
+ * wrong half the time.
+ */
+const ATTENTION_OWNED = new Set(["Stop", "AgentSettled"]);
 
 export interface SoundsDeps {
 	play?: (file: string) => void;
@@ -41,6 +49,7 @@ export function createSounds(pi: ExtensionAPI, deps: SoundsDeps = {}): void {
 	const playEvent = (event: string): void => {
 		const config = loaded.config;
 		if (!config.enabled) return;
+		if (config.attention && attentionActive() && ATTENTION_OWNED.has(event)) return;
 		const file = soundForEvent(config, event);
 		if (!file) return;
 		const stamp = now();
@@ -61,7 +70,12 @@ export function createSounds(pi: ExtensionAPI, deps: SoundsDeps = {}): void {
 				event,
 				source: "sounds",
 				handler: (input: HookInput) => {
-					playEvent(input.hook_event_name ?? event);
+					const name = input.hook_event_name ?? event;
+					// A state-specific mapping wins; without one the plain event
+					// mapping applies (and a missing mapping stays silent).
+					const state = typeof input.state === "string" ? input.state : undefined;
+					const key = state && loaded.config.events[`${name}:${state}`] !== undefined ? `${name}:${state}` : name;
+					playEvent(key);
 				},
 			});
 		}

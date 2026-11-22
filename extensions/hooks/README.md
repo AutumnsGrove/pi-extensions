@@ -147,6 +147,7 @@ result. Command hooks receive `CLAUDE_PROJECT_DIR`, `CLAUDE_HOOK_EVENT`,
 | `ThinkingLevelSelect` | `thinking_level_select` | |
 | `PrWake` | `pi-hooks:emit` | Emitted by `pi-pr-subscribe` for each delivered batch. |
 | `PrReadyToMerge` | `pi-hooks:emit` | Emitted by `pi-pr-subscribe` on a deliberate done release. |
+| `AttentionChanged` | `pi-hooks:emit` | Emitted by `pi-attention` when a session's state changes. |
 
 The rest of Claude's events (`Notification`, `SubagentStart`, `ConfigChange`,
 `CwdChanged`, `WorktreeCreate`, …) are not exposed by pi 1.x. They load with a
@@ -206,8 +207,9 @@ unsupported event name, a malformed payload, or an emission before
 | --- | --- | --- |
 | `PrWake` | `owner`, `repo`, `pullNumber`, `eventTypes`, `informational`, `summary` | A PR batch is delivered to the agent. `informational` is true only when the batch is passing checks and all-green settles, with no comment, review, failure, head move, error, or close. |
 | `PrReadyToMerge` | `owner`, `repo`, `pullNumber`, `reason?` | The agent released a subscription deliberately as done. A merge, a close, an expiry, `/subscribe off`, and a plain unsubscribe do not emit it. |
+| `AttentionChanged` | `state`, `reason`, `source`, `confidence?` | `pi-attention` changed its view of whether the session needs you. `state` is one of `working`, `needs_you`, `waiting`, `ready`, `idle`. |
 
-These two are observe-only and have no matcher: they carry no `tool_name`.
+These are observe-only and have no matcher: they carry no `tool_name`.
 
 
 ## Commands
