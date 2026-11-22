@@ -14,8 +14,12 @@
  *
  * The one head move that is not: the session's own push. The agent pushes, CI
  * restarts, and the resulting `head.updated` would otherwise wake it to say
- * "that was me". The caller passes the heads it has verified against the local
- * branch tip, so a push from anywhere else stays a wake.
+ * "that was me". The caller passes the heads it has found already sitting on the
+ * local branch tip, so a head this checkout does not have stays a wake.
+ *
+ * That is the whole claim: "these commits are already here", not authorship. A
+ * colleague's push that the session has since pulled looks the same, and that is
+ * the honest reading — the work is on this disk either way.
  */
 
 import type { PrReadyToMergePayload, PrWakePayload } from "../_shared/hook-events.ts";

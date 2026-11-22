@@ -325,12 +325,13 @@ async function localHead(cwd: string, deps: PollerDeps): Promise<string | undefi
 }
 
 /**
- * Mark the head moves this batch can prove are the session's own push.
+ * Mark the head moves this batch can prove are already on this checkout's tip.
  *
  * One `git rev-parse` per head move, and only ever on a push: the poll loop is
- * already talking to GitHub, so the extra process is noise next to it. A push
- * from another machine (or a worktree this session is not in) does not match,
- * which is the safe direction — it still wakes the agent.
+ * already talking to GitHub, so the extra process is noise next to it. The
+ * claim is "these commits are here", not authorship: a head this session does
+ * not have — another machine, another worktree — does not match, which is the
+ * safe direction because it still wakes the agent.
  */
 async function markOwnHeads(sub: Subscription, events: PrEvent[], deps: PollerDeps): Promise<void> {
 	const moved = events.filter((event) => event.type === "head.updated");

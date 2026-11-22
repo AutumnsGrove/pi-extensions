@@ -47,7 +47,8 @@ describe("isInformational", () => {
 				},
 			])
 		).toBe(false);
-		expect(isInformational([{ type: "head.updated", to: "bbb" }])).toBe(false);		expect(isInformational([{ type: "subscription.error", kind: "auth", message: "bad" }])).toBe(false);
+		expect(isInformational([{ type: "head.updated", to: "bbb" }])).toBe(false);
+		expect(isInformational([{ type: "subscription.error", kind: "auth", message: "bad" }])).toBe(false);
 		expect(isInformational([{ type: "subscription.expired", quietMs: 1 }])).toBe(false);
 		expect(isInformational([{ type: "pr.merged", number: 1 }])).toBe(false);
 		expect(isInformational([{ type: "pr.closed", number: 1 }])).toBe(false);
@@ -61,7 +62,7 @@ describe("isInformational", () => {
 		const own = new Set(["bbb"]);
 		expect(isInformational([{ type: "head.updated", to: "bbb" }], own)).toBe(true);
 		expect(isInformational([{ type: "head.updated", to: "bbb" }, check("success")], own)).toBe(true);
-		// Someone else's push, or a batch with anything else in it, still wakes.
+		// A head that is not the local tip, or a batch with anything else in it, still wakes.
 		expect(isInformational([{ type: "head.updated", to: "ccc" }], own)).toBe(false);
 		expect(isInformational([{ type: "head.updated", to: "bbb" }, comment()], own)).toBe(false);
 	});

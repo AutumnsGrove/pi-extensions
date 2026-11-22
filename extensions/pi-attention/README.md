@@ -37,8 +37,8 @@ can act on it, and a remote runner can show it as a per-session badge.
 1. **Rules** decide the common cases and always win. A failure, a comment, a
    requested-changes review, a subscription error, or an open prompt is
    `needs_you`; a passing-check wake that made no tool calls is `waiting`; so is a
-   wake that only reports this session's own push; a deliberate done release is
-   `ready`; an ordinary turn is `idle`.
+   wake whose only other event is a head already at this checkout's tip; a
+   deliberate done release is `ready`; an ordinary turn is `idle`.
 2. **A decision model** classifies the one ambiguous case: a wake that was
    informational but where the agent still did something. Did it report
    something worth reading, or was the turn a no-op?
