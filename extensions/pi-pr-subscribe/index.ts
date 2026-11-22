@@ -26,6 +26,7 @@ import {
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import { isBlocked, onBlockersChange } from "../_shared/blockers.ts";
+import { emitHookEvent } from "../_shared/hook-events.ts";
 import { extractPostedIds, extractPostedTarget, targetMatches } from "./capture.ts";
 import { initCursor, type Cursor } from "./diff.ts";
 import {
@@ -76,6 +77,7 @@ import {
 	type Subscription,
 } from "./registry.ts";
 import { SUBSCRIBE_GUIDELINES, UNSUBSCRIBE_GUIDELINES } from "./rules.ts";
+import { readyToMergePayload } from "./wake.ts";
 
 const CUSTOM_TYPE = "pi-pr-subscribe";
 const ENTRY_TYPE = "pi-pr-subscribe";
@@ -162,15 +164,18 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 	// Everything the pollers call is looked up from the registry, so a `/reload`
 	// can replace these closures under a timer that is already running.
 	registry().exec = exec;
-	registry().deliver = (text) => {
-		pi.sendMessage(
-			{ customType: CUSTOM_TYPE, content: text, display: true },
-			{ triggerTurn: true, deliverAs: "steer" }
-		);
-	};
 	registry().blocked = () => isBlocked();
 	registry().persist = () => persist();
 	registry().paint = () => paint();
+	// One delivery is one wake: the hook event goes out before the message so a
+	// consumer knows which turn is about to start.
+	registry().deliver = (delivery) => {
+		emitHookEvent(pi, "PrWake", delivery.wake);
+		pi.sendMessage(
+			{ customType: CUSTOM_TYPE, content: delivery.text, display: true },
+			{ triggerTurn: true, deliverAs: "steer" }
+		);
+	};
 
 	const notify = (ctx: ExtensionContext, text: string, level: "info" | "warning" | "error" = "info"): void => {
 		if (ctx.hasUI) ctx.ui.notify(text, level);
@@ -270,7 +275,7 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 		const state = registry();
 		const queued = [...state.deferred];
 		state.deferred.length = 0;
-		for (const text of queued) state.deliver?.(text);
+		for (const delivery of queued) state.deliver?.(delivery);
 	}
 
 	const unsubscribeBlockers = onBlockersChange(() => {
@@ -469,6 +474,7 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 		persist();
 		paint();
 		if (release.done) {
+			emitHookEvent(pi, "PrReadyToMerge", readyToMergePayload(ref, release.reason));
 			return `Released ${prKey(ref)} as done${release.reason ? ` — ${release.reason}` : ""}. No more events will arrive for it.`;
 		}
 		return `Unsubscribed from ${prKey(ref)}. No more events will arrive for it.`;
@@ -558,11 +564,13 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 		currentSessionId = ctx.sessionManager.getSessionId();
 		if (ctx.hasUI && ctx.mode === "tui") uiCtx = ctx;
 		registry().exec = exec;
-		registry().deliver = (text) =>
+		registry().deliver = (delivery) => {
+			emitHookEvent(pi, "PrWake", delivery.wake);
 			pi.sendMessage(
-				{ customType: CUSTOM_TYPE, content: text, display: true },
+				{ customType: CUSTOM_TYPE, content: delivery.text, display: true },
 				{ triggerTurn: true, deliverAs: "steer" }
 			);
+		};
 		registry().persist = () => persist();
 		registry().paint = () => paint();
 

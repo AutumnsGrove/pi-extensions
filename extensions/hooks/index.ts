@@ -20,6 +20,10 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { readHooksConfig, normalizeHooks, type LoadedHooks } from "./config.ts";
 import {
+	HOOK_EVENT_CHANNEL,
+	isHookEventEmission,
+} from "../_shared/hook-events.ts";
+import {
 	createDispatchState,
 	dispatchHooks,
 	type DispatchState,
@@ -30,7 +34,7 @@ import {
 	sessionStartSource,
 	toolInput,
 } from "./input.ts";
-import { canonicalEvent } from "./events.ts";
+import { canonicalEvent, isSupported } from "./events.ts";
 import type {
 	HookEventName,
 	HookInput,
@@ -85,6 +89,8 @@ export default function hooks(pi: ExtensionAPI): void {
 	let loaded: LoadedHooks = { hooks: [], warnings: [] };
 	const state: DispatchState = createDispatchState();
 	const bus = new Map<string, InProcessHookHandler>();
+	/** The most recent context, so an external emitter can be dispatched too. */
+	let liveCtx: ExtensionContext | undefined;
 
 	const reload = (): LoadedHooks => {
 		try {
@@ -172,11 +178,39 @@ export default function hooks(pi: ExtensionAPI): void {
 	pi.events.emit("pi-hooks:ready", {});
 
 	// ---------------------------------------------------------------------
+	// External producers: another extension knows something we cannot see.
+	// `pi-pr-subscribe` (PrWake, PrReadyToMerge) and `pi-attention`
+	// (AttentionChanged) publish through this channel. Only observe events
+	// arrive this way; nothing here can block or change a tool call.
+	// ---------------------------------------------------------------------
+
+	pi.events.on(HOOK_EVENT_CHANNEL, (data) => {
+		if (!isHookEventEmission(data)) {
+			debug("ignored a malformed pi-hooks:emit payload");
+			return;
+		}
+		const event = canonicalEvent(data.event);
+		if (!event || !isSupported(event)) {
+			debug(`ignored an unsupported hook event \"${data.event}\"`);
+			return;
+		}
+		const ctx = liveCtx;
+		if (!ctx) {
+			debug(`no session context for ${event}; dropped`);
+			return;
+		}
+		void dispatch(event, { ...baseInput(event, ctx), ...data.input }, ctx).catch((error) => {
+			debug(`${event} dispatch failed: ${(error as Error).message}`);
+		});
+	});
+
+	// ---------------------------------------------------------------------
 	// Session lifecycle
 	// ---------------------------------------------------------------------
 
 	pi.on("session_start", async (event, ctx) => {
 		// Project settings are merged once trust is established, so reload here.
+		liveCtx = ctx;
 		reload();
 		const input: HookInput = {
 			...baseInput("SessionStart", ctx),
@@ -189,6 +223,7 @@ export default function hooks(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async (event, ctx) => {
+		liveCtx = undefined;
 		(globalThis as Record<string, unknown>).__piHooksReady = false;
 		const input: HookInput = {
 			...baseInput("SessionEnd", ctx),

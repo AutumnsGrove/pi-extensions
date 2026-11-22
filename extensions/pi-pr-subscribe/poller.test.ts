@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { PrWakePayload } from "../_shared/hook-events.ts";
 import { initCursor } from "./diff.ts";
 import type { Exec } from "./gh.ts";
 import { prKey } from "./ref.ts";
@@ -107,6 +108,7 @@ interface Harness {
 	sub: Subscription;
 	deps: PollerDeps;
 	delivered: string[];
+	wakes: PrWakePayload[];
 	persisted: () => number;
 }
 
@@ -121,9 +123,13 @@ function setup(overrides: { checks?: unknown[]; issueComments?: unknown[]; lock?
 	server.checks = overrides.checks ?? [];
 	server.issueComments = overrides.issueComments ?? [];
 	const delivered: string[] = [];
+	const wakes: PrWakePayload[] = [];
 	let persisted = 0;
 	registry().exec = server.exec;
-	registry().deliver = (text) => delivered.push(text);
+	registry().deliver = (delivery) => {
+		delivered.push(delivery.text);
+		wakes.push(delivery.wake);
+	};
 	registry().persist = () => {
 		persisted += 1;
 	};
@@ -151,7 +157,7 @@ function setup(overrides: { checks?: unknown[]; issueComments?: unknown[]; lock?
 	}
 	registry().subs.set(prKey(ref), sub);
 	const deps: PollerDeps = { cwd: "/tmp", basePollMs: 20_000, coalesceMs: COALESCE_MS, now: () => Date.now() };
-	return { server, sub, deps, delivered, persisted: () => persisted };
+	return { server, sub, deps, delivered, wakes, persisted: () => persisted };
 }
 
 beforeEach(() => {
@@ -383,6 +389,61 @@ describe("expiry", () => {
 		vi.advanceTimersByTime(COALESCE_MS);
 		expect(h.delivered.at(-1)).toContain("While you were away");
 		expect(h.delivered.at(-1)).toContain("missed it");
+	});
+});
+
+describe("wake signals", () => {
+	it("marks an all-green batch informational", async () => {
+		const h = setup({ checks: [{ id: 1, name: "test", status: "in_progress", conclusion: null }] });
+		h.server.checks = [{ id: 1, name: "test", status: "completed", conclusion: "success" }];
+		await tick(h.sub, h.deps);
+		vi.advanceTimersByTime(COALESCE_MS);
+		expect(h.wakes).toHaveLength(1);
+		expect(h.wakes[0]).toMatchObject({
+			owner: "AutumnsGrove",
+			repo: "pi-extensions",
+			pullNumber: 32,
+			informational: true,
+		});
+		expect(h.wakes[0]?.eventTypes).toContain("checks.settled");
+		expect(h.wakes[0]?.summary).toContain("checks settled");
+	});
+
+	it("marks a failure or a comment as needing attention", async () => {
+		const failed = setup({ checks: [{ id: 1, name: "test", status: "in_progress", conclusion: null }] });
+		failed.server.checks = [{ id: 1, name: "test", status: "completed", conclusion: "failure" }];
+		await tick(failed.sub, failed.deps);
+		vi.advanceTimersByTime(COALESCE_MS);
+		expect(failed.wakes[0]?.informational).toBe(false);
+
+		const commented = setup();
+		commented.server.issueComments = [{ id: 10, body: "please fix", created_at: "2026-11-15T21:00:00Z" }];
+		await tick(commented.sub, commented.deps);
+		vi.advanceTimersByTime(COALESCE_MS);
+		expect(commented.wakes[0]).toMatchObject({
+			informational: false,
+			eventTypes: ["comment.created"],
+		});
+	});
+
+	it("emits one wake per delivery, not per event", async () => {
+		const h = setup({ checks: [{ id: 1, name: "a", status: "in_progress", conclusion: null }] });
+		h.server.checks = [
+			{ id: 1, name: "a", status: "completed", conclusion: "success" },
+			{ id: 2, name: "b", status: "completed", conclusion: "success" },
+		];
+		await tick(h.sub, h.deps);
+		vi.advanceTimersByTime(COALESCE_MS);
+		expect(h.delivered).toHaveLength(1);
+		expect(h.wakes).toHaveLength(1);
+	});
+
+	it("marks an expiry notice, and delivers it immediately", async () => {
+		const h = setup();
+		h.sub.createdAt = Date.now() - (DEFAULT_EXPIRY_MS + 60_000);
+		await tick(h.sub, h.deps);
+		expect(h.wakes).toHaveLength(1);
+		expect(h.wakes[0]).toMatchObject({ informational: false, eventTypes: ["subscription.expired"] });
 	});
 });
 

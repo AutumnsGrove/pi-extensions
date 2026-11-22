@@ -6,8 +6,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initCursor } from "./diff.ts";
 import type { Exec } from "./gh.ts";
 import piPrSubscribe from "./index.ts";
-import { resetPollers } from "./poller.ts";
-import { getRelease, getSubscription, listSubscriptions, registry, releaseLock, resetRegistry, acquireLock } from "./registry.ts";
+import { resetPollers, tick } from "./poller.ts";
+import {
+	acquireLock,
+	getRelease,
+	getSubscription,
+	listSubscriptions,
+	registry,
+	releaseLock,
+	resetRegistry,
+} from "./registry.ts";
 import type { Snapshot } from "./snapshot.ts";
 
 const ref = { owner: "AutumnsGrove", repo: "pi-extensions", number: 32 };
@@ -76,6 +84,8 @@ interface Harness {
 	notifications: string[];
 	widgets: Array<{ key: string; content: unknown }>;
 	entries: Array<{ type: string; customType?: string; data?: unknown }>;
+	/** Hook events emitted through `pi-hooks:emit`. */
+	hookEvents: Array<{ event: string; input: Record<string, unknown> }>;
 	ctx: ExtensionContext;
 	emit: (name: string, event: unknown) => Promise<void>;
 }
@@ -112,6 +122,7 @@ function load(options: { entries?: unknown[] } = {}): Harness {
 	const messages: Harness["messages"] = [];
 	const notifications: string[] = [];
 	const widgets: Harness["widgets"] = [];
+	const hookEvents: Harness["hookEvents"] = [];
 	const entries: Harness["entries"] = [
 		...(options.entries ?? []) as Harness["entries"],
 	];
@@ -138,6 +149,14 @@ function load(options: { entries?: unknown[] } = {}): Harness {
 		exec: server.exec,
 		getFlag: () => undefined,
 		getSettings: () => ({}),
+		events: {
+			emit(channel: string, data: unknown) {
+				if (channel !== "pi-hooks:emit") return;
+				const emission = data as { event: string; input: Record<string, unknown> };
+				hookEvents.push(emission);
+			},
+			on: () => () => {},
+		},
 	} as unknown as ExtensionAPI;
 
 	const ctx = {
@@ -167,6 +186,7 @@ function load(options: { entries?: unknown[] } = {}): Harness {
 		notifications,
 		widgets,
 		entries,
+		hookEvents,
 		ctx,
 		async emit(name: string, event: unknown) {
 			for (const handler of handlers.get(name) ?? []) await handler(event, ctx);
@@ -277,6 +297,53 @@ describe("subscribe_pr_activity", () => {
 		expect(result.content[0]?.text).toContain("Not subscribed");
 		expect(result.details).toMatchObject({ released: false });
 		expect(getRelease(ref)).toBeUndefined();
+	});
+
+	it("reports a done release to the hooks bus, and a plain one not at all", async () => {
+		const h = load();
+		await call(h, "subscribe_pr_activity");
+		await call(h, "unsubscribe_pr_activity", { done: true, reason: "green, reviews addressed" });
+		expect(h.hookEvents).toEqual([
+			{
+				event: "PrReadyToMerge",
+				input: {
+					owner: "AutumnsGrove",
+					repo: "pi-extensions",
+					pullNumber: 32,
+					reason: "green, reviews addressed",
+				},
+			},
+		]);
+
+		const plain = load();
+		await call(plain, "subscribe_pr_activity");
+		await call(plain, "unsubscribe_pr_activity");
+		expect(plain.hookEvents).toEqual([]);
+	});
+
+	it("does not report a merge or `/subscribe off` as ready to merge", async () => {
+		const off = load();
+		await call(off, "subscribe_pr_activity");
+		const command = off.commands.get("subscribe");
+		if (!command) throw new Error("missing command");
+		await command.handler("off 32", off.ctx);
+		expect(off.hookEvents).toEqual([]);
+
+		// A merge ends the watch through the poller, never through the tool.
+		const merged = load();
+		await call(merged, "subscribe_pr_activity");
+		const sub = getSubscription(ref);
+		if (!sub) throw new Error("expected a subscription");
+		if (sub.timer) clearTimeout(sub.timer);
+		sub.timer = undefined;
+		Object.assign(pull, { state: "closed", merged: true });
+		try {
+			await tick(sub, { cwd: "/tmp/project", basePollMs: 20_000, coalesceMs: 0, now: () => Date.now() });
+		} finally {
+			Object.assign(pull, { state: "open", merged: false });
+		}
+		expect(sub.ended).toBe(true);
+		expect(merged.hookEvents.filter((event) => event.event === "PrReadyToMerge")).toEqual([]);
 	});
 });
 
