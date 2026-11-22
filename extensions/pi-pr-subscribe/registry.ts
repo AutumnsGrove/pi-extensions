@@ -95,8 +95,21 @@ export interface Delivery {
 
 const REGISTRY_KEY = Symbol.for("pi-extensions.pr-subscribe");
 
+type RegistryHolder = typeof globalThis & { [REGISTRY_KEY]?: RegistryState };
+
+/**
+ * A new session and a `/reload` both re-evaluate this module while keeping
+ * `globalThis`, so the object under the key can be older than the code reading
+ * it. Every field therefore has to survive being absent, not just on the first
+ * call: `??=` on the holder only ever initializes once per process.
+ *
+ * The failure this prevents is silent until it is not — a registry from a build
+ * without `releases` made a deliberate done release throw
+ * `Cannot read properties of undefined (reading 'set')` *after* the watch had
+ * already been stopped, so the tool reported an error and recorded nothing.
+ */
 export function registry(): RegistryState {
-	const holder = globalThis as typeof globalThis & { [REGISTRY_KEY]?: RegistryState };
+	const holder = globalThis as RegistryHolder;
 	holder[REGISTRY_KEY] ??= {
 		subs: new Map(),
 		releases: new Map(),
@@ -107,20 +120,18 @@ export function registry(): RegistryState {
 		persist: undefined,
 		blocked: undefined,
 	};
-	return holder[REGISTRY_KEY];
+	const state = holder[REGISTRY_KEY];
+	state.subs ??= new Map();
+	state.releases ??= new Map();
+	state.deferred ??= [];
+	return state;
 }
 
 /** Tests only: drop the global registry. */
 export function resetRegistry(): void {
-	const state = registry();
-	state.subs.clear();
-	state.releases.clear();
-	state.deferred.length = 0;
-	state.deliver = undefined;
-	state.exec = undefined;
-	state.paint = undefined;
-	state.persist = undefined;
-	state.blocked = undefined;
+	// Delete rather than empty: a test that starts from a half-shaped object is
+	// exactly the bug above, and it must not be reachable from a fresh test.
+	delete (globalThis as RegistryHolder)[REGISTRY_KEY];
 }
 
 export function listSubscriptions(sessionId?: string): Subscription[] {

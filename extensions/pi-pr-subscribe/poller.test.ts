@@ -19,6 +19,7 @@ import {
 } from "./poller.ts";
 import {
 	acquireLock,
+	getRelease,
 	getSubscription,
 	lockPath,
 	registry,
@@ -239,6 +240,16 @@ describe("polling", () => {
 		expect(h.delivered[0]).toContain('event="pr.merged"');
 		expect(h.sub.ended).toBe(true);
 		expect(getSubscription(ref)).toBeUndefined();
+		// The watch ended itself, and that is a release — just never a done one.
+		expect(getRelease(ref)).toMatchObject({ done: false, reason: "merged" });
+	});
+
+	it("records a close as a release that is not done", async () => {
+		const h = setup();
+		h.server.pull = { ...h.server.pull, state: "closed", merged: false };
+		await tick(h.sub, h.deps);
+		expect(h.delivered[0]).toContain('event="pr.closed"');
+		expect(getRelease(ref)).toMatchObject({ done: false, reason: "closed" });
 	});
 
 	it("labels the first poll after a resume", async () => {

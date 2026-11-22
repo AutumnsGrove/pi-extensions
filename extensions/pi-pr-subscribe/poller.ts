@@ -38,6 +38,7 @@ import { prKey } from "./ref.ts";
 import { checkSummary, oldestFirst, type Snapshot } from "./snapshot.ts";
 import { wakePayload } from "./wake.ts";
 import {
+	recordRelease,
 	releaseLock,
 	removeSubscription,
 	registry,
@@ -278,7 +279,7 @@ async function pollOnce(sub: Subscription, deps: PollerDeps): Promise<void> {
 		const terminal = result.events.filter(isTerminal);
 		if (terminal.length > 0) {
 			flush(sub, deps, { force: true });
-			end(sub, deps);
+			end(sub, deps, terminal.at(-1)?.type === "pr.merged" ? "merged" : "closed");
 			return;
 		}
 
@@ -427,12 +428,21 @@ function handleError(sub: Subscription, deps: PollerDeps, error: unknown): void 
 	paint(deps);
 }
 
-function end(sub: Subscription, deps: PollerDeps): void {
+/**
+ * End a subscription here and now.
+ *
+ * `reason` is set only when the PR itself ended the watch. It is recorded as a
+ * release that is not `done`, so `/subscribe status` can say why the watch
+ * stopped and a later `unsubscribe_pr_activity({ done: true })` is answered
+ * with the truth instead of a bare "Not subscribed".
+ */
+function end(sub: Subscription, deps: PollerDeps, reason?: string): void {
 	sub.ended = true;
 	if (sub.timer) clearTimeout(sub.timer);
 	sub.timer = undefined;
 	if (sub.lock) releaseLock(sub.lock);
 	removeSubscription(sub.ref);
+	if (reason) recordRelease(sub.ref, { done: false, reason });
 	registry().persist?.();
 	paint(deps);
 }

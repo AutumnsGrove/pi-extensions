@@ -425,3 +425,37 @@ Two follow-up review findings tightened the same code:
   review was posted through another identity.
 - The `pi-review` README gained a "Watching for the review" section pointing at
   `subscribe_pr_activity`.
+
+### The done release that threw (`Cannot read properties of undefined`)
+
+A live Harbor session released a finished PR with
+`unsubscribe_pr_activity({ done: true })` and got back
+`Cannot read properties of undefined (reading 'set')`. The watch had in fact
+been stopped — the retry a turn later said "Not subscribed" — so the tool
+reported a failure for work that had partly succeeded, and recorded no release.
+
+The cause was the `globalThis` registry, not the release logic. A new session and
+a `/reload` both re-evaluate the extension module while intentionally keeping the
+object under `Symbol.for("pi-extensions.pr-subscribe")`. That pi process had been
+running since before `releases` was added to `RegistryState`, so the object the
+new code received had no `releases` map; `recordRelease()` was the first caller to
+touch it, and `undefined.set` threw. `restore()` missed it because it only looks
+at `releases` when the session branch already holds some, and `persist()` swallowed
+the same failure inside its `try`.
+
+Fixed in `registry()`: every map and array is filled in on read, so a registry an
+older build installed is repaired in place rather than trusted. `resetRegistry()`
+now deletes the key instead of emptying it, so a test can never start from the
+half-shaped object that caused this.
+
+Two smaller things came with it, both about saying what happened:
+
+- A merge or a close now records a release (`done: false`, reason `merged` or
+  `closed`) as it ends the watch, which is what `ReleaseInfo` always claimed. A
+  `done: true` call after that reports "no longer watched … a done release was
+  not recorded" instead of a bare "Not subscribed" — a plain unsubscribe now
+  answers "Already unsubscribed", which is the idempotent truth.
+- `unsubscribe()` records the release inside a `try`: the watch is already
+  stopped by then, so a bookkeeping failure returns "unsubscribed, but the release
+  could not be recorded (why)" rather than a thrown error that leaves the caller
+  to guess. `PrReadyToMerge` is emitted only for a release that was recorded.

@@ -252,7 +252,8 @@ describe("subscribe_pr_activity", () => {
 		expect(first.content[0]?.text).toContain("Unsubscribed");
 		expect(getSubscription(ref)).toBeUndefined();
 		const second = await call(h, "unsubscribe_pr_activity");
-		expect(second.content[0]?.text).toContain("Not subscribed");
+		expect(second.content[0]?.text).toContain("Already unsubscribed");
+		expect(second.details).toMatchObject({ released: false, done: false, alreadyReleased: true });
 	});
 
 	it("records a done release with its reason", async () => {
@@ -297,6 +298,50 @@ describe("subscribe_pr_activity", () => {
 		expect(result.content[0]?.text).toContain("Not subscribed");
 		expect(result.details).toMatchObject({ released: false });
 		expect(getRelease(ref)).toBeUndefined();
+	});
+
+	it("answers a done release after a merge ended the watch, instead of failing", async () => {
+		// The shape of the bug this guards: the merge ends the watch, then the agent
+		// calls done: true and used to get "Not subscribed" — or, with a registry
+		// left behind by an older module instance, a thrown TypeError.
+		const h = load();
+		await call(h, "subscribe_pr_activity");
+		const sub = getSubscription(ref);
+		if (!sub) throw new Error("expected a subscription");
+		if (sub.timer) clearTimeout(sub.timer);
+		sub.timer = undefined;
+		Object.assign(pull, { state: "closed", merged: true });
+		try {
+			await tick(sub, { cwd: "/tmp/project", basePollMs: 20_000, coalesceMs: 0, now: () => Date.now() });
+		} finally {
+			Object.assign(pull, { state: "open", merged: false });
+		}
+		expect(getSubscription(ref)).toBeUndefined();
+
+		const result = await call(h, "unsubscribe_pr_activity", { done: true, reason: "green, reviews addressed" });
+		expect(result.content[0]?.text).toContain("is no longer watched");
+		expect(result.content[0]?.text).toContain("merged");
+		expect(result.content[0]?.text).toContain("A done release was not recorded");
+		expect(result.details).toMatchObject({ released: false, done: false, alreadyReleased: true });
+		expect(getRelease(ref)).toMatchObject({ done: false, reason: "merged" });
+		expect(h.hookEvents.filter((event) => event.event === "PrReadyToMerge")).toEqual([]);
+	});
+
+	it("does not throw when the watch stopped but the release cannot be recorded", async () => {
+		const h = load();
+		await call(h, "subscribe_pr_activity");
+		// A registry the write cannot reach. The watch must still stop, and the
+		// result must say what did and did not happen — in the details too, which
+		// consumers forward as `tool_response.details`.
+		registry().releases = {} as never;
+		const result = await call(h, "unsubscribe_pr_activity", { done: true, reason: "green" });
+		expect(result.content[0]?.text).toContain("Unsubscribed from AutumnsGrove/pi-extensions#32");
+		expect(result.content[0]?.text).toContain("could not be recorded");
+		expect(result.details).toMatchObject({ released: false, done: false });
+		expect(result.details).not.toHaveProperty("reason");
+		expect(result.details).not.toHaveProperty("alreadyReleased");
+		expect(getSubscription(ref)).toBeUndefined();
+		expect(h.hookEvents).toEqual([]);
 	});
 
 	it("reports a done release to the hooks bus, and a plain one not at all", async () => {

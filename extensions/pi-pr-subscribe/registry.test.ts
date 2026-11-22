@@ -202,6 +202,16 @@ describe("releases", () => {
 		expect(capped.endsWith("…")).toBe(true);
 	});
 
+	it("heals a registry an older module instance left on globalThis", () => {
+		// A new session or a `/reload` re-evaluates this module but keeps the
+		// object under `Symbol.for(...)`, so the field can predate the code that
+		// reads it: `releases` arrived after the first release of the extension.
+		const state = registry() as { releases?: unknown };
+		delete state.releases;
+		expect(() => recordRelease(ref, { done: true, reason: "green" })).not.toThrow();
+		expect(getRelease(ref)).toMatchObject({ done: true, reason: "green" });
+	});
+
 	it("validates a persisted release", () => {
 		expect(isPersistedRelease({ ref, done: true, at: 1 })).toBe(true);
 		expect(isPersistedRelease({ ref, at: 1 })).toBe(false);
