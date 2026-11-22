@@ -92,8 +92,11 @@ Pi supplies `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`,
 `@earendil-works/pi-tui`, and `typebox` at runtime; they are declared as peer
 dependencies and never bundled. **pi 1.6.0 or newer is required**: the `blocked`
 option on `ctx.ui.custom` and other APIs several extensions use do not exist in
-1.5 or earlier, and `peerDependencies` now states that floor so an older host
-fails loudly instead of at the first typecheck (#51).
+1.5 or earlier. `peerDependencies` state that floor for anyone installing this
+package with their own package manager. Pi's own managed installs run pnpm with
+`--config.auto-install-peers=false --config.strict-peer-dependencies=false`, so
+the declaration documents the requirement rather than gating it: an older host
+surfaces as a typecheck failure here, not as a refusal to load (#51).
 
 ## Layout
 
