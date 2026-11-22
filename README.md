@@ -90,7 +90,10 @@ pi -e /path/to/pi-extensions
 
 Pi supplies `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`,
 `@earendil-works/pi-tui`, and `typebox` at runtime; they are declared as peer
-dependencies and never bundled.
+dependencies and never bundled. **pi 1.6.0 or newer is required**: the `blocked`
+option on `ctx.ui.custom` and other APIs several extensions use do not exist in
+1.5 or earlier, and `peerDependencies` now states that floor so an older host
+fails loudly instead of at the first typecheck (#51).
 
 ## Layout
 
