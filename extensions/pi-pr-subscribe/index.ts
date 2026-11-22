@@ -337,13 +337,17 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 		return { target: { ref: { owner: resolvedOwner, repo: resolvedRepo, number: resolvedNumber }, remotes } };
 	}
 
-	async function subscribe(ref: PrRef, cwd: string): Promise<{ text: string; blockedBy?: string }> {
+	async function subscribe(
+		ref: PrRef,
+		cwd: string
+	): Promise<{ text: string; subscribed: boolean; blockedBy?: string }> {
 		const existing = getSubscription(ref);
 		if (existing && !existing.ended) {
 			// An expired watch keeps its cursor, so this is a resume, not a new watch.
 			if (existing.expiredAt) return resume(ref, existing);
 			return {
 				text: `Already subscribed to ${prKey(ref)}${existing.blockedBy ? ` (another session is watching; this session is not receiving events)` : ""}.`,
+				subscribed: !existing.blockedBy,
 				...(existing.blockedBy ? { blockedBy: existing.blockedBy } : {}),
 			};
 		}
@@ -351,10 +355,11 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 		if (mine.length >= MAX_SUBSCRIPTIONS) {
 			return {
 				text: `Already watching ${MAX_SUBSCRIPTIONS} pull requests in this session. Unsubscribe one first with unsubscribe_pr_activity or /subscribe off <n>.`,
+				subscribed: false,
 			};
 		}
 		if (!(await hasGhAuth(exec, cwd))) {
-			return { text: `\`gh\` is not authenticated. ${AUTH_HINT}` };
+			return { text: `\`gh\` is not authenticated. ${AUTH_HINT}`, subscribed: false };
 		}
 
 		const api = apiFor(currentSessionId, { ...deps, cwd });
@@ -363,12 +368,15 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 			snapshot = await fetchSnapshot(api, ref);
 		} catch (error) {
 			const message = error instanceof GhApiError ? error.message : error instanceof Error ? error.message : String(error);
-			return { text: `Could not read ${prKey(ref)}: ${message}. Nothing was subscribed.` };
+			return { text: `Could not read ${prKey(ref)}: ${message}. Nothing was subscribed.`, subscribed: false };
 		}
 
 		if (snapshot.pull.state === "closed") {
 			const how = snapshot.pull.merged ? "merged" : "closed";
-			return { text: `${prKey(ref)} is already ${how}; there is nothing to watch. Nothing was subscribed.` };
+			return {
+				text: `${prKey(ref)} is already ${how}; there is nothing to watch. Nothing was subscribed.`,
+				subscribed: false,
+			};
 		}
 
 		let required: string[] | undefined;
@@ -410,19 +418,30 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 		paint();
 
 		const created = formatCreated({ ref, snapshot, required });
-		if (sub.blockedBy) return { text: `${created}\n\n${SECOND_SESSION_TEXT(ref, sub.blockedBy)}`, blockedBy: sub.blockedBy };
-		return { text: created };
+		if (sub.blockedBy) {
+			return {
+				text: `${created}\n\n${SECOND_SESSION_TEXT(ref, sub.blockedBy)}`,
+				subscribed: false,
+				blockedBy: sub.blockedBy,
+			};
+		}
+		return { text: created, subscribed: true };
 	}
 
 	/** Re-arm an expired watch. The cursor never left, so the first batch catches up. */
-	function resume(ref: PrRef, sub: Subscription): { text: string; blockedBy?: string } {
+	function resume(
+		ref: PrRef,
+		sub: Subscription
+	): { text: string; subscribed: boolean; blockedBy?: string } {
 		const lock = acquireLock(ref, currentSessionId);
 		if (!lock.ok) {
-			sub.blockedBy = `${lock.holder.sessionId || "another session"} (pid ${lock.holder.pid})`;
+			// It stays expired: no polling, no `blockedBy`, and no lock of ours to
+			// trip over on the next attempt. Only an explicit resume retries.
 			paint();
+			const holder = `${lock.holder.sessionId || "another session"} (pid ${lock.holder.pid})`;
 			return {
-				text: `${prKey(ref)} is expired here, and another session (${sub.blockedBy}) is watching it. This session will not receive events until that session stops.`,
-				blockedBy: sub.blockedBy,
+				text: `${prKey(ref)} is expired here, and ${holder} is watching it. Nothing will arrive until that session stops; run /subscribe ${ref.number} to try again.`,
+				subscribed: false,
 			};
 		}
 		sub.lock = lock.lock;
@@ -436,6 +455,7 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 		paint();
 		return {
 			text: `Resumed ${prKey(ref)}. Its cursor is intact, so the next delivery starts with "While you were away".`,
+			subscribed: true,
 		};
 	}
 
@@ -518,6 +538,9 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 	function retryBlocked(): void {
 		for (const sub of listSubscriptions(currentSessionId)) {
 			if (!sub.blockedBy) continue;
+			// An expired watch is re-armed only by `/subscribe <n>`, never by this
+			// loop: otherwise it polls again while still reporting "expired".
+			if (sub.expiredAt) continue;
 			const lock = acquireLock(sub.ref, currentSessionId);
 			if (!lock.ok) {
 				sub.blockedBy = `${lock.holder.sessionId || "another session"} (pid ${lock.holder.pid})`;
@@ -652,13 +675,13 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 				});
 			}
 			const { ref } = resolved.target;
-			const { text, blockedBy } = await subscribe(ref, ctx.cwd);
-			return toolResult(text, {
+			const result = await subscribe(ref, ctx.cwd);
+			return toolResult(result.text, {
 				owner: ref.owner,
 				repo: ref.repo,
 				number: ref.number,
-				subscribed: blockedBy === undefined,
-				...(blockedBy ? { blockedBy } : {}),
+				subscribed: result.subscribed,
+				...(result.blockedBy ? { blockedBy: result.blockedBy } : {}),
 			});
 		},
 	});
@@ -689,7 +712,8 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 				number: ref.number,
 				subscribed: false,
 				released: wasSubscribed,
-				done: params.done === true,
+				// Only a recorded release is a done release.
+				done: wasSubscribed && params.done === true,
 				...(params.reason ? { reason: params.reason } : {}),
 			});
 		},

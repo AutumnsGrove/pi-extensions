@@ -84,7 +84,9 @@ unsubscribe_pr_activity({ done: true, reason: "green, reviews addressed" })
 The release is recorded, shown in `/subscribe status` under **Released**, and a
 done release is what consumers (for example `pi-attention`) are told is
 ready-to-merge. A plain `unsubscribe_pr_activity` records `done: false`; a
-merge, a close, and an expiry are not done releases either. A human who comments
+merge, a close, and an expiry are not done releases either. A done release with
+nothing subscribed (the watch was already gone) records nothing and says so,
+rather than claiming a release it did not make. A human who comments
 after a release gets silence, which is the deliberate trade: the release is
 visible, and `/subscribe <n>` resumes with the usual catch-up.
 
@@ -170,7 +172,9 @@ a duplicated page, or a clock skew cannot double-fire one.
 - An expired subscription keeps its cursor and its line in `/subscribe`, but it
   does not poll and releases the lock, so another session (or a new one) can
   take the PR. It comes back only through `/subscribe <n>` or
-  `subscribe_pr_activity`.
+  `subscribe_pr_activity`. If that resume cannot take the lock (another session
+  is watching) it stays expired rather than polling while marked expired: run
+  the command again once the other session stops.
 
 ## Security
 

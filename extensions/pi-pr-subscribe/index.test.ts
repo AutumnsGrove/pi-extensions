@@ -7,7 +7,7 @@ import { initCursor } from "./diff.ts";
 import type { Exec } from "./gh.ts";
 import piPrSubscribe from "./index.ts";
 import { resetPollers } from "./poller.ts";
-import { getRelease, getSubscription, listSubscriptions, registry, releaseLock, resetRegistry } from "./registry.ts";
+import { getRelease, getSubscription, listSubscriptions, registry, releaseLock, resetRegistry, acquireLock } from "./registry.ts";
 import type { Snapshot } from "./snapshot.ts";
 
 const ref = { owner: "AutumnsGrove", repo: "pi-extensions", number: 32 };
@@ -263,6 +263,14 @@ describe("subscribe_pr_activity", () => {
 		expect(getRelease(ref)).toMatchObject({ done: false });
 	});
 
+	it("does not claim a done release it did not record", async () => {
+		const h = load();
+		const result = await call(h, "unsubscribe_pr_activity", { done: true, reason: "green" });
+		expect(result.content[0]?.text).toContain("Not subscribed");
+		expect(result.details).toMatchObject({ released: false, done: false });
+		expect(getRelease(ref)).toBeUndefined();
+	});
+
 	it("does not record a release for a PR it was not watching", async () => {
 		const h = load();
 		const result = await call(h, "unsubscribe_pr_activity");
@@ -307,6 +315,54 @@ describe("expiry", () => {
 		await h.emit("session_start", { type: "session_start", reason: "reload" });
 		expect(sub.paused).toBe(true);
 		expect(sub.timer).toBeUndefined();
+	});
+
+	it("does not re-arm an expired watch through the blocked retry loop", async () => {
+		const h = load();
+		await call(h, "subscribe_pr_activity");
+		const sub = getSubscription(ref);
+		if (!sub) throw new Error("expected a subscription");
+		if (sub.timer) clearTimeout(sub.timer);
+		sub.timer = undefined;
+		releaseLock(sub.lock);
+		sub.lock = undefined;
+		sub.expiredAt = Date.now();
+		sub.paused = true;
+		sub.blockedBy = "another session";
+		await h.emit("session_start", { type: "session_start", reason: "startup" });
+		// The UI ticker retries blocked subscriptions once a minute.
+		vi.advanceTimersByTime(120_000);
+		expect(sub.paused).toBe(true);
+		expect(sub.timer).toBeUndefined();
+		expect(sub.expiredAt).toBeDefined();
+		expect(sub.lock).toBeUndefined();
+	});
+
+	it("keeps an expired watch expired when a resume cannot take the lock", async () => {
+		const h = load();
+		await call(h, "subscribe_pr_activity");
+		const sub = getSubscription(ref);
+		if (!sub) throw new Error("expected a subscription");
+		if (sub.timer) clearTimeout(sub.timer);
+		sub.timer = undefined;
+		// Another live session holds the PR, so the resume cannot take it.
+		releaseLock(sub.lock);
+		sub.lock = undefined;
+		const held = acquireLock(ref, "session-2");
+		if (!held.ok) throw new Error("expected the other session to take the lock");
+		sub.expiredAt = Date.now();
+		sub.paused = true;
+
+		const resumed = await call(h, "subscribe_pr_activity");
+		expect(resumed.content[0]?.text).toContain("is expired here");
+		expect(resumed.content[0]?.text).toContain("run /subscribe 32 to try again");
+		expect(resumed.details).toMatchObject({ subscribed: false });
+		// Truthful state: still expired, not "blocked", and not polling.
+		expect(sub.expiredAt).toBeDefined();
+		expect(sub.blockedBy).toBeUndefined();
+		expect(sub.paused).toBe(true);
+		expect(sub.timer).toBeUndefined();
+		releaseLock(held.lock);
 	});
 
 	it("restores an expired watch without polling it", async () => {
