@@ -365,6 +365,11 @@ jobs:
           set -uo pipefail
           work="$RUNNER_TEMP/pi-review"
           mkdir -p "$work"
+          # Captured text still needs care before it is echoed: the runner finds
+          # `##[` anywhere in a line (`ActionCommand.TryParse` uses `IndexOf`),
+          # and finds `::` at the start of one after trimming leading whitespace,
+          # so indenting is not enough. Break both forms.
+          quiet() { sed -e 's/##\[/## [/g' -e 's/^\([[:space:]]*\)::/\1\\::/'; }
           # Metadata is diagnostic; never let it stop the review.
           if ! jq -n \
             --arg repo "$GITHUB_REPOSITORY" \
@@ -406,9 +411,15 @@ jobs:
           fi
           args+=(--thinking "$PI_REVIEW_THINKING")
 
+          # Nothing the agent prints goes to stdout. A review that reads an
+          # action's source legitimately prints literals like
+          # `core.info(\`##[add-matcher]${matchersPath}\`)`; the runner executed
+          # them as its own commands and a correct, posted review ended with a red
+          # X (#71). The stream is uploaded as an artifact, so the log below gets
+          # a summary rather than the transcript.
           set +e
-          pi "${args[@]}" "Review pull request #$PR_NUMBER." | tee "$PI_REVIEW_EVENTS"
-          status=${PIPESTATUS[0]}
+          pi "${args[@]}" "Review pull request #$PR_NUMBER." > "$PI_REVIEW_EVENTS" 2> "$work/stderr.log"
+          status=$?
           echo "PI_PI_EXIT=$status" >> "$GITHUB_ENV"
 
           last_event=$(tail -n 1 "$PI_REVIEW_EVENTS" 2>/dev/null | jq -r '.type // "unknown"' 2>/dev/null || true)
@@ -426,6 +437,29 @@ jobs:
             | last // {}
             | (.errorMessage // "")
           ' "$PI_REVIEW_EVENTS" 2>/dev/null | tr '\n' ' ' | cut -c1-500 || true)
+          # What the reviewer said, so a run reads in the log without opening
+          # the artifact. Neutralised, because it quotes the repository.
+          #
+          # Not the last message: `submit_review` terminates the run, so the last
+          # `message_end` is the tool call and usually carries no text at all.
+          # The last message that has text is the summary. Same rule as
+          # `summarizeEvents` in `extensions/pi-review/local.ts`.
+          answer=$(jq -Rrs '
+            split("\n")
+            | map(select(length > 0) | (fromjson? // empty))
+            | map(select(.type == "message_end" and .message.role == "assistant")
+                | ([.message.content[]? | select(.type == "text") | .text] | join("\n")))
+            | map(select(length > 0))
+            | last // ""
+          ' "$PI_REVIEW_EVENTS" 2>/dev/null || true)
+          if [ -n "$answer" ]; then
+            echo "Final answer from the review agent:"
+            printf '%s\n' "$answer" | quiet | cut -c1-1000 | head -n 40
+          fi
+          if [ -s "$work/stderr.log" ]; then
+            echo "pi wrote to stderr:"
+            quiet < "$work/stderr.log" | tail -n 40 | cut -c1-500
+          fi
           if jq --argjson exit "$status" \
             --arg lastEvent "$last_event" \
             --arg lastStopReason "$last_stop" \
