@@ -48,7 +48,7 @@ export const DEFAULT_EVENTS: Record<string, string | null> = {
 	PermissionRequest: "permission_request.wav",
 	Notification: "notification.wav",
 	"AttentionChanged:needs_you": "notification.wav",
-	"AttentionChanged:ready": "stop.wav",
+	"AttentionChanged:ready": "ready_to_merge.wav",
 	"AttentionChanged:idle": "response_end.wav",
 	"AttentionChanged:working": null,
 	"AttentionChanged:waiting": null,

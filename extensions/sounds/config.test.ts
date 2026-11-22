@@ -32,7 +32,7 @@ describe("normalizeSoundsConfig", () => {
 	it("maps the attention states, silently where they should be", () => {
 		const { config } = normalizeSoundsConfig({});
 		expect(soundForEvent(config, "AttentionChanged:needs_you")).toContain("notification.wav");
-		expect(soundForEvent(config, "AttentionChanged:ready")).toContain("stop.wav");
+		expect(soundForEvent(config, "AttentionChanged:ready")).toContain("ready_to_merge.wav");
 		expect(soundForEvent(config, "AttentionChanged:idle")).toContain("response_end.wav");
 		expect(soundForEvent(config, "AttentionChanged:waiting")).toBeUndefined();
 		expect(soundForEvent(config, "AttentionChanged:working")).toBeUndefined();

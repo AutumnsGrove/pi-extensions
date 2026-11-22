@@ -104,7 +104,7 @@ issue, along with the `notify` mapping.
 ## What sounds does with it
 
 When this extension is loaded, `sounds` stops playing `Stop`/`AgentSettled` and
-plays the state instead: `needs_you` gets a distinct cue, `ready` another,
+plays the state instead: `needs_you` gets a distinct cue, `ready` its own generated cue (`ready_to_merge.wav`),
 `idle` keeps the old finished sound, and `waiting`/`working` are silent. That is
 what turns the string of identical sounds into "this one is done" versus "this
 one was nothing". Set `sounds.attention: false` to keep the old double cue.

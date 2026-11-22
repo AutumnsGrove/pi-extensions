@@ -168,6 +168,15 @@ describe("attention states", () => {
 		expect(played).toEqual(["/sounds/notification.wav"]);
 	});
 
+	it("plays the dedicated ready-to-merge cue", async () => {
+		active();
+		const played: string[] = [];
+		const h = harness({ sounds: { directory: "/sounds" } }, { play: (file) => played.push(file), now: () => 0 });
+		await h.fire("session_start", { type: "session_start", reason: "startup" });
+		handlerFor(h, "AttentionChanged")?.({ hook_event_name: "AttentionChanged", state: "ready" });
+		expect(played).toEqual(["/sounds/ready_to_merge.wav"]);
+	});
+
 	it("stays silent while waiting and working", async () => {
 		active();
 		const played: string[] = [];

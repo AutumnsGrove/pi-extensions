@@ -56,7 +56,7 @@ name (`Classic`) or any path, and `events` overrides the mapping.
 | `PermissionRequest` | `permission_request.wav` |
 | `Notification` | `notification.wav` |
 | `AttentionChanged:needs_you` | `notification.wav` |
-| `AttentionChanged:ready` | `stop.wav` |
+| `AttentionChanged:ready` | `ready_to_merge.wav` |
 | `AttentionChanged:idle` | `response_end.wav` |
 | `AttentionChanged:working` | `(off)` |
 | `AttentionChanged:waiting` | `(off)` |
@@ -67,6 +67,12 @@ The suite lives in [`assets/Classic`](assets/Classic/) and comes from
 [`assets/LICENSE`](assets/LICENSE)). Subagent cues are omitted: pi has no
 subagents. Point `directory` at another folder (for example the `drift` suite
 from that repository) to swap the whole set.
+
+One file is not from that suite: `ready_to_merge.wav` is generated for this
+repository (three decaying bell notes, E5 → G5 → B5 at 0, 90 and 180 ms, each
+with a soft octave partial, 22050 Hz mono 16-bit, 0.62 s) and is covered by this
+repository's MIT license. It is the cue for a PR the agent deliberately released
+as done.
 
 ### Players
 
