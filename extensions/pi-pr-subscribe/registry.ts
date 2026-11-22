@@ -71,6 +71,11 @@ export interface Subscription {
 	flushTimer?: ReturnType<typeof setTimeout>;
 	pending: PrEvent[];
 	pendingLogs: Map<string, string>;
+	/**
+	 * Heads this batch proved are the session's own pushes, cleared when the
+	 * batch is delivered. Never persisted: it describes a wake, not a watch.
+	 */
+	ownHeads?: Set<string>;
 }
 
 export interface RegistryState {

@@ -30,8 +30,9 @@ export type PrWakePayload = {
 	eventTypes: string[];
 	/**
 	 * True only when the batch holds nothing that demands action: passing checks
-	 * and all-green settles, with no failures, comments or reviews, no head
-	 * update, and no subscription error. When in doubt, false.
+	 * and all-green settles, with no failures, comments or reviews, no
+	 * subscription error, and no head update except one already sitting on the
+	 * session's own branch tip. When in doubt, false.
 	 */
 	informational: boolean;
 	/** One short, human-readable line describing the batch, for classifiers. */
