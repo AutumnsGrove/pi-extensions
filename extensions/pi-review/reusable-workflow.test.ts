@@ -289,6 +289,40 @@ describe("the reusable workflow", () => {
 		expect(quiet("        ::error::nested").trimStart().startsWith("::")).toBe(false);
 	});
 
+	it("summarises the review with the last message that has text, not the tool call", () => {
+		// `submit_review` returns `terminate: true`, so the run ends on the
+		// message that calls it, which usually has no text block at all. Taking
+		// the last message rather than its last text would leave the log empty on
+		// exactly the success path the summary exists for.
+		const review = step("Review");
+		const program = (review.run ?? "").match(
+			/answer=\$\(jq -Rrs '([\s\S]*?)' "\$PI_REVIEW_EVENTS"/
+		)?.[1];
+		expect(program).toBeTruthy();
+
+		const events = [
+			{ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Reading the diff." }] } },
+			{ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Three findings, submitting." }] } },
+			// The submit_review call: a tool call and thinking, no text.
+			{
+				type: "message_end",
+				message: {
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: "Let me submit." },
+						{ type: "toolCall", name: "submit_review", arguments: {} },
+					],
+				},
+			},
+		];
+		const run = (lines: unknown[]) =>
+			execFileSync("jq", ["-Rrs", program as string], {
+				input: lines.map((line) => JSON.stringify(line)).join("\n") + "\n",
+				encoding: "utf8",
+			});
+		expect(run(events).trim()).toBe("Three findings, submitting.");
+	});
+
 	it("writes a patient retry policy into a throwaway agent directory", () => {
 		const settings = step("Read the settings");
 		expect(settings.run).toContain('agent_dir="$RUNNER_TEMP/pi-review/agent"');

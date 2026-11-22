@@ -439,12 +439,18 @@ jobs:
           ' "$PI_REVIEW_EVENTS" 2>/dev/null | tr '\n' ' ' | cut -c1-500 || true)
           # What the reviewer said, so a run reads in the log without opening
           # the artifact. Neutralised, because it quotes the repository.
+          #
+          # Not the last message: `submit_review` terminates the run, so the last
+          # `message_end` is the tool call and usually carries no text at all.
+          # The last message that has text is the summary. Same rule as
+          # `summarizeEvents` in `extensions/pi-review/local.ts`.
           answer=$(jq -Rrs '
             split("\n")
             | map(select(length > 0) | (fromjson? // empty))
-            | map(select(.type == "message_end" and .message.role == "assistant") | .message)
-            | last // {}
-            | [.content[]? | select(.type == "text") | .text] | join("\n")
+            | map(select(.type == "message_end" and .message.role == "assistant")
+                | ([.message.content[]? | select(.type == "text") | .text] | join("\n")))
+            | map(select(length > 0))
+            | last // ""
           ' "$PI_REVIEW_EVENTS" 2>/dev/null || true)
           if [ -n "$answer" ]; then
             echo "Final answer from the review agent:"
