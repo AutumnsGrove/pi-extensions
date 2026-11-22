@@ -198,6 +198,13 @@ describe("formatBatch", () => {
 		expect(text).toContain('<pr-activity event="subscription.error">');
 		expect(text).toContain("bad token");
 	});
+
+	it("renders an expiry notice with the resume hint", () => {
+		const text = formatBatch({ ref, events: [{ type: "subscription.expired", quietMs: 6 * 60 * 60_000 }] });
+		expect(text).toContain('<pr-activity event="subscription.expired">');
+		expect(text).toContain("No activity for 6 hours");
+		expect(text).toContain("/subscribe <n>");
+	});
 });
 
 describe("widget and lists", () => {
@@ -247,6 +254,28 @@ describe("widget and lists", () => {
 		expect(status).toContain("head 4381b74");
 		expect(status).toContain("seen 3 comments, 1 review");
 		expect(status).toContain("pid 42");
+	});
+
+	it("describes an expired watch and offers the resume", () => {
+		const list = formatList([{ ref, state: "open", expiredAt: Date.now() - 60_000 }]);
+		expect(list).toContain("expired 1m");
+		expect(list).toContain("/subscribe 32 resumes it");
+		expect(formatWidgetLine({ ref, state: "open", checks: [], expiredAt: Date.now() })).toContain("◌ PR #32");
+	});
+
+	it("shows a recorded release in status", () => {
+		const status = formatStatus(
+			[],
+			Date.now(),
+			[
+				{ ref, done: true, reason: "green, reviews addressed", at: Date.now() - 60_000 },
+				{ ref: { ...ref, number: 33 }, done: false, at: Date.now() - 120_000 },
+			]
+		);
+		expect(status).toContain("Nothing is subscribed.");
+		expect(status).toContain("Released:");
+		expect(status).toContain("AutumnsGrove/pi-extensions#32 — done 1m — green, reviews addressed");
+		expect(status).toContain("AutumnsGrove/pi-extensions#33 — released 2m");
 	});
 
 	it("reminds a compacted session what it is watching", () => {

@@ -49,6 +49,13 @@ export function tailLog(text: string, lines = MAX_LOG_LINES): string {
 const plural = (count: number, one: string, many = `${one}s`): string =>
 	`${count} ${count === 1 ? one : many}`;
 
+/** "45 minutes" / "6 hours" from a quiet duration. */
+const hoursLabel = (ms: number): string => {
+	const minutes = Math.max(1, Math.round(ms / 60_000));
+	if (minutes < 120) return `${minutes} minutes`;
+	return `${Math.round(minutes / 60)} hours`;
+};
+
 const checksLine = (summary: CheckSummary): string => {
 	const parts = [`${summary.done}/${summary.total} done`];
 	if (summary.failed > 0) parts.push(`${summary.failed} failed`);
@@ -158,6 +165,8 @@ function eventBody(event: PrEvent, logTails: Map<string, string> | undefined): s
 			return `Pull request #${event.number} closed without merging. The subscription has ended.`;
 		case "subscription.error":
 			return `The poller is failing (${event.kind}): ${neutralize(event.message)}`;
+		case "subscription.expired":
+			return `No activity for ${hoursLabel(event.quietMs)}, so the watch has stopped. The cursor is kept: \`/subscribe <n>\` resumes it with a "While you were away" catch-up.`;
 	}
 }
 
@@ -170,6 +179,7 @@ const EVENT_TAGS: Record<PrEvent["type"], string> = {
 	"pr.merged": "pr.merged",
 	"pr.closed": "pr.closed",
 	"subscription.error": "subscription.error",
+	"subscription.expired": "subscription.expired",
 };
 
 /** One delivery: a header, one envelope per event, and the untrusted-data note. */
@@ -247,13 +257,19 @@ export interface WidgetState {
 	lastEvent?: string;
 	lastEventAt?: number;
 	error?: string;
+	/** Set while the watch is paused after a long silence. */
+	expiredAt?: number;
 }
 
 /** `◉ PR #51  checks 3/5 ✗ 1  · last: review by pi-review[bot] 2m` */
 export function formatWidgetLine(state: WidgetState, now = Date.now()): string {
 	const summary = checkSummary(state.checks);
-	const glyph = state.state === "closed" ? "○" : "◉";
+	const glyph = state.expiredAt ? "◌" : state.state === "closed" ? "○" : "◉";
 	const parts = [`${glyph} PR #${state.ref.number}`];
+	if (state.expiredAt) {
+		parts.push(`expired ${relativeTime(state.expiredAt, now)}`);
+		return parts.join("  ·  ");
+	}
 	if (summary.total > 0) {
 		parts.push(`checks ${summary.done}/${summary.total}`);
 		if (summary.failed > 0) parts.push(`✗ ${summary.failed}`);
@@ -277,6 +293,15 @@ export interface ListEntry {
 	lastEventAt?: number;
 	nextPollInMs?: number;
 	error?: string;
+	expiredAt?: number;
+}
+
+/** A release the extension recorded, for `/subscribe status`. */
+export interface ReleaseEntry {
+	ref: PrRef;
+	done: boolean;
+	reason?: string;
+	at: number;
 }
 
 function nextPollText(ms: number | undefined): string {
@@ -303,6 +328,9 @@ export function formatList(entries: ListEntry[], now = Date.now()): string {
 		}
 		const next = nextPollText(entry.nextPollInMs);
 		if (next) bits.push(next);
+		if (entry.expiredAt) {
+			bits.push(`expired ${relativeTime(entry.expiredAt, now)} — /subscribe ${entry.ref.number} resumes it`);
+		}
 		if (entry.error) bits.push(`⚠ ${entry.error}`);
 		lines.push(`  ${bits.join(" · ")}`);
 	}
@@ -321,15 +349,16 @@ export function formatStatus(
 			lock?: { pid: number; sessionId: string; heartbeatAt: number; foreign: boolean };
 		}
 	>,
-	now = Date.now()
+	now = Date.now(),
+	releases: ReleaseEntry[] = []
 ): string {
-	if (entries.length === 0) return "Nothing is subscribed.";
+	if (entries.length === 0 && releases.length === 0) return "Nothing is subscribed.";
 	const blocks = entries.map((entry) => {
 		const summary = entry.checks ? checkSummary(entry.checks) : undefined;
 		const lock = entry.lock;
 		return [
 			`${entry.ref.owner}/${entry.ref.repo}#${entry.ref.number}${entry.title ? ` — ${entry.title}` : ""}`,
-			`  state ${entry.state}${entry.headSha ? ` · head ${shortSha(entry.headSha)}` : ""}`,
+			`  state ${entry.state}${entry.headSha ? ` · head ${shortSha(entry.headSha)}` : ""}${entry.expiredAt ? ` · expired ${relativeTime(entry.expiredAt, now)}` : ""}`,
 			summary ? `  checks ${checksLine(summary)}` : "  checks none yet",
 			entry.required?.length ? `  required ${entry.required.join(", ")}` : "  required list not readable",
 			`  seen ${plural(entry.commentsSeen ?? 0, "comment")}, ${plural(entry.reviewsSeen ?? 0, "review")}`,
@@ -337,13 +366,24 @@ export function formatStatus(
 				? `  last event ${entry.lastEvent}${entry.lastEventAt ? ` (${relativeTime(entry.lastEventAt, now)})` : ""}`
 				: "  no events yet",
 			nextPollText(entry.nextPollInMs) ? `  ${nextPollText(entry.nextPollInMs)}` : "",
+			entry.expiredAt ? `  no polling after a long silence; /subscribe ${entry.ref.number} resumes with a catch-up` : "",
 			entry.error ? `  error ${entry.lastErrorKind ?? "unknown"}: ${entry.error}` : "",
 			lock ? `  watch ${lock.foreign ? "held by another session" : "held here"} (pid ${lock.pid}, ${lock.sessionId || "no session"})` : "",
 		]
 			.filter(Boolean)
 			.join("\n");
 	});
-	return blocks.join("\n\n");
+	const body = blocks.length > 0 ? blocks.join("\n\n") : "Nothing is subscribed.";
+	if (releases.length === 0) return body;
+	const lines = ["", "Released:"];
+	for (const release of releases) {
+		const label = `${release.ref.owner}/${release.ref.repo}#${release.ref.number}`;
+		const why = release.reason ? ` — ${release.reason}` : "";
+		lines.push(
+			`  ${label} — ${release.done ? "done" : "released"} ${relativeTime(release.at, now)}${why}`
+		);
+	}
+	return `${body}\n${lines.join("\n")}`;
 }
 
 /** Hidden reminder after a compaction, so the boundary does not hide the watch. */

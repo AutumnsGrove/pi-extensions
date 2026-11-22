@@ -7,7 +7,7 @@ import { initCursor } from "./diff.ts";
 import type { Exec } from "./gh.ts";
 import piPrSubscribe from "./index.ts";
 import { resetPollers } from "./poller.ts";
-import { getSubscription, listSubscriptions, registry, resetRegistry } from "./registry.ts";
+import { getRelease, getSubscription, listSubscriptions, registry, releaseLock, resetRegistry } from "./registry.ts";
 import type { Snapshot } from "./snapshot.ts";
 
 const ref = { owner: "AutumnsGrove", repo: "pi-extensions", number: 32 };
@@ -233,6 +233,111 @@ describe("subscribe_pr_activity", () => {
 		expect(getSubscription(ref)).toBeUndefined();
 		const second = await call(h, "unsubscribe_pr_activity");
 		expect(second.content[0]?.text).toContain("Not subscribed");
+	});
+
+	it("records a done release with its reason", async () => {
+		const h = load();
+		await call(h, "subscribe_pr_activity");
+		const result = await call(h, "unsubscribe_pr_activity", {
+			done: true,
+			reason: "green,  reviews   addressed",
+		});
+		expect(result.content[0]?.text).toContain("Released AutumnsGrove/pi-extensions#32 as done");
+		expect(result.content[0]?.text).toContain("green, reviews addressed");
+		expect(result.details).toMatchObject({ released: true, done: true });
+		const release = getRelease(ref);
+		expect(release).toMatchObject({ done: true, reason: "green, reviews addressed" });
+
+		const command = h.commands.get("subscribe");
+		if (!command) throw new Error("missing command");
+		await command.handler("status", h.ctx);
+		expect(h.notifications.at(-1)).toContain("AutumnsGrove/pi-extensions#32 — done");
+		expect(h.notifications.at(-1)).toContain("green, reviews addressed");
+	});
+
+	it("records a plain unsubscribe as not done", async () => {
+		const h = load();
+		await call(h, "subscribe_pr_activity");
+		const result = await call(h, "unsubscribe_pr_activity");
+		expect(result.details).toMatchObject({ released: true, done: false });
+		expect(getRelease(ref)).toMatchObject({ done: false });
+	});
+
+	it("does not record a release for a PR it was not watching", async () => {
+		const h = load();
+		const result = await call(h, "unsubscribe_pr_activity");
+		expect(result.content[0]?.text).toContain("Not subscribed");
+		expect(result.details).toMatchObject({ released: false });
+		expect(getRelease(ref)).toBeUndefined();
+	});
+});
+
+describe("expiry", () => {
+	it("keeps an expired watch paused and resumes it with a catch-up", async () => {
+		const h = load();
+		await call(h, "subscribe_pr_activity");
+		const sub = getSubscription(ref);
+		if (!sub) throw new Error("expected a subscription");
+		sub.expiredAt = Date.now();
+		sub.catchUp = false;
+		if (sub.timer) clearTimeout(sub.timer);
+		sub.timer = undefined;
+		sub.paused = true;
+		// Expiry releases the lock, as `expire()` does.
+		releaseLock(sub.lock);
+		sub.lock = undefined;
+
+		const resumed = await call(h, "subscribe_pr_activity");
+		expect(resumed.content[0]?.text).toContain("Resumed AutumnsGrove/pi-extensions#32");
+		expect(sub.expiredAt).toBeUndefined();
+		expect(sub.catchUp).toBe(true);
+		expect(sub.paused).toBe(false);
+		expect(sub.timer).toBeDefined();
+	});
+
+	it("leaves an expired watch alone on reload", async () => {
+		const h = load();
+		await call(h, "subscribe_pr_activity");
+		const sub = getSubscription(ref);
+		if (!sub) throw new Error("expected a subscription");
+		if (sub.timer) clearTimeout(sub.timer);
+		sub.timer = undefined;
+		sub.expiredAt = Date.now();
+		sub.paused = true;
+		await h.emit("session_start", { type: "session_start", reason: "reload" });
+		expect(sub.paused).toBe(true);
+		expect(sub.timer).toBeUndefined();
+	});
+
+	it("restores an expired watch without polling it", async () => {
+		const cursor = initCursor(new FakeGh().snapshot());
+		const h = load({
+			entries: [
+				{
+					type: "custom",
+					customType: "pi-pr-subscribe",
+					data: {
+						subscriptions: [
+							{
+								owner: "AutumnsGrove",
+								repo: "pi-extensions",
+								number: 32,
+								cursor,
+								cwd: "/tmp/project",
+								sessionId: "session-1",
+								createdAt: 1,
+								expiredAt: 2,
+							},
+						],
+					},
+				},
+			],
+		});
+		await h.emit("session_start", { type: "session_start", reason: "startup" });
+		const sub = getSubscription(ref);
+		expect(sub?.expiredAt).toBe(2);
+		expect(sub?.timer).toBeUndefined();
+		expect(sub?.lock).toBeUndefined();
 	});
 });
 
