@@ -58,6 +58,8 @@ export interface Subscription {
 	notifiedErrors: ErrorKind[];
 	/** First poll after a resume reports "while you were away". */
 	catchUp: boolean;
+	/** Set when the subscription expired after a long silence. Kept so it can resume. */
+	expiredAt?: number;
 	lock?: LockInfo;
 	/** True once the lock is held by another session. */
 	blockedBy?: string;
@@ -72,6 +74,8 @@ export interface Subscription {
 
 export interface RegistryState {
 	subs: Map<string, Subscription>;
+	/** Last deliberate release per PR, so a done release is visible afterwards. */
+	releases: Map<string, ReleaseInfo>;
 	/** Batches held while a `pi-q-n-a` form is open. */
 	deferred: string[];
 	/** Set by the extension on every session start, so a reload can swap it. */
@@ -88,6 +92,7 @@ export function registry(): RegistryState {
 	const holder = globalThis as typeof globalThis & { [REGISTRY_KEY]?: RegistryState };
 	holder[REGISTRY_KEY] ??= {
 		subs: new Map(),
+		releases: new Map(),
 		deferred: [],
 		deliver: undefined,
 		exec: undefined,
@@ -102,6 +107,7 @@ export function registry(): RegistryState {
 export function resetRegistry(): void {
 	const state = registry();
 	state.subs.clear();
+	state.releases.clear();
 	state.deferred.length = 0;
 	state.deliver = undefined;
 	state.exec = undefined;
@@ -129,6 +135,56 @@ export function removeSubscription(ref: PrRef): void {
 }
 
 // ---------------------------------------------------------------------------
+// Deliberate releases
+// ---------------------------------------------------------------------------
+
+/**
+ * Why a subscription ended on purpose.
+ *
+ * `done` is the agent's own verdict that the PR is finished; `false` covers a
+ * plain unsubscribe, a merge, a close, and an expiry. Keeping the record after
+ * the subscription is gone is what makes a deliberate release visible in
+ * `/subscribe status` and distinguishable from a stray one.
+ */
+export interface ReleaseInfo {
+	ref: PrRef;
+	done: boolean;
+	reason?: string;
+	at: number;
+}
+
+export const MAX_RELEASE_REASON = 300;
+
+export function normalizeReleaseReason(reason: string | undefined): string | undefined {
+	if (typeof reason !== "string") return undefined;
+	const collapsed = reason.replace(/\s+/g, " ").trim();
+	if (!collapsed) return undefined;
+	return collapsed.length > MAX_RELEASE_REASON
+		? `${collapsed.slice(0, MAX_RELEASE_REASON - 1)}…`
+		: collapsed;
+}
+
+export function recordRelease(ref: PrRef, info: { done: boolean; reason?: string; at?: number }): ReleaseInfo {
+	const reason = normalizeReleaseReason(info.reason);
+	const release: ReleaseInfo = {
+		ref,
+		done: info.done,
+		...(reason ? { reason } : {}),
+		at: info.at ?? Date.now(),
+	};
+	registry().releases.set(prKey(ref), release);
+	return release;
+}
+
+export function getRelease(ref: PrRef): ReleaseInfo | undefined {
+	return registry().releases.get(prKey(ref));
+}
+
+export function listReleases(): ReleaseInfo[] {
+	return [...registry().releases.values()].sort((a, b) => b.at - a.at);
+}
+
+// ---------------------------------------------------------------------------
 // Persistence
 // ---------------------------------------------------------------------------
 
@@ -141,6 +197,8 @@ export interface PersistedSubscription {
 	cwd: string;
 	sessionId: string;
 	createdAt: number;
+	/** An expired subscription keeps its cursor but does not poll until resumed. */
+	expiredAt?: number;
 }
 
 /** Serializable state for `pi.appendEntry`. Pending events are not persisted. */
@@ -154,7 +212,23 @@ export function persistedSubscriptions(sessionId?: string): PersistedSubscriptio
 		cwd: sub.cwd,
 		sessionId: sub.sessionId,
 		createdAt: sub.createdAt,
+		...(sub.expiredAt ? { expiredAt: sub.expiredAt } : {}),
 	}));
+}
+
+export function isPersistedRelease(value: unknown): value is ReleaseInfo {
+	if (typeof value !== "object" || value === null) return false;
+	const record = value as Record<string, unknown>;
+	const ref = record.ref as Record<string, unknown> | undefined;
+	return (
+		typeof ref === "object" &&
+		ref !== null &&
+		typeof ref.owner === "string" &&
+		typeof ref.repo === "string" &&
+		typeof ref.number === "number" &&
+		typeof record.done === "boolean" &&
+		typeof record.at === "number"
+	);
 }
 
 export function isPersistedSubscription(value: unknown): value is PersistedSubscription {
@@ -183,6 +257,7 @@ export function subscriptionFromPersisted(
 		state: value.cursor.state,
 		...(value.required ? { required: value.required } : {}),
 		createdAt: value.createdAt ?? Date.now(),
+		...(value.expiredAt ? { expiredAt: value.expiredAt } : {}),
 		consecutiveErrors: 0,
 		notifiedErrors: [],
 		catchUp: true,

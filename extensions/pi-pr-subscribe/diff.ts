@@ -81,7 +81,9 @@ export type PrEvent =
 	| { type: "head.updated"; from?: string; to: string }
 	| { type: "pr.merged"; number: number; url?: string }
 	| { type: "pr.closed"; number: number; url?: string }
-	| { type: "subscription.error"; kind: ErrorKind; message: string };
+	| { type: "subscription.error"; kind: ErrorKind; message: string }
+	/** The watch was stopped after a long silence. The cursor survives for a resume. */
+	| { type: "subscription.expired"; quietMs: number };
 
 export type ErrorKind = "auth" | "not-found" | "rate-limit" | "server" | "network" | "unknown";
 

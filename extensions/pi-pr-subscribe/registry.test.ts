@@ -5,13 +5,19 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { initCursor } from "./diff.ts";
 import {
 	LOCK_STALE_MS,
+	MAX_RELEASE_REASON,
 	acquireLock,
+	getRelease,
 	isLockStale,
+	isPersistedRelease,
 	isPersistedSubscription,
+	listReleases,
 	listSubscriptions,
 	lockPath,
+	normalizeReleaseReason,
 	persistedSubscriptions,
 	readLock,
+	recordRelease,
 	registry,
 	releaseLock,
 	resetRegistry,
@@ -159,5 +165,47 @@ describe("registry", () => {
 		expect(isPersistedSubscription({ owner: "o", repo: "r", number: 1 })).toBe(false);
 		expect(isPersistedSubscription({ owner: "o", repo: "r", number: 1, cursor: {} })).toBe(false);
 		expect(isPersistedSubscription(null)).toBe(false);
+	});
+
+	it("keeps an expiry timestamp through persist and restore", () => {
+		registry().subs.set("a", { ...sub(), expiredAt: 99 });
+		const persisted = persistedSubscriptions("session-1");
+		expect(persisted[0]?.expiredAt).toBe(99);
+		expect(subscriptionFromPersisted(persisted[0]!, "session-1").expiredAt).toBe(99);
+	});
+});
+
+describe("releases", () => {
+	it("records a done release with a collapsed, capped reason", () => {
+		const release = recordRelease(ref, { done: true, reason: `  green,   reviews\naddressed  ` });
+		expect(release).toMatchObject({ done: true, reason: "green, reviews addressed" });
+		expect(getRelease(ref)).toEqual(release);
+		expect(listReleases()).toHaveLength(1);
+	});
+
+	it("records a plain unsubscribe as not done, and keeps both per PR", () => {
+		recordRelease(ref, { done: true, reason: "done", at: 2 });
+		const later = recordRelease(ref, { done: false, at: 3 });
+		expect(getRelease(ref)).toBe(later);
+		expect(getRelease(ref)?.reason).toBeUndefined();
+		const other = recordRelease({ ...ref, number: 33 }, { done: false, at: 1 });
+		expect(listReleases().map((release) => release.ref.number)).toEqual([32, 33]);
+		expect(other.done).toBe(false);
+	});
+
+	it("normalizes whitespace, empty, and long reasons", () => {
+		expect(normalizeReleaseReason(undefined)).toBeUndefined();
+		expect(normalizeReleaseReason("   \n ")).toBeUndefined();
+		const long = "x".repeat(MAX_RELEASE_REASON + 50);
+		const capped = normalizeReleaseReason(long) ?? "";
+		expect(capped).toHaveLength(MAX_RELEASE_REASON);
+		expect(capped.endsWith("…")).toBe(true);
+	});
+
+	it("validates a persisted release", () => {
+		expect(isPersistedRelease({ ref, done: true, at: 1 })).toBe(true);
+		expect(isPersistedRelease({ ref, at: 1 })).toBe(false);
+		expect(isPersistedRelease({ ref, done: true })).toBe(false);
+		expect(isPersistedRelease(null)).toBe(false);
 	});
 });

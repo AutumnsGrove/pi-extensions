@@ -51,6 +51,18 @@ export const ACTIVE_AFTER_MS = 10 * 60_000;
 export const QUIET_AFTER_MS = 60 * 60_000;
 export const MAX_POLL_MS = 300_000;
 export const MAX_LOG_FETCHES = 3;
+/**
+ * A subscription that sees nothing for this long ends itself, so an agent that
+ * forgets to release cannot hold a paid runner up forever. The cursor is kept,
+ * and `/subscribe <n>` resumes it with the usual catch-up.
+ */
+export const DEFAULT_EXPIRY_MS = 6 * 60 * 60_000;
+
+/** `PI_PR_EXPIRY_HOURS` overrides the quiet window; silence or garbage keeps the default. */
+export function expiryMs(env: NodeJS.ProcessEnv = process.env): number {
+	const hours = Number(env.PI_PR_EXPIRY_HOURS);
+	return Number.isFinite(hours) && hours > 0 ? hours * 60 * 60_000 : DEFAULT_EXPIRY_MS;
+}
 
 const FAILED = new Set(["failure", "timed_out", "cancelled", "action_required", "startup_failure", "error"]);
 
@@ -59,6 +71,8 @@ export interface PollerDeps {
 	cwd: string;
 	basePollMs?: number;
 	coalesceMs?: number;
+	/** Quiet window before the subscription expires. Defaults to six hours. */
+	expiryMs?: number;
 	now?: () => number;
 	/** Injected in tests; production uses `fetchJobLog`. */
 	logTail?: (jobId: string) => Promise<string | undefined>;
@@ -186,6 +200,26 @@ export async function tick(sub: Subscription, deps: PollerDeps): Promise<void> {
 
 async function pollOnce(sub: Subscription, deps: PollerDeps): Promise<void> {
 	const at = now(deps);
+	// Expiry is checked before the read: a silent PR should stop costing `gh`
+	// calls, and the notice is the last thing this subscription delivers.
+	const quiet = at - (sub.lastEventAt ?? sub.createdAt);
+	const limit = deps.expiryMs ?? DEFAULT_EXPIRY_MS;
+	if (limit > 0 && quiet >= limit) {
+		if (sub.lock) {
+			// A silent subscription still holds the PR. Tell the truth if the lock
+			// moved: the notice is worth delivering, the timer is not.
+			if (!touchLock(sub.lock, at)) {
+				sub.lock = undefined;
+				sub.blockedBy = "another session (the lock was taken over)";
+				pausePoller(sub);
+				paint(deps);
+				return;
+			}
+		}
+		queueEvents(sub, [{ type: "subscription.expired", quietMs: quiet }], deps);
+		expire(sub, deps, quiet);
+		return;
+	}
 	const api = apiFor(sub.sessionId, deps);
 	let snapshot: Snapshot;
 	try {
@@ -315,6 +349,8 @@ export function describeEvent(event: PrEvent | undefined): string | undefined {
 			return "closed";
 		case "subscription.error":
 			return `error (${event.kind})`;
+		case "subscription.expired":
+			return "expired (no activity)";
 	}
 }
 
@@ -397,4 +433,30 @@ function end(sub: Subscription, deps: PollerDeps): void {
 	removeSubscription(sub.ref);
 	registry().persist?.();
 	paint(deps);
+}
+
+/**
+ * Stop polling after a long silence but keep the subscription and its cursor.
+ * It leaves the lock, because it is no longer watching and another session
+ * (plus the user) should be free to take the PR.
+ */
+function expire(sub: Subscription, deps: PollerDeps, quietMs: number): void {
+	const at = now(deps);
+	sub.expiredAt = at;
+	if (sub.lock) releaseLock(sub.lock);
+	sub.lock = undefined;
+	sub.blockedBy = undefined;
+	queueEventsFlush(sub, deps);
+	pausePoller(sub);
+	sub.lastEvent = `expired after ${Math.round(quietMs / 60_000)} minutes of quiet`;
+	sub.lastEventAt = at;
+	registry().persist?.();
+	paint(deps);
+}
+
+/** Deliver what the expiry notice queued, without waiting for the coalesce window. */
+function queueEventsFlush(sub: Subscription, deps: PollerDeps): void {
+	if (sub.flushTimer) clearTimeout(sub.flushTimer);
+	sub.flushTimer = undefined;
+	if (sub.pending.length > 0) flush(sub, deps);
 }

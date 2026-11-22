@@ -7,7 +7,9 @@ import {
 	ACTIVE_AFTER_MS,
 	COALESCE_MS,
 	DEFAULT_BASE_POLL_MS,
+	DEFAULT_EXPIRY_MS,
 	describeEvent,
+	expiryMs,
 	pollInterval,
 	resetPollers,
 	startPoller,
@@ -324,6 +326,63 @@ describe("polling", () => {
 		expect(h.delivered).toEqual([]);
 		expect(registry().deferred).toHaveLength(1);
 		blocked = false;
+	});
+});
+
+describe("expiry", () => {
+	it("expires after the quiet window, delivers a notice, and stops polling", async () => {
+		const h = setup({ lock: true });
+		h.sub.createdAt = Date.now() - (DEFAULT_EXPIRY_MS + 60_000);
+		await tick(h.sub, h.deps);
+
+		expect(h.delivered).toHaveLength(1);
+		expect(h.delivered[0]).toContain('event="subscription.expired"');
+		expect(h.delivered[0]).toContain("/subscribe");
+		expect(h.sub.expiredAt).toBeDefined();
+		expect(h.sub.paused).toBe(true);
+		expect(h.sub.timer).toBeUndefined();
+		// It is no longer watching, so it does not hold the PR.
+		expect(h.sub.lock).toBeUndefined();
+		// The cursor survives for the resume.
+		expect(getSubscription(ref)).toBeDefined();
+		expect(h.sub.cursor.headSha).toBe("aaa");
+	});
+
+	it("does not expire inside the window, or when the PR just spoke", async () => {
+		const h = setup();
+		h.sub.createdAt = Date.now() - (DEFAULT_EXPIRY_MS - 60_000);
+		await tick(h.sub, h.deps);
+		expect(h.sub.expiredAt).toBeUndefined();
+
+		const old = setup();
+		old.sub.createdAt = Date.now() - (DEFAULT_EXPIRY_MS + 60_000);
+		old.sub.lastEventAt = Date.now() - 60_000;
+		await tick(old.sub, old.deps);
+		expect(old.sub.expiredAt).toBeUndefined();
+	});
+
+	it("honors PI_PR_EXPIRY_HOURS", () => {
+		expect(expiryMs({})).toBe(DEFAULT_EXPIRY_MS);
+		expect(expiryMs({ PI_PR_EXPIRY_HOURS: "2" })).toBe(2 * 60 * 60_000);
+		expect(expiryMs({ PI_PR_EXPIRY_HOURS: "nope" })).toBe(DEFAULT_EXPIRY_MS);
+		expect(expiryMs({ PI_PR_EXPIRY_HOURS: "0" })).toBe(DEFAULT_EXPIRY_MS);
+	});
+
+	it("resumes from the kept cursor after expiry", async () => {
+		const h = setup();
+		h.sub.createdAt = Date.now() - (DEFAULT_EXPIRY_MS + 60_000);
+		await tick(h.sub, h.deps);
+		expect(h.sub.expiredAt).toBeDefined();
+
+		// What `/subscribe <n>` does: clear the expiry, set catch-up, poll again.
+		h.sub.expiredAt = undefined;
+		h.sub.catchUp = true;
+		h.server.issueComments = [{ id: 10, body: "missed it", created_at: "2026-11-15T21:00:00Z" }];
+		startPoller(h.sub, h.deps);
+		await tick(h.sub, h.deps);
+		vi.advanceTimersByTime(COALESCE_MS);
+		expect(h.delivered.at(-1)).toContain("While you were away");
+		expect(h.delivered.at(-1)).toContain("missed it");
 	});
 });
 
