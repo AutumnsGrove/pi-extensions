@@ -55,6 +55,11 @@ name (`Classic`) or any path, and `events` overrides the mapping.
 | `PreCompact` | `precompact_warning.wav` |
 | `PermissionRequest` | `permission_request.wav` |
 | `Notification` | `notification.wav` |
+| `AttentionChanged:needs_you` | `notification.wav` |
+| `AttentionChanged:ready` | `stop.wav` |
+| `AttentionChanged:idle` | `response_end.wav` |
+| `AttentionChanged:working` | `(off)` |
+| `AttentionChanged:waiting` | `(off)` |
 
 Event names are the hooks engine's names, so Claude's vocabulary works as-is.
 The suite lives in [`assets/Classic`](assets/Classic/) and comes from
@@ -73,6 +78,26 @@ on Windows. `player` overrides it, and any custom player is called as
 Playback is detached and never blocks a run. A missing file or player is
 ignored. The same file will not play twice within `debounceMs`, which keeps a
 parallel tool batch from firing the completion sound repeatedly.
+
+## Attention takeover
+
+When [`pi-attention`](../pi-attention/) is loaded it decides, after a turn
+settles, whether that turn needed you — which the hooks engine cannot know. So
+it takes over the settle cue: `Stop` and `AgentSettled` stop playing, and the
+`AttentionChanged:<state>` mapping is what you hear. A passing-CI wake that
+needed nothing is `waiting`, which is silent, so the string of identical
+"finished" sounds goes away; `needs_you` and `ready` get distinct cues.
+
+`idle` (an ordinary turn) keeps `response_end.wav`, so nothing changes for
+sessions without attention. Set `attention: false` to keep the old double cue
+even when `pi-attention` is loaded.
+
+```json
+{ "sounds": { "attention": true } }
+```
+
+The takeover is keyed on a flag `pi-attention` sets when it loads, so it works
+regardless of which extension loads first, and stops when attention is disabled.
 
 ## Permission cue
 

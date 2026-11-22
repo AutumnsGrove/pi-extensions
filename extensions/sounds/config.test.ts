@@ -24,8 +24,23 @@ describe("normalizeSoundsConfig", () => {
 		const { config, warnings } = normalizeSoundsConfig(undefined);
 		expect(warnings).toEqual([]);
 		expect(config.enabled).toBe(true);
+		expect(config.attention).toBe(true);
 		expect(config.events.PreToolUse).toBe("tool_start.wav");
 		expect(config.debounceMs).toBe(150);
+	});
+
+	it("maps the attention states, silently where they should be", () => {
+		const { config } = normalizeSoundsConfig({});
+		expect(soundForEvent(config, "AttentionChanged:needs_you")).toContain("notification.wav");
+		expect(soundForEvent(config, "AttentionChanged:ready")).toContain("stop.wav");
+		expect(soundForEvent(config, "AttentionChanged:idle")).toContain("response_end.wav");
+		expect(soundForEvent(config, "AttentionChanged:waiting")).toBeUndefined();
+		expect(soundForEvent(config, "AttentionChanged:working")).toBeUndefined();
+	});
+
+	it("lets attention own the settle cue, or not", () => {
+		expect(normalizeSoundsConfig({}).config.attention).toBe(true);
+		expect(normalizeSoundsConfig({ attention: false }).config.attention).toBe(false);
 	});
 
 	it("merges event overrides and disables with null", () => {

@@ -11,44 +11,23 @@
  * `ask` carrying `error`; the reviewer factory decides whether to fall back.
  */
 
-import type { Api, ClassifierApi, ClassifierModel, JsonObject, Model } from "@earendil-works/pi-ai";
+import type { Api, JsonObject, Model } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ReviewerConfig } from "../types.ts";
 import type { ReviewState, Verdict } from "../types.ts";
 import {
+	resolveClassifier,
+	withTimeout,
+	type Classifier,
+} from "../../_shared/classifier.ts";
+import {
 	reviewStateForModel,
 	verdictError,
-	withTimeout,
 	type VerdictProvider,
 } from "./provider.ts";
 
-type Classifier = ClassifierModel<ClassifierApi>;
-
-export function resolveClassifier(
-	ctx: ExtensionContext,
-	spec: string | undefined,
-): Classifier | undefined {
-	const trimmed = spec?.trim();
-	if (trimmed) {
-		const slash = trimmed.indexOf("/");
-		if (slash > 0) {
-			const found = ctx.modelRegistry.findOfType(
-				"classifier",
-				trimmed.slice(0, slash),
-				trimmed.slice(slash + 1),
-			);
-			if (found) return found;
-		} else {
-			const models = ctx.modelRegistry.getModelsOfType("classifier");
-			const exact = models.find((model) => model.id === trimmed);
-			if (exact) return exact;
-			const suffixed = models.find((model) => model.id.endsWith(`/${trimmed}`));
-			if (suffixed) return suffixed;
-		}
-	}
-	const models = ctx.modelRegistry.getModelsOfType("classifier");
-	return models.find((model) => model.provider === "openrouter") ?? models[0];
-}
+// Kept as a re-export so callers and tests import one place.
+export { resolveClassifier };
 
 export function jevQuestions() {
 	return {

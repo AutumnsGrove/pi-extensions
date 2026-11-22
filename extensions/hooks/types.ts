@@ -67,6 +67,7 @@ export const HOOK_EVENTS = [
 	// Emitted by another extension through `pi-hooks:emit`
 	"PrWake",
 	"PrReadyToMerge",
+	"AttentionChanged",
 ] as const;
 
 export type HookEventName = (typeof HOOK_EVENTS)[number];
@@ -103,6 +104,7 @@ export const SUPPORTED_EVENTS: readonly HookEventName[] = [
 	// External producers, through `pi-hooks:emit`. Observe-only.
 	"PrWake",
 	"PrReadyToMerge",
+	"AttentionChanged",
 ];
 
 export type HookHandlerType = "command" | "http" | "prompt" | "agent";

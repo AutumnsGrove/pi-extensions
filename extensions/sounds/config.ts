@@ -4,6 +4,11 @@
  * Lives under `"sounds"` in `settings.json`. Each entry maps a hook event to a
  * file; a bare filename is resolved against `directory`, and `null` disables
  * that event. The defaults match the ClaudeCodeSounds suites.
+ *
+ * `AttentionChanged:<state>` keys map the states `pi-attention` publishes. When
+ * that extension is loaded it owns the settle cue, so `Stop` and `AgentSettled`
+ * stop playing and the state is what you hear; `waiting` and `working` are
+ * silent, so a passing-CI wake that needed nothing makes no noise at all.
  */
 
 import { homedir } from "node:os";
@@ -22,9 +27,14 @@ export interface SoundsConfig {
 	debounceMs: number;
 	/** Event name → filename, or `null` to stay silent. */
 	events: Record<string, string | null>;
+	/**
+	 * Let `pi-attention` own the settle cue: skip `Stop`/`AgentSettled` when it is
+	 * loaded. On by default; off restores the old double cue.
+	 */
+	attention: boolean;
 }
 
-export const DEFAULT_EVENTS: Record<string, string> = {
+export const DEFAULT_EVENTS: Record<string, string | null> = {
 	SessionStart: "session_start.wav",
 	SessionEnd: "session_end.wav",
 	UserPromptSubmit: "prompt_submit.wav",
@@ -37,6 +47,11 @@ export const DEFAULT_EVENTS: Record<string, string> = {
 	PreCompact: "precompact_warning.wav",
 	PermissionRequest: "permission_request.wav",
 	Notification: "notification.wav",
+	"AttentionChanged:needs_you": "notification.wav",
+	"AttentionChanged:ready": "stop.wav",
+	"AttentionChanged:idle": "response_end.wav",
+	"AttentionChanged:working": null,
+	"AttentionChanged:waiting": null,
 };
 
 export const DEFAULT_SOUNDS: SoundsConfig = {
@@ -45,6 +60,7 @@ export const DEFAULT_SOUNDS: SoundsConfig = {
 	volume: 0.7,
 	debounceMs: 150,
 	events: { ...DEFAULT_EVENTS },
+	attention: true,
 };
 
 /** Sound suites shipped with the extension, resolved relative to this file. */
@@ -97,6 +113,7 @@ export function normalizeSoundsConfig(raw: unknown, source = "settings.json"): L
 	if (typeof value.debounceMs === "number" && value.debounceMs >= 0) {
 		config.debounceMs = value.debounceMs;
 	}
+	if (typeof value.attention === "boolean") config.attention = value.attention;
 	if (value.events !== undefined) {
 		if (value.events && typeof value.events === "object" && !Array.isArray(value.events)) {
 			for (const [event, file] of Object.entries(value.events as Record<string, unknown>)) {
@@ -141,6 +158,7 @@ export function describeSounds(config: SoundsConfig): string[] {
 		`Sounds: ${config.enabled ? "on" : "off"}`,
 		`Directory: ${resolveDirectory(config.directory)}`,
 		`Player: ${config.player ?? "autodetect"} · volume ${config.volume.toFixed(2)} · debounce ${config.debounceMs}ms`,
+		`Attention owns the settle cue: ${config.attention ? "on" : "off"}`,
 	];
 	for (const [event, file] of Object.entries(config.events)) {
 		lines.push(`  ${event}: ${file ?? "(off)"}`);
