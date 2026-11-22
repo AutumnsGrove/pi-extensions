@@ -57,6 +57,9 @@ export interface TurnFacts {
 
 export interface VerdictRecord {
 	at: number;
+	/** Session the decision belongs to, so its transcript can be found again. */
+	session?: string;
+	cwd?: string;
 	state: AttentionState;
 	source: AttentionUpdate["source"];
 	reason: string;
@@ -65,6 +68,8 @@ export interface VerdictRecord {
 	answers?: Record<string, unknown>;
 	durationMs?: number;
 	error?: string;
+	/** The thresholds in force, so a later comparison knows what produced this. */
+	thresholds?: { needsYouAt: number; nothingToDoAt: number };
 	/** Compact inputs, so a verdict can be replayed. */
 	input: {
 		pull?: string;

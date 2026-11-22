@@ -273,6 +273,10 @@ describe("the decision model", () => {
 			lastText: "Checked the logs; all fine.",
 			toolCalls: 1,
 		});
+		// Traceable back to the transcript, with the thresholds that produced it.
+		expect(verdict?.session).toBe("session-1");
+		expect(verdict?.cwd).toBe("/tmp/project");
+		expect(verdict?.thresholds).toEqual({ needsYouAt: 0.5, nothingToDoAt: 0.85 });
 	});
 
 	it("needs you when the model reports something", async () => {
@@ -410,6 +414,55 @@ describe("the decision model", () => {
 		await fresh.settle();
 		expect(states(fresh).at(-1)).toBe("needs_you");
 		expect(String(fresh.hookEvents.at(-1)?.input.reason)).toBe("the attention check failed");
+	});
+
+	it("drops a decision that resolves after the session changed", async () => {
+		const logs: VerdictRecord[] = [];
+		let resolveDecide: ((result: unknown) => void) | undefined;
+		const h = await load({
+			deps: {
+				log: (record) => logs.push(record),
+				decide: () =>
+					new Promise((resolve) => {
+						resolveDecide = resolve as (result: unknown) => void;
+					}),
+			},
+		});
+		await h.handler("session_start")?.({ type: "session_start", reason: "startup" }, h.ctx);
+		h.emit("pi-hooks:emit", wake(true));
+		await h.handler("agent_start")?.({ type: "agent_start" }, h.ctx);
+		await h.handler("tool_call")?.({ toolName: "bash" }, h.ctx);
+		await h.handler("agent_settled")?.({ type: "agent_settled", aborted: false }, h.ctx);
+
+		// `/new`: the next session must not inherit this one's answer or log line.
+		const secondSession = {
+			...h.ctx,
+			cwd: "/tmp/other",
+			sessionManager: { getSessionId: () => "session-2", getSessionFile: () => undefined },
+		} as unknown as ExtensionContext;
+		await h.handler("session_shutdown")?.({ type: "session_shutdown", reason: "new" }, h.ctx);
+		await h.handler("session_start")?.({ type: "session_start", reason: "new" }, secondSession);
+
+		resolveDecide?.({
+			ok: true,
+			model: "m",
+			durationMs: 5,
+			answers: {
+				needs_you: { type: "bool", probability: 0.9 },
+				outcome: {
+					type: "choice",
+					choice: "reported",
+					probabilities: { nothing_to_do: 0.05, reported: 0.9, blocked: 0.05 },
+					confidence: 0.9,
+				},
+			},
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(states(h)).toEqual(["working"]);
+		// The answer was dropped: no `needs_you` in the new session, and no line
+		// from the old turn relabelled with the new session's id.
+		expect(logs.every((record) => record.session === "session-1")).toBe(true);
+		expect(logs.some((record) => record.state === "needs_you")).toBe(false);
 	});
 
 	it("does not call a model when the rules already decided", async () => {
