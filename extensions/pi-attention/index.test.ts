@@ -113,6 +113,30 @@ describe("session lifecycle", () => {
 		expect(attentionActive()).toBe(true);
 	});
 
+	it("does not announce itself while disabled, so sounds keeps its cue", async () => {
+		const h = await load({ settings: settings({ enabled: false }) });
+		await h.handler("session_start")?.({ type: "session_start", reason: "startup" }, h.ctx);
+		expect(attentionActive()).toBe(false);
+	});
+
+	it("re-syncs the announcement through /attention reload and off", async () => {
+		const settingsValue = settings();
+		const h = await load({ settings: settingsValue });
+		await h.handler("session_start")?.({ type: "session_start", reason: "startup" }, h.ctx);
+		expect(attentionActive()).toBe(true);
+
+		(settingsValue.attention as Record<string, unknown>).enabled = false;
+		await h.commands.get("attention")?.("reload", h.ctx);
+		expect(attentionActive()).toBe(false);
+
+		(settingsValue.attention as Record<string, unknown>).enabled = true;
+		await h.commands.get("attention")?.("reload", h.ctx);
+		expect(attentionActive()).toBe(true);
+
+		await h.commands.get("attention")?.("off", h.ctx);
+		expect(attentionActive()).toBe(false);
+	});
+
 	it("withdraws the announcement on quit but not on reload", async () => {
 		const h = await load();
 		await h.handler("session_start")?.({ type: "session_start", reason: "startup" }, h.ctx);
@@ -296,6 +320,52 @@ describe("the decision model", () => {
 		expect(last?.input.state).toBe("needs_you");
 		expect(String(last?.input.reason)).toContain("b: no auth");
 		expect(logs.at(-1)?.error).toContain("timed out");
+	});
+
+	it("drops a decision whose turn was replaced while the model was thinking", async () => {
+		let resolveDecide: ((result: unknown) => void) | undefined;
+		const h = await load({
+			deps: {
+				log: () => undefined,
+				decide: () =>
+					new Promise((resolve) => {
+						resolveDecide = resolve as (result: unknown) => void;
+					}),
+			},
+		});
+		await h.handler("session_start")?.({ type: "session_start", reason: "startup" }, h.ctx);
+
+		// An informational wake with work: the model is asked and hangs.
+		h.emit("pi-hooks:emit", wake(true));
+		await h.handler("agent_start")?.({ type: "agent_start" }, h.ctx);
+		await h.handler("tool_call")?.({ toolName: "bash" }, h.ctx);
+		await h.handler("agent_settled")?.({ type: "agent_settled", aborted: false }, h.ctx);
+		expect(states(h)).toEqual(["working"]);
+
+		// Steered: a wake that needs you starts the next turn before it resolves.
+		h.emit("pi-hooks:emit", wake(false));
+		await h.handler("agent_start")?.({ type: "agent_start" }, h.ctx);
+		await h.settle();
+		// The second turn's `working` is not a new state for a consumer.
+		expect(states(h)).toEqual(["working", "needs_you"]);
+
+		// The stale answer must not overwrite `needs_you` or clear the new facts.
+		resolveDecide?.({
+			ok: true,
+			model: "m",
+			durationMs: 5,
+			answers: {
+				needs_you: { type: "bool", probability: 0.99 },
+				outcome: {
+					type: "choice",
+					choice: "nothing_to_do",
+					probabilities: { nothing_to_do: 0.99 },
+					confidence: 0.99,
+				},
+			},
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(states(h)).toEqual(["working", "needs_you"]);
 	});
 
 	it("does not call a model when the rules already decided", async () => {

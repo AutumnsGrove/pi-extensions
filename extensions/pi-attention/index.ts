@@ -85,6 +85,12 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 	let last: AttentionUpdate | undefined;
 	let ctxRef: ExtensionContext | undefined;
 	let facts = freshFacts();
+	/**
+	 * Bumped whenever the facts change under an in-flight decision: a new turn,
+	 * a steered wake, a release, a prompt. A settle that resolves after its turn
+	 * is gone must not publish over the next turn or reset its facts.
+	 */
+	let generation = 0;
 
 	const reload = (): void => {
 		try {
@@ -94,12 +100,25 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 		}
 	};
 
-	const refLabel = (): string => {
-		const wake = facts.wake?.payload;
+	/**
+	 * Keep the flag `sounds` reads in step with the configuration. Announcing
+	 * while disabled would suppress the settle cue with nothing to replace it.
+	 */
+	const syncOwnership = (): void => {
+		if (config().enabled) announceAttention(pi);
+		else retractAttention();
+	};
+
+	const refLabel = (turn: TurnFacts): string => {
+		const wake = turn.wake?.payload;
 		return wake ? `${wake.owner}/${wake.repo}#${wake.pullNumber}` : "no pull request";
 	};
 
-	function publish(update: AttentionUpdate, record: Partial<VerdictRecord> = {}): void {
+	function publish(
+		update: AttentionUpdate,
+		record: Partial<VerdictRecord> = {},
+		turn: TurnFacts = facts,
+	): void {
 		if (!config().enabled) return;
 		const same = isSameUpdate(last, update);
 		last = update;
@@ -112,16 +131,16 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 				...(update.confidence !== undefined ? { confidence: update.confidence } : {}),
 				...record,
 				input: {
-					...(facts.wake
+					...(turn.wake
 						? {
-								pull: refLabel(),
-								informational: facts.wake.payload.informational,
-								eventTypes: facts.wake.payload.eventTypes,
-								wakeSummary: facts.wake.payload.summary,
+								pull: refLabel(turn),
+								informational: turn.wake.payload.informational,
+								eventTypes: turn.wake.payload.eventTypes,
+								wakeSummary: turn.wake.payload.summary,
 							}
 						: {}),
-					...(facts.lastText ? { lastText: facts.lastText } : {}),
-					toolCalls: facts.toolCalls,
+					...(turn.lastText ? { lastText: turn.lastText } : {}),
+					toolCalls: turn.toolCalls,
 				},
 			});
 		}
@@ -135,9 +154,9 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 		});
 	}
 
-	const runModel = async (): Promise<DecideResult> => {
+	const runModel = async (turn: TurnFacts): Promise<DecideResult> => {
 		const request: DecideRequest = {
-			state: attentionState(facts, refLabel()),
+			state: attentionState(turn, refLabel(turn)),
 			questions: attentionQuestions(),
 		};
 		if (deps.decide) return deps.decide(request);
@@ -150,30 +169,42 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 
 	/** Decide the state for the turn that just settled. Never throws, never blocks. */
 	async function settle(): Promise<void> {
+		const turn = generation;
+		const settling = facts;
+		/** Only clear the facts if this turn still owns them. */
+		const finish = (): void => {
+			if (generation === turn) facts = freshFacts();
+		};
 		if (!config().enabled) {
-			facts = freshFacts();
+			finish();
 			return;
 		}
-		const settling = facts;
 		const rules = decideRules(settling);
 		if (rules.kind === "decided") {
-			publish(rules.update);
-			facts = freshFacts();
+			publish(rules.update, {}, settling);
+			finish();
 			return;
 		}
 		// `models: []` means rules only. Without a model the ambiguous middle
 		// cannot be settled, and the safe answer is to ask rather than go quiet.
 		if (config().models.length === 0) {
-			publish({
-				state: "needs_you",
-				source: "model",
-				reason: "ambiguous wake, and no decision model is configured",
-			});
-			facts = freshFacts();
+			publish(
+				{
+					state: "needs_you",
+					source: "model",
+					reason: "ambiguous wake, and no decision model is configured",
+				},
+				{},
+				settling,
+			);
+			finish();
 			return;
 		}
 
-		const result = await runModel();
+		const result = await runModel(settling);
+		// A new turn started while the model was thinking. Its facts are the
+		// truth now, and this answer belongs to a turn that no longer exists.
+		if (generation !== turn) return;
 		let update: AttentionUpdate;
 		const record: Partial<VerdictRecord> = { model: result.ok ? result.model : undefined, durationMs: result.durationMs };
 		if (!result.ok) {
@@ -189,9 +220,8 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 			record.answers = result.answers;
 			if (!interpreted) record.error = "missing answer";
 		}
-		// The facts belong to the turn that was decided, so publish before resetting.
-		publish(update, record);
-		facts = freshFacts();
+		publish(update, record, settling);
+		finish();
 	}
 
 	// ---------------------------------------------------------------------
@@ -203,11 +233,13 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 		if (data.event === "PrWake") {
 			// The delivery starts a turn, and `agent_start` announces that. Only the
 			// facts are recorded here, so the state is not reported twice.
+			generation += 1;
 			facts.wake = { payload: data.input as unknown as PrWakePayload, receivedAt: now() };
 			return;
 		}
 		if (data.event === "PrReadyToMerge") {
 			const payload = data.input as unknown as PrReadyToMergePayload;
+			generation += 1;
 			facts.released = true;
 			facts.releaseReason = payload.reason;
 			publish({
@@ -225,7 +257,7 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 		if (ctx.hasUI && ctx.mode === "tui") {
 			for (const warning of loaded.warnings) ctx.ui.notify(warning, "warning");
 		}
-		announceAttention(pi);
+		syncOwnership();
 	});
 
 	pi.on("session_shutdown", (event) => {
@@ -237,6 +269,7 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 
 	pi.on("agent_start", (_event, ctx) => {
 		ctxRef = ctx;
+		generation += 1;
 		// Reset the per-turn counters, keeping the wake that caused this turn and a
 		// release that arrived during it.
 		facts = {
@@ -257,6 +290,7 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 	});
 
 	pi.on("ui_prompt_start", () => {
+		generation += 1;
 		facts.prompted = true;
 		publish({ state: "needs_you", source: "signal", reason: "a prompt is open" });
 	});
@@ -267,6 +301,7 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 	});
 
 	pi.events.on("pi-permissions:prompt", () => {
+		generation += 1;
 		facts.prompted = true;
 		publish({ state: "needs_you", source: "signal", reason: "a permission prompt is open" });
 	});
@@ -301,13 +336,13 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 			}
 			if (sub === "on" || sub === "off") {
 				loaded.config.enabled = sub === "on";
-				if (sub === "on") announceAttention(pi);
-				else retractAttention();
+				syncOwnership();
 				ctx.ui.notify(`Attention ${sub}.`, "info");
 				return;
 			}
 			if (sub === "reload") {
 				reload();
+				syncOwnership();
 				ctx.ui.notify(
 					`Reloaded attention settings${loaded.warnings.length ? ` with ${loaded.warnings.length} warning(s)` : ""}.`,
 					loaded.warnings.length ? "warning" : "info",

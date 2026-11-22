@@ -113,7 +113,15 @@ one was nothing". Set `sounds.attention: false` to keep the old double cue.
 
 `pi-attention` announces itself (`pi-attention:ready` plus a flag in
 `globalThis`) so `sounds` can hand over the settle cue no matter which extension
-loads first, and withdraws the announcement when it is turned off or quits.
+loads first. The announcement follows the configuration: it is made only while
+`enabled` is true, re-synced on `/attention reload`, withdrawn by `/attention
+off`, and withdrawn on quit. Announcing while disabled would take the settle cue
+away with nothing to replace it.
+
+A decision that is still in flight when the next turn starts is dropped rather
+than published: its turn no longer exists, and its answer would overwrite the
+new turn's state and log the wrong inputs. That is the event-ordering risk the
+issue names, handled with a turn counter instead of an assumption about order.
 
 ## Files
 
