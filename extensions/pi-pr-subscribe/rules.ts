@@ -49,4 +49,5 @@ export const SUBSCRIBE_GUIDELINES = [
 export const UNSUBSCRIBE_GUIDELINES = [
 	"Use `unsubscribe_pr_activity` to stop wakeups for a pull request; it is idempotent.",
 	"Pass `done: true` with a short `reason` only when the PR is genuinely finished by the criteria in the subscription rules; that release is recorded and reported to consumers as ready-to-merge. A plain unsubscribe, a merge, a close, or an expiry is not a done release.",
+	"A merge or a close has already ended the watch, so `done: true` after one records nothing; the result says so. Do not retry it.",
 ];

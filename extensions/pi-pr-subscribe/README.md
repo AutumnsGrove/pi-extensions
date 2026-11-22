@@ -83,12 +83,23 @@ unsubscribe_pr_activity({ done: true, reason: "green, reviews addressed" })
 
 The release is recorded, shown in `/subscribe status` under **Released**, and a
 done release is what consumers (for example `pi-attention`) are told is
-ready-to-merge. A plain `unsubscribe_pr_activity` records `done: false`; a
-merge, a close, and an expiry are not done releases either. A done release with
-nothing subscribed (the watch was already gone) records nothing and says so,
-rather than claiming a release it did not make. A human who comments
-after a release gets silence, which is the deliberate trade: the release is
-visible, and `/subscribe <n>` resumes with the usual catch-up.
+ready-to-merge. A plain `unsubscribe_pr_activity` records `done: false`.
+
+A merge or a close ends the watch by itself — rule 9 — and that release is
+recorded too, as `done: false` with `merged` or `closed` as its reason. So a
+`done: true` call after a merge (for example when the agent merged from the CLI
+before the poller saw it) records nothing and answers with the truth instead of
+claiming a release it did not make:
+
+```
+AutumnsGrove/Harbor#26 is no longer watched: released 2m (merged), not as done.
+A done release was not recorded.
+```
+
+That honesty matters because the done release is the signal to consumers: a
+release recorded after the merge cannot fire `PrReadyToMerge` retroactively. A
+human who comments after a release gets silence, which is the deliberate trade:
+the release is visible, and `/subscribe <n>` resumes with the usual catch-up.
 
 ### Expiry
 
@@ -151,6 +162,12 @@ a duplicated page, or a clock skew cannot double-fire one.
   that. The same applies to the `in-flight` guard, which treats a
   poll older than two minutes as abandoned, and every request carries its own
   local timeout for the case where `pi.exec` never settles.
+  A new session re-evaluates this module while keeping that object, so a registry
+  installed by an older build is **repaired on read**: `registry()` fills in any
+  map or array a previous version did not have. Without that, a field added after
+  the process started (`releases` was the first) is undefined on the object the
+  new code gets, and writing to it throws inside a tool that has already stopped
+  the watch.
 - A comment is skipped only when its id is already recorded. The session's own
   comments get there by watching the `bash` results it already produces: a
   successful `gh pr comment`, `gh pr review`, or `gh api …/comments` prints a URL

@@ -56,11 +56,12 @@ import {
 	type RepoRef,
 } from "./github.ts";
 import { apiFor, expiryMs, startPoller, stopPoller, type PollerDeps } from "./poller.ts";
-import { prKey, parsePrSpec, type PrRef } from "./ref.ts";
+import { prKey, parsePrSpec, relativeTime, type PrRef } from "./ref.ts";
 import {
 	MAX_SUBSCRIPTIONS,
 	acquireLock,
 	addSubscription,
+	getRelease,
 	getSubscription,
 	listReleases,
 	listSubscriptions,
@@ -69,11 +70,11 @@ import {
 	registry,
 	releaseLock,
 	removeSubscription,
-	resetRegistry,
 	isPersistedRelease,
 	isPersistedSubscription,
 	subscriptionFromPersisted,
 	type PersistedSubscription,
+	type ReleaseInfo,
 	type Subscription,
 } from "./registry.ts";
 import { SUBSCRIBE_GUIDELINES, UNSUBSCRIBE_GUIDELINES } from "./rules.ts";
@@ -126,6 +127,8 @@ interface SubscribeDetails {
 	/** Set on a released subscription: whether it was a recorded done release. */
 	released?: boolean;
 	done?: boolean;
+	/** True when an earlier release already explains why this PR is not watched. */
+	alreadyReleased?: boolean;
 }
 
 interface UnsubscribeOptions {
@@ -466,11 +469,21 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 
 	function unsubscribe(ref: PrRef, options: UnsubscribeOptions = {}): string {
 		const sub = getSubscription(ref);
-		if (!sub || sub.ended) return `Not subscribed to ${prKey(ref)}.`;
+		if (!sub || sub.ended) return releaseNote(ref);
 		stopPoller(sub);
 		releaseLock(sub.lock);
 		removeSubscription(ref);
-		const release = recordRelease(ref, { done: options.done === true, reason: options.reason });
+		let release: ReleaseInfo;
+		try {
+			release = recordRelease(ref, { done: options.done === true, reason: options.reason });
+		} catch (error) {
+			// The watch is already stopped, so throwing here would report a failure
+			// and leave the caller to guess what was recorded. Say what happened.
+			persist();
+			paint();
+			const why = error instanceof Error ? error.message : String(error);
+			return `Unsubscribed from ${prKey(ref)}, but the release could not be recorded (${why}). No more events will arrive for it.`;
+		}
 		persist();
 		paint();
 		if (release.done) {
@@ -478,6 +491,26 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 			return `Released ${prKey(ref)} as done${release.reason ? ` — ${release.reason}` : ""}. No more events will arrive for it.`;
 		}
 		return `Unsubscribed from ${prKey(ref)}. No more events will arrive for it.`;
+	}
+
+	/**
+	 * Why a PR is not being watched, when a recorded release explains it.
+	 *
+	 * A merge or a close ends the watch by itself, and a done release stays on
+	 * record, so a bare "Not subscribed" would be untrue — and after a merge it
+	 * hid the fact that no done release could be recorded at all.
+	 */
+	function releaseNote(ref: PrRef): string {
+		const release = getRelease(ref);
+		if (!release) return `Not subscribed to ${prKey(ref)}.`;
+		const when = relativeTime(release.at);
+		if (release.done) {
+			const why = release.reason ? ` — ${release.reason}` : "";
+			return `${prKey(ref)} was already released as done ${when}${why}. Nothing changed.`;
+		}
+		const why = release.reason ? ` (${release.reason})` : "";
+		if (!release.reason) return `Already unsubscribed from ${prKey(ref)} ${when}. Nothing changed.`;
+		return `${prKey(ref)} is no longer watched: released ${when}${why}, not as done. A done release was not recorded.`;
 	}
 
 	// ---------------------------------------------------------------------
@@ -723,6 +756,7 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 				// Only a recorded release is a done release.
 				done: wasSubscribed && params.done === true,
 				...(params.reason ? { reason: params.reason } : {}),
+				...(!wasSubscribed && getRelease(ref) ? { alreadyReleased: true } : {}),
 			});
 		},
 	});
