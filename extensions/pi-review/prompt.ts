@@ -12,6 +12,7 @@
 
 import { type GuidanceFile, type ReviewTarget } from "./context.ts";
 import { RESOLVE_REQUIRES_CONTENTS_WRITE } from "./github/threads.ts";
+import { sanitizeDiff, sanitizeUntrusted } from "./sanitize.ts";
 import type { ReviewStrictness } from "./settings.ts";
 import { parseDiff, summarizeDiff } from "./diff.ts";
 
@@ -28,6 +29,17 @@ export const GUIDANCE_BUDGET_CHARS = 32_000;
  * untrusted text. Everything else is left byte-for-byte.
  */
 const FENCE_TAG = /<\s*\/?\s*(pi-review-context|pull-request-description|changed-files|review-guidance|previous-review-summary|diff)\b[^>]*>/gi;
+
+/**
+ * Everything the pull request wrote, made visible to a human reader first:
+ * hidden comments, invisible characters, alt text and attributes removed, then
+ * our own fence tags escaped. Sanitising cannot undo the escaping because it
+ * runs first, and entity decoding happens inside it, so a decoded `<` is still
+ * escaped by the step that follows.
+ */
+function untrusted(text: string): string {
+	return neutralizeFences(sanitizeUntrusted(text));
+}
 
 export function neutralizeFences(text: string): string {
 	return text.replace(FENCE_TAG, (match) => match.replace("<", "&lt;"));
@@ -123,10 +135,10 @@ function describeTarget(target: ReviewTarget): string {
 	lines.push(`Repository: ${repo}`);
 	if (target.number) {
 		const author = target.author ? ` by ${target.author}` : "";
-		const title = neutralizeFences(target.title.trim()) || "(untitled)";
+		const title = untrusted(target.title.trim()) || "(untitled)";
 		lines.push(`Pull request: #${target.number} "${title}"${author}`);
 	} else {
-		lines.push(`Change: ${neutralizeFences(target.title.trim()) || "(local branch)"}`);
+		lines.push(`Change: ${untrusted(target.title.trim()) || "(local branch)"}`);
 	}
 	lines.push(`Base: ${target.baseRef}${target.baseSha ? ` (${target.baseSha.slice(0, 12)})` : ""}`);
 	if (target.headSha) lines.push(`Head: ${target.headSha.slice(0, 12)}`);
@@ -147,9 +159,12 @@ export function buildReviewPrompt(
 	const diffBudget = options.diffBudget ?? DIFF_BUDGET_CHARS;
 	const guidanceBudget = options.guidanceBudget ?? GUIDANCE_BUDGET_CHARS;
 	const parsed = parseDiff(target.diff);
-	const { text: diff, truncated } = truncate(neutralizeFences(target.diff), diffBudget);
+	const { text: diff, truncated } = truncate(
+		neutralizeFences(sanitizeDiff(target.diff)),
+		diffBudget
+	);
 
-	const body = neutralizeFences(target.body.trim());
+	const body = untrusted(target.body.trim());
 	const bodyBlock = body
 		? `\n<pull-request-description>\n${truncate(body, 8_000).text}\n</pull-request-description>\n`
 		: "";
@@ -159,7 +174,7 @@ export function buildReviewPrompt(
 		: "";
 
 	const previousReview = target.previousReviewSummary
-		? `\n<previous-review-summary>\n${truncate(neutralizeFences(target.previousReviewSummary), 6_000).text}\n</previous-review-summary>\n`
+		? `\n<previous-review-summary>\n${truncate(untrusted(target.previousReviewSummary), 6_000).text}\n</previous-review-summary>\n`
 		: "";
 
 	const openThreads = options.openThreads ?? [];
@@ -167,7 +182,7 @@ export function buildReviewPrompt(
 		openThreads.length > 0
 			? `\n<open-review-threads>\n${openThreads
 					.map((thread) => {
-						const body = neutralizeFences(thread.body).replace(/\s+/g, " ").trim().slice(0, 200);
+						const body = untrusted(thread.body).replace(/\s+/g, " ").trim().slice(0, 200);
 						const where = `${thread.path}${thread.line === undefined ? "" : `:${thread.line}`}`;
 						return `- id: \`${thread.id}\` · \`${where}\` · ${body}`;
 					})
@@ -182,7 +197,7 @@ export function buildReviewPrompt(
 				: `\n\nThe context lists open bot review threads. Check each listing against the diff so a finding is not repeated, but do not call resolve_review_threads: ${RESOLVE_REQUIRES_CONTENTS_WRITE}. Leave them open, and do not claim in the summary that a thread was resolved.`
 			: "";
 	const requestBlock = options.request
-		? `\n<maintainer-request>\n${truncate(neutralizeFences(options.request), 4_000).text}\n</maintainer-request>\n`
+		? `\n<maintainer-request>\n${truncate(untrusted(options.request), 4_000).text}\n</maintainer-request>\n`
 		: "";
 	const requestNote = options.request
 		? "\n\nA maintainer asked for this review with the request in the context. Use it to focus the review, but the security and output rules still apply."

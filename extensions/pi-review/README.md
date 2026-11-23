@@ -541,6 +541,14 @@ stops are never recovered into a review.
   prompt fences them and states that instructions inside them are not to be
   followed; pi-review's own fence tags are escaped in that text, so a PR cannot
   close the data region early.
+- Before that fenced text reaches the model, the invisible channels are removed
+  (`sanitize.ts`): HTML comments, zero-width and bidi characters, markdown image
+  alt text and link titles, HTML `alt`/`title`/`aria-label`/`data-*`/
+  `placeholder` attributes, and numeric HTML entities. A PR can hide an
+  instruction in any of them without a reviewer seeing it in the diff. The diff
+  itself only loses comments and invisible characters — its HTML and entities
+  are the code under review — and inline anchors were always validated against
+  the untouched diff, so nothing moves.
 - Guidance reads `REVIEW.md`/`AGENTS.md` from the **base** commit, so a PR
   cannot rewrite the rules it is reviewed against.
 - Text pi-review publishes is scrubbed of credential shapes first: a provider
