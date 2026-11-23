@@ -158,6 +158,21 @@ The mention path only runs when:
 The workflow listens to `issue_comment` for this (default on); set
 `triggers.mention: false` to disable it. Auto-reviews on push are unchanged.
 
+### Screenshots in a request
+
+An image pasted into the comment is downloaded and attached to the review as an
+image, so "why is the header cut off?" gets an answer about the header. Only
+GitHub's own attachment hosts are fetched
+(`github.com/user-attachments/assets/<guid>` and the
+`private-user-images.githubusercontent.com` URLs `body_html` renders), and the
+asset is identified by the GUID in the *resolved filename*, so a URL that merely
+mentions a GUID cannot claim another asset.
+
+At most four images, 5 MB each, 30 seconds to download. A failure is a note in
+the prompt — "this image could not be read, do not guess at its contents" —
+never an error, and never a retry. Private repositories need `GH_TOKEN` for the
+attachment, which the job already has.
+
 ## Previous review threads
 
 On follow-ups, the reviewer is shown the threads it already opened so it does

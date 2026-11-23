@@ -285,3 +285,28 @@ describe("hidden instructions", () => {
 		expect(prompt.context.match(/<\/pi-review-context>/g) ?? []).toHaveLength(1);
 	});
 });
+
+describe("screenshots", () => {
+	it("says what is attached and hands the parts to the runner", () => {
+		const images = [{ mimeType: "image/png", data: "AQID" }];
+		const prompt = buildReviewPrompt(target(), guidance, { images });
+		expect(prompt.context).toContain("<screenshots>");
+		expect(prompt.context).toContain("1 image(s) from the request are attached");
+		expect(prompt.images).toEqual(images);
+	});
+
+	it("says an image could not be read, and not to guess", () => {
+		const prompt = buildReviewPrompt(target(), guidance, {
+			imageNotes: ["screenshot 0123abcd could not be fetched (HTTP 404)"],
+		});
+		expect(prompt.context).toContain("could not be fetched (HTTP 404)");
+		expect(prompt.context).toContain("Do not guess at its contents");
+		expect(prompt.images).toBeUndefined();
+	});
+
+	it("adds nothing when there are no images", () => {
+		const prompt = buildReviewPrompt(target(), guidance);
+		expect(prompt.context).not.toContain("<screenshots>");
+		expect(prompt.images).toBeUndefined();
+	});
+});

@@ -21,6 +21,7 @@ import {
 	isSubstantiveReview,
 	recoverySummary,
 } from "./failure.ts";
+import { extractImages, fetchImages } from "./images.ts";
 import { buildReviewPrompt } from "./prompt.ts";
 import { redactSecrets } from "./redact.ts";
 import { type ValidatedReview, renderReviewMarkdown } from "./review.ts";
@@ -47,6 +48,8 @@ export interface RunnerOptions {
 	env?: Record<string, string | undefined>;
 	/** Override the executor (tests). Defaults to `pi.exec`. */
 	exec?: Exec;
+	/** Override the screenshot download (tests). Defaults to the global fetch. */
+	fetchImpl?: typeof fetch;
 }
 
 interface LoadedReview {
@@ -67,6 +70,7 @@ function prNumberFromEnv(env: Record<string, string | undefined>): number | unde
 export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = {}): void {
 	const env = options.env ?? process.env;
 	const exec: Exec = options.exec ?? ((command, args, opts) => pi.exec(command, args, opts));
+	const fetchImpl = options.fetchImpl ?? fetch;
 	const dryRun = env.PI_REVIEW_DRY_RUN === "1";
 	const outputPath = env.PI_REVIEW_OUTPUT;
 	const requestChanges = env.PI_REVIEW_REQUEST_CHANGES === "1";
@@ -277,11 +281,24 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 				? env.PI_REVIEW_STRICTNESS
 				: "significant";
 		const request = env.PI_REVIEW_REQUEST?.trim();
+		// A screenshot in a `@pi` comment is the requester's evidence, and the
+		// prompt alone cannot carry it. Only GitHub's own attachment hosts are
+		// fetched, at most a handful, and a failure is a note rather than an error.
+		const screenshots = request ? extractImages(request) : [];
+		const downloaded =
+			screenshots.length > 0
+				? await fetchImages(screenshots, {
+						fetchImpl,
+						...(env.GH_TOKEN ? { token: env.GH_TOKEN } : {}),
+					})
+				: { images: [], notes: [] };
 		const prompt = buildReviewPrompt(state.target, state.guidance, {
 			...(dependencies ? { dependencies } : {}),
 			strictness,
 			...(resolveStaleThreads && state.threads.length > 0 ? { openThreads: state.threads } : {}),
 			...(request ? { request } : {}),
+			...(downloaded.images.length > 0 ? { images: downloaded.images } : {}),
+			...(downloaded.notes.length > 0 ? { imageNotes: downloaded.notes } : {}),
 		});
 		return {
 			systemPrompt: `${event.systemPrompt}\n\n${prompt.system}`,
@@ -289,7 +306,15 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 				? {
 						message: {
 							customType: "pi-review-context",
-							content: prompt.context,
+							// A custom message's content is converted to a user message
+							// for the model, so image parts ride along with the text.
+							content: prompt.images
+								? [{ type: "text" as const, text: prompt.context }, ...prompt.images.map((image) => ({
+										type: "image" as const,
+										data: image.data,
+										mimeType: image.mimeType,
+									}))]
+								: prompt.context,
 							display: false,
 						},
 					}
