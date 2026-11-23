@@ -235,6 +235,25 @@ describe("states", () => {
 		expect(states(message)).toEqual(["working", "needs_you"]);
 	});
 
+	it("is idle when a retried attempt recovered", async () => {
+		const h = await load();
+		await h.handler("session_start")?.({ type: "session_start", reason: "startup" }, h.ctx);
+		await h.handler("agent_start")?.({ type: "agent_start" }, h.ctx);
+		// pi keeps a failed attempt in raw history and retries in place, so the
+		// turn sees an error message and then a successful one.
+		await h.handler("message_end")?.({
+			type: "message_end",
+			message: { role: "assistant", content: [], stopReason: "error", errorMessage: "rate limited" },
+		}, h.ctx);
+		await h.handler("message_end")?.({
+			type: "message_end",
+			message: { role: "assistant", content: [{ type: "text", text: "Recovered." }], stopReason: "stop" },
+		}, h.ctx);
+		await h.handler("agent_before_settle")?.({ type: "agent_before_settle", outcome: "completed" }, h.ctx);
+		await h.settle();
+		expect(states(h).at(-1)).toBe("idle");
+	});
+
 	it("does not repeat an identical consecutive state", async () => {
 		const h = await load();
 		await h.handler("session_start")?.({ type: "session_start", reason: "startup" }, h.ctx);

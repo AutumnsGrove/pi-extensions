@@ -36,12 +36,14 @@ can act on it, and a remote runner can show it as a per-session badge.
 
 1. **Rules** decide the common cases and always win. A failed run is
    `needs_you` — ahead of everything else, including a done release, because it
-   is the one outcome that must never go quiet. A comment, a requested-changes
-   review, a subscription error, or an open prompt is `needs_you`; a
-   passing-check wake that made no tool calls is `waiting`; so is a wake whose
-   only other event is a head already at this checkout's tip; a deliberate done
-   release is `ready`; an ordinary turn, or a run you aborted yourself, is
-   `idle`.
+   is the one outcome that must never go quiet. A failed *attempt* is not a
+   failed run: pi retries a transient error in place, so only the settled
+   outcome (or a final message that is still an error) counts. A comment, a
+   requested-changes review, a subscription error, or an open prompt is
+   `needs_you`; a passing-check wake that made no tool calls is `waiting`; so is
+   a wake whose only other event is a head already at this checkout's tip; a
+   deliberate done release is `ready`; an ordinary turn, or a run you aborted
+   yourself, is `idle`.
 2. **A decision model** classifies the one ambiguous case: a wake that was
    informational but where the agent still did something. Did it report
    something worth reading, or was the turn a no-op?
