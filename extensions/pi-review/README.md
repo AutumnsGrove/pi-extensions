@@ -568,7 +568,13 @@ stops are never recovered into a review.
 - The review key should be a dedicated, revocable key per repository — never a
   developer key.
 - `bash` is opt-in; the runner is the security boundary because pi does not
-  sandbox tools. The transcript artifact keeps the whole model stream for seven
+  sandbox tools. The review step snapshots `$GITHUB_ENV`, `$GITHUB_PATH` and the
+  checkout's `core.hooksPath`/`core.fsmonitor` before the agent starts and puts
+  them back afterwards, warning when it had to: every later step is a fresh
+  process that the runner hands those files to, and one appended `PATH` entry is
+  enough to run a check-out-authored `gh` in a step that holds the token. A
+  cancelled run cannot restore anything, which is a limit of the design.
+  The transcript artifact keeps the whole model stream for seven
   days, so a command that prints its environment can put the provider key there;
   keep the key dedicated and revocable, and leave `bash` off when a review does
   not need it.

@@ -476,9 +476,54 @@ jobs:
           # them as its own commands and a correct, posted review ended with a red
           # X (#71). The stream is uploaded as an artifact, so the log below gets
           # a summary rather than the transcript.
+          #
+          # --- session guard: snapshot ---
+          # Every later step is a fresh process that the runner hands $GITHUB_ENV
+          # and a PATH from $GITHUB_PATH, and those steps hold the App token. A
+          # bash-enabled review runs commands from a checkout the pull request
+          # controls, so one appended PATH entry pointing at the checkout is
+          # enough for `Report or clear an incomplete review` to run a
+          # PR-authored `gh`. Take a copy before the agent starts (#76).
+          [ -n "${GITHUB_ENV:-}" ] && [ -f "${GITHUB_ENV}" ] && cp "${GITHUB_ENV}" "$work/guard-github-env"
+          [ -n "${GITHUB_PATH:-}" ] && [ -f "${GITHUB_PATH}" ] && cp "${GITHUB_PATH}" "$work/guard-github-path"
+          hooks_before=$(git config --local --get core.hooksPath 2>/dev/null || true)
+          fsmonitor_before=$(git config --local --get core.fsmonitor 2>/dev/null || true)
+          # --- session guard: snapshot end ---
           set +e
           pi "${args[@]}" "Review pull request #$PR_NUMBER." > "$PI_REVIEW_EVENTS" 2> "$work/stderr.log"
           status=$?
+
+          # --- session guard: restore ---
+          for pair in "github-env:${GITHUB_ENV:-}:GITHUB_ENV" "github-path:${GITHUB_PATH:-}:GITHUB_PATH"; do
+            checkpoint="$work/guard-${pair%%:*}"
+            rest=${pair#*:}
+            live=${rest%%:*}
+            label=${rest#*:}
+            [ -f "$checkpoint" ] || continue
+            [ -n "$live" ] || continue
+            if [ -f "$live" ] && cmp -s "$checkpoint" "$live"; then continue; fi
+            echo "::warning::The review agent changed \$$label; restoring it before the later steps read it."
+            cat "$checkpoint" > "$live"
+          done
+          hooks_after=$(git config --local --get core.hooksPath 2>/dev/null || true)
+          if [ "$hooks_after" != "${hooks_before:-}" ]; then
+            echo "::warning::The review agent changed core.hooksPath; restoring it."
+            if [ -n "${hooks_before:-}" ]; then
+              git config --local core.hooksPath "$hooks_before"
+            else
+              git config --local --unset core.hooksPath 2>/dev/null || true
+            fi
+          fi
+          fsmonitor_after=$(git config --local --get core.fsmonitor 2>/dev/null || true)
+          if [ "$fsmonitor_after" != "${fsmonitor_before:-}" ]; then
+            echo "::warning::The review agent changed core.fsmonitor; restoring it."
+            if [ -n "${fsmonitor_before:-}" ]; then
+              git config --local core.fsmonitor "$fsmonitor_before"
+            else
+              git config --local --unset core.fsmonitor 2>/dev/null || true
+            fi
+          fi
+          # --- session guard: restore end ---
           echo "PI_PI_EXIT=$status" >> "$GITHUB_ENV"
 
           last_event=$(tail -n 1 "$PI_REVIEW_EVENTS" 2>/dev/null | jq -r '.type // "unknown"' 2>/dev/null || true)

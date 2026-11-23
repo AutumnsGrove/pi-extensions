@@ -497,6 +497,74 @@ describe("the reusable workflow", () => {
 		expect(redacted("`gh api` failed with HTTP 422")).toBe("`gh api` failed with HTTP 422");
 	});
 
+	it("puts back the files the later steps read, if the review changed them", () => {
+		// Every later step is a fresh process that the runner hands $GITHUB_ENV
+		// and a PATH from $GITHUB_PATH, and those steps hold the App token. A
+		// bash-enabled review runs commands from a checkout the PR controls, so
+		// one appended PATH entry is enough to run a PR-authored `gh` there (#76).
+		const code = step("Review").run ?? "";
+		const snapshot = code.split("# --- session guard: snapshot ---")[1]?.split("# --- session guard: snapshot end ---")[0];
+		const restore = code.split("# --- session guard: restore ---")[1]?.split("# --- session guard: restore end ---")[0];
+		expect(snapshot).toBeTruthy();
+		expect(restore).toBeTruthy();
+		// The snapshot is taken before the agent runs, the restore after it, and
+		// our own PI_PI_EXIT is written after the restore so it survives.
+		const agent = code.indexOf('pi "${args[@]}"');
+		expect(code.indexOf("# --- session guard: snapshot ---")).toBeLessThan(agent);
+		expect(code.indexOf("# --- session guard: restore ---")).toBeGreaterThan(agent);
+		expect(code.indexOf("PI_PI_EXIT=$status")).toBeGreaterThan(
+			code.indexOf("# --- session guard: restore end ---")
+		);
+
+		const dir = mkdtempSync(join(tmpdir(), "pi-review-guard-"));
+		try {
+			const git = (...args: string[]) =>
+				execFileSync("git", args, { cwd: dir, encoding: "utf8" }).trim();
+			git("init", "-q");
+			git("config", "user.email", "review@example.test");
+			git("config", "user.name", "review");
+			git("config", "--local", "core.hooksPath", "/dev/null");
+			writeFileSync(join(dir, "a.txt"), "x\n");
+			git("add", "-A");
+			git("commit", "-q", "-m", "x");
+
+			const envFile = join(dir, "env.txt");
+			const pathFile = join(dir, "path.txt");
+			writeFileSync(envFile, "PI_REVIEW_ON_PROVIDER_FAILURE=fail\n");
+			writeFileSync(pathFile, "/usr/bin\n");
+
+			// One shell, as in the workflow: the snapshot's variables have to
+			// survive into the restore.
+			const script = [
+				"set -u",
+				`work=${JSON.stringify(join(dir, "work"))}`,
+				'mkdir -p "$work"',
+				snapshot,
+				`printf 'PI_REVIEW_ON_PROVIDER_FAILURE=warn\\n' >> "$GITHUB_ENV"`,
+				`printf '/tmp/pull-request-checkout\\n' >> "$GITHUB_PATH"`,
+				"git config --local core.hooksPath /tmp/evil-hooks",
+				"git config --local core.fsmonitor /tmp/evil-monitor",
+				restore,
+			].join("\n");
+			const output = execFileSync("bash", ["-c", script], {
+				cwd: dir,
+				encoding: "utf8",
+				env: { ...process.env, GITHUB_ENV: envFile, GITHUB_PATH: pathFile },
+			});
+
+			// The appended values are gone, and the run says so.
+			expect(output).toContain("changed $GITHUB_ENV");
+			expect(output).toContain("changed $GITHUB_PATH");
+			expect(readFileSync(envFile, "utf8")).toBe("PI_REVIEW_ON_PROVIDER_FAILURE=fail\n");
+			expect(readFileSync(pathFile, "utf8")).toBe("/usr/bin\n");
+			// Git config a later `git`/`gh` would read is back as it was.
+			expect(git("config", "--local", "--get", "core.hooksPath")).toBe("/dev/null");
+			expect(() => git("config", "--local", "--get", "core.fsmonitor")).toThrow();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("writes a patient retry policy into a throwaway agent directory", () => {
 		const settings = step("Read the settings");
 		expect(settings.run).toContain('agent_dir="$RUNNER_TEMP/pi-review/agent"');
