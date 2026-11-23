@@ -476,9 +476,60 @@ jobs:
           # them as its own commands and a correct, posted review ended with a red
           # X (#71). The stream is uploaded as an artifact, so the log below gets
           # a summary rather than the transcript.
+          #
+          # --- session guard: snapshot ---
+          # Every later step is a fresh process that the runner hands $GITHUB_ENV
+          # and a PATH from $GITHUB_PATH, and those steps hold the App token. A
+          # bash-enabled review runs commands from a checkout the pull request
+          # controls, so one appended PATH entry pointing at the checkout is
+          # enough for `Report or clear an incomplete review` to run a
+          # PR-authored `gh` (#76).
+          #
+          # The copies live in shell variables, not in files: the agent's own
+          # commands run on this runner and can write anywhere the step can,
+          # $RUNNER_TEMP included, so a checkpoint it can edit or delete is worth
+          # only what the agent lets it be.
+          env_before=$(cat "${GITHUB_ENV:-/dev/null}" 2>/dev/null || true)
+          path_before=$(cat "${GITHUB_PATH:-/dev/null}" 2>/dev/null || true)
+          # The whole local config, not `--get-all` for two keys: a key can also
+          # arrive through `include.path` (which `--local` does not follow) or
+          # with several values from `git config --add`, and one file snapshot
+          # covers every shape, then puts back a config the later steps can trust.
+          config_path=$(git rev-parse --git-path config 2>/dev/null || echo .git/config)
+          config_before=$(cat "$config_path" 2>/dev/null || true)
+          # --- session guard: snapshot end ---
           set +e
           pi "${args[@]}" "Review pull request #$PR_NUMBER." > "$PI_REVIEW_EVENTS" 2> "$work/stderr.log"
           status=$?
+
+          # --- session guard: restore ---
+          if [ -n "${GITHUB_ENV:-}" ]; then
+            env_now=$(cat "$GITHUB_ENV" 2>/dev/null || true)
+            if [ "$env_now" != "${env_before:-}" ]; then
+              echo "::warning::The review agent changed \$GITHUB_ENV; restoring it before the later steps read it."
+              printf '%s\n' "${env_before:-}" > "$GITHUB_ENV" 2>/dev/null \
+                || echo "::error::Could not restore \$GITHUB_ENV; the later steps should not trust it."
+            fi
+          fi
+          if [ -n "${GITHUB_PATH:-}" ]; then
+            path_now=$(cat "$GITHUB_PATH" 2>/dev/null || true)
+            if [ "$path_now" != "${path_before:-}" ]; then
+              echo "::warning::The review agent changed \$GITHUB_PATH; restoring it before the later steps read it."
+              printf '%s\n' "${path_before:-}" > "$GITHUB_PATH" 2>/dev/null \
+                || echo "::error::Could not restore \$GITHUB_PATH; the later steps should not trust it."
+            fi
+          fi
+          if [ -n "${config_path:-}" ]; then
+            config_now=$(cat "$config_path" 2>/dev/null || true)
+            if [ "$config_now" != "${config_before:-}" ]; then
+              echo "::warning::The review agent changed the checkout's git config; restoring it."
+              # A config the agent made unwritable would otherwise be reported
+              # as restored and left in place, which is worse than saying so.
+              printf '%s\n' "${config_before:-}" > "$config_path" 2>/dev/null \
+                || echo "::error::Could not restore the checkout's git config; the later steps should not trust it."
+            fi
+          fi
+          # --- session guard: restore end ---
           echo "PI_PI_EXIT=$status" >> "$GITHUB_ENV"
 
           last_event=$(tail -n 1 "$PI_REVIEW_EVENTS" 2>/dev/null | jq -r '.type // "unknown"' 2>/dev/null || true)
