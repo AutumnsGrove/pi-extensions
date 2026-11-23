@@ -15,7 +15,7 @@
  * this package's `node_modules` is not installed.
  */
 
-import { type ReviewSettings, WORKFLOW_PATH } from "./settings.ts";
+import { type ReviewSettings, type SkipBots, WORKFLOW_PATH } from "./settings.ts";
 
 export const PACKAGE_REPO = "AutumnsGrove/pi-extensions";
 export const REUSABLE_WORKFLOW_PATH = ".github/workflows/pi-review-reusable.yml";
@@ -34,6 +34,20 @@ function quote(value: string): string {
 }
 
 /**
+ * The condition that keeps a bot-authored pull request from reviewing.
+ *
+ * `true` refuses every bot; a list refuses only those logins, so a repository
+ * can skip Dependabot and still review its own App's pull requests (#88).
+ * `parseSettings` has already refused anything that is not a login, so the list
+ * cannot break out of the expression or the YAML scalar it sits in.
+ */
+export function botCondition(skipBots: SkipBots): string | undefined {
+	if (skipBots === true) return "github.event.pull_request.user.type != 'Bot'";
+	if (skipBots === false || skipBots.length === 0) return undefined;
+	return `!contains(fromJSON('${JSON.stringify(skipBots)}'), github.event.pull_request.user.login)`;
+}
+
+/**
  * The condition under which a run actually reviews something. The job `if:` and
  * the concurrency group share it deliberately: GitHub evaluates `concurrency`
  * when the run is created, *before* the job `if:`, so a run that will be skipped
@@ -43,7 +57,7 @@ export function reviewCondition(settings: ReviewSettings): string {
 	const pullRequest = [
 		settings.triggers.skipDrafts ? "github.event.pull_request.draft == false" : undefined,
 		"github.event.pull_request.head.repo.full_name == github.repository",
-		settings.triggers.skipBots ? "github.event.pull_request.user.type != 'Bot'" : undefined,
+		botCondition(settings.triggers.skipBots),
 	]
 		.filter((part): part is string => part !== undefined)
 		.join(" && ");
