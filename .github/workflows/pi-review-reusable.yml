@@ -519,6 +519,30 @@ jobs:
           recovery="$PI_REVIEW_RECOVERY"
           mkdir -p "$work"
 
+          # The one place this workflow publishes text it did not compose: the
+          # recovered prose is quoted from the diff and from tool output, so a
+          # credential the model printed would go with it. Same vendor shapes as
+          # `redact.ts`, which the runner path uses (#74); `SECRET_SAMPLES` in
+          # that module is the fixture list both implementations are tested
+          # against, so a shape added without this one fails the tests.
+          #
+          # The JWT rule has no upper bound here: BSD sed rejects a repetition
+          # count above 255, and this must behave the same on a developer's Mac
+          # as on the runner. Longer than `redact.ts` is fine — over-redaction is
+          # the safe direction.
+          #
+          # A review the model chose to write is left alone: silently editing an
+          # approved review is worse than the leak it would hide.
+          redact() {
+            sed -E \
+              -e 's/gh[pousr]_[A-Za-z0-9]{36}/[REDACTED_GITHUB_TOKEN]/g' \
+              -e 's/github_pat_[A-Za-z0-9_]{11,221}/[REDACTED_GITHUB_TOKEN]/g' \
+              -e 's/sk-ant-[A-Za-z0-9_-]{20,}/[REDACTED_ANTHROPIC_KEY]/g' \
+              -e 's/(AKIA|ASIA)[A-Z0-9]{16}/[REDACTED_AWS_KEY_ID]/g' \
+              -e 's/xox[abpsr]-[A-Za-z0-9-]{10,}/[REDACTED_SLACK_TOKEN]/g' \
+              -e 's/eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/[REDACTED_JWT]/g'
+          }
+
           write_recovery() { # recovered url reason [detail]
             jq -n --argjson recovered "$1" --arg url "$2" --arg reason "$3" --arg detail "${4:-}" \
               '{recovered:$recovered, url:$url, reason:$reason, detail:$detail}' > "$recovery"
@@ -593,6 +617,7 @@ jobs:
               | map(select(length >= 400))
               | last // ""
             ' "$events" 2>/dev/null || true)
+            text=$(printf '%s' "$text" | redact)
           fi
           if [ "${#text}" -ge 400 ]; then
             jq -n --arg text "$text" '{event: "COMMENT", body: ("<!-- pi-review:review -->\n_Submitted by recovery: the run ended without calling `submit_review`, so pi-review posted its final answer as a COMMENT review._\n\n" + $text), comments: []}' \
