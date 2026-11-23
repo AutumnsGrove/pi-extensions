@@ -27,6 +27,16 @@ export type ReviewEvent = (typeof REVIEW_EVENTS)[number];
 export type ReviewStrictness = (typeof STRICTNESS_LEVELS)[number];
 export type ProviderFailureMode = (typeof PROVIDER_FAILURE_MODES)[number];
 export type IdentityMode = "app" | "token";
+/**
+ * `true` skips every bot-authored pull request, a list skips only those logins,
+ * and `false` (or an empty list) skips none (#88).
+ *
+ * A list exists because the cases genuinely differ: a Dependabot pull request
+ * receives no repository secrets and cannot be reviewed, while a release bot or
+ * one's own App may well be worth reviewing. All or nothing forced a repository
+ * to choose between noise and coverage.
+ */
+export type SkipBots = boolean | string[];
 
 /**
  * pi's own retry policy, tuned for an unattended CI review.
@@ -72,7 +82,7 @@ export interface ReviewSettings {
 	triggers: {
 		types: TriggerType[];
 		skipDrafts: boolean;
-		skipBots: boolean;
+		skipBots: SkipBots;
 		/** `@pi` comments from owners/members/collaborators trigger a review. */
 		mention: boolean;
 	};
@@ -158,6 +168,32 @@ function booleanValue(value: unknown, fallback: boolean): boolean {
 	return typeof value === "boolean" ? value : fallback;
 }
 
+/**
+ * A GitHub login, optionally with the `[bot]` suffix an App receives. Narrow on
+ * purpose: the list is rendered into the workflow's `if:` expression, so a
+ * value that is not a login could end the expression or the YAML scalar.
+ */
+const BOT_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?$/;
+
+function skipBotsValue(value: unknown, fallback: SkipBots): SkipBots {
+	if (value === undefined) return fallback;
+	if (typeof value === "boolean") return value;
+	if (!Array.isArray(value)) {
+		throw new Error("`triggers.skipBots` must be `true`, `false`, or a list of bot logins.");
+	}
+	const logins: string[] = [];
+	for (const entry of value) {
+		const login = typeof entry === "string" ? entry.trim() : "";
+		if (!BOT_LOGIN.test(login)) {
+			throw new Error(
+				`Invalid \`triggers.skipBots\` entry ${JSON.stringify(entry)}; expected a bot login such as \`dependabot[bot]\`.`
+			);
+		}
+		if (!logins.includes(login)) logins.push(login);
+	}
+	return logins;
+}
+
 function stringList(value: unknown, fallback: string[]): string[] {
 	if (!Array.isArray(value)) return fallback;
 	return value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
@@ -234,7 +270,7 @@ export function parseSettings(value: unknown, defaults = defaultSettings()): Rev
 		triggers: {
 			types,
 			skipDrafts: booleanValue(triggers.skipDrafts, defaults.triggers.skipDrafts),
-			skipBots: booleanValue(triggers.skipBots, defaults.triggers.skipBots),
+			skipBots: skipBotsValue(triggers.skipBots, defaults.triggers.skipBots),
 			mention: booleanValue(triggers.mention, defaults.triggers.mention),
 		},
 		review: {

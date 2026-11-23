@@ -173,6 +173,31 @@ the prompt — "this image could not be read, do not guess at its contents" —
 never an error, and never a retry. Private repositories need `GH_TOKEN` for the
 attachment, which the job already has.
 
+## Bot pull requests
+
+GitHub does not give a workflow triggered by a bot any repository secrets, so
+the provider key a review needs never arrives and the agent exits before its
+first event. That is not a crash, and no push by the author can fix it.
+
+Repositories say what they want in `triggers.skipBots`:
+
+```json
+{ "triggers": { "skipBots": ["dependabot[bot]"] } }
+```
+
+- `true` skips **every** bot. This is a condition in the generated workflow's
+  `if:`, so the run is never created and nothing is reported.
+- a list skips only those logins, so a release bot or your own App's pull
+  requests can still be reviewed. `[]` skips none.
+- `false` (the default) skips none. Such a pull request still will not fail:
+  the job tests for the credential its settings name before it starts the
+  agent, and concludes `skipped` — neutral, with the missing variable named —
+  rather than a red check that says it may have crashed (#88).
+
+The same pre-flight makes a *person's* pull request with no credential
+diagnosable: that one stays red, and the failure comment names the secret that
+is missing (`PI_REVIEW_API_KEY`) instead of leaving a blank error.
+
 ## Previous review threads
 
 On follow-ups, the reviewer is shown the threads it already opened so it does
@@ -252,6 +277,9 @@ of treating every one as "the job failed or timed out":
 | `provider` | a 429/5xx/overload/network error survived the retry budget | no review is posted; the failure comment names the provider and includes its error |
 | `aborted` / `budget` | the step timed out or was cancelled, or the model hit its output limit | no review is posted; the comment says which |
 | `post` | the review validated but GitHub rejected the post | the workflow retries the review, then its summary, before giving up |
+| `bot-secrets` | the pull request is from a bot, which is handed no repository secrets | nothing is attempted; the run concludes `skipped`, is not red, and leaves no comment |
+| `no-credentials` | a person's pull request, and the credential the settings name was never set | nothing is attempted; the run is red and the comment names the missing secret |
+| `no-turn` | the agent exited before its first model call and left a blank error | the comment says how it exited instead of guessing "timed out or crashed" |
 
 Retries are pi's own policy, written into a throwaway agent directory from the
 settings file:

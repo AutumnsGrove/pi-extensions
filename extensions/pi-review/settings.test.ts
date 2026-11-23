@@ -77,6 +77,32 @@ describe("parseSettings", () => {
 		expect(parseSettings({}).triggers.mention).toBe(true);
 	});
 
+	it("parses skipBots as a boolean or a list of logins", () => {
+		expect(parseSettings({}).triggers.skipBots).toBe(false);
+		expect(parseSettings({ triggers: { skipBots: true } }).triggers.skipBots).toBe(true);
+		expect(
+			parseSettings({ triggers: { skipBots: ["dependabot[bot]", "renovate[bot]"] } }).triggers.skipBots
+		).toEqual(["dependabot[bot]", "renovate[bot]"]);
+	});
+
+	it("trims, deduplicates and keeps the order of the skip list", () => {
+		expect(
+			parseSettings({ triggers: { skipBots: [" dependabot[bot] ", "dependabot[bot]", "my-bot"] } })
+				.triggers.skipBots
+		).toEqual(["dependabot[bot]", "my-bot"]);
+	});
+
+	it("refuses a skip value that would not survive the workflow expression", () => {
+		// `if:` is a plain YAML scalar built from this list, so a quote, a bracket
+		// or a space here would change the condition rather than the policy.
+		for (const value of ["dependabot[bot]", ["a b"], ["a'; rm -rf /"], ['"x"'], ["x'"], [1]]) {
+			expect(() => parseSettings({ triggers: { skipBots: value } })).toThrow("triggers.skipBots");
+		}
+		expect(() => parseSettings({ triggers: { skipBots: { skip: ["x"] } } })).toThrow(
+			"must be `true`, `false`, or a list of bot logins"
+		);
+	});
+
 	it("parses resolveStaleThreads", () => {
 		expect(parseSettings({ review: { resolveStaleThreads: true } }).review.resolveStaleThreads).toBe(true);
 		expect(parseSettings({}).review.resolveStaleThreads).toBe(false);

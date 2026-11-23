@@ -760,3 +760,43 @@ the job must name it rather than print "the job failed or timed out".
   and a re-run refreshes the secret. The mint step names the three permissions
   the review uses, so a narrowed installation fails loudly instead of posting
   nothing.
+
+## Implementation notes (milestone 11): bot-triggered runs (#88)
+
+A Dependabot pull request made `pi-review` run and fail red with a blank error
+and no review. The cause is structural: GitHub hands a workflow triggered by a
+bot **no repository secrets**, so `PI_REVIEW_API_KEY` never reaches the job and
+the agent exits 1 before its first event. Nothing crashed, and no push can fix
+it, so the run shape had to become expressible rather than diagnosed.
+
+- **`triggers.skipBots` takes a list, not just a boolean (#88).** `true` skips
+  every bot; `["dependabot[bot]"]` skips only those logins, so a release bot or
+  one's own App stays reviewable; `[]`/`false` skips none. The alternative — a
+  `bots: { skip, review }` object — was rejected: once `skip` is a list, the
+  `review` half only restates the default, and a second key would have to be
+  kept consistent with the first. The list is validated as a GitHub login
+  (`[A-Za-z0-9-]`, optional `[bot]`) because it is rendered into the workflow's
+  `if:` expression, where anything else could end the expression or the YAML
+  scalar. The condition is part of `reviewCondition`, so the concurrency group
+  shares it and an ignored bot run cannot cancel a real review.
+- **A run that cannot start is decided before the agent does.** `Check the run
+  can review` reads `providerEnv` from the settings and asks whether that
+  variable is present in the environment — the exported copy `Read the settings`
+  already makes, not the `secrets` context, so the step needs no secret of its
+  own and exports nothing. Placing it after `Read the settings` is forced: no
+  step may hold the provider key before the dependency install, which runs the
+  pull request's own scripts (#33, #76). The payoff is that `Review` never
+  starts, so the whole cost of a bot run is a checkout and an install; a
+  repository that wants to skip even that names the bot in `skipBots` and the
+  caller's `if:` never creates the run.
+- **`skipped` is a conclusion, not a failure.** A bot trigger concludes
+  `{outcome: "skipped", kind: "bot-secrets"}` — exit 0, an `::notice::`, no
+  comment, and any stale failure comment cleared, exactly like a success. A
+  person's pull request with the same missing credential stays red as
+  `kind: "no-credentials"` naming the secret, because that one somebody can fix.
+- **The blank error was the real diagnosis problem.** `lastError: " "` with an
+  empty `usage` reads as a crash. `Conclude` now reads `piExit` and
+  `usage.calls` from `run-meta.json`: an agent that exited nonzero before its
+  first model call is `kind: "no-turn"` and says so, instead of the old "may
+  have timed out or crashed". A genuine timeout (no exit code recorded) keeps
+  `no-artifact`.

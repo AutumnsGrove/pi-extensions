@@ -609,6 +609,127 @@ describe("the reusable workflow", () => {
 		expect(recover.run).toContain("provider|aborted|budget");
 	});
 
+	it("decides a run that cannot start before the agent does", () => {
+		// Issue #88: a bot-triggered run gets no repository secrets, so the agent
+		// exits before its first event and the job used to report a crash.
+		const preflight = step("Check the run can review");
+		expect(preflight.id).toBe("preflight");
+		// The provider key only reaches the environment in `Read the settings`, and
+		// no step may hold a secret before the dependency install.
+		expect(indexOf("Check the run can review")).toBeGreaterThan(indexOf("Read the settings"));
+		expect(indexOf("Check the run can review")).toBeLessThan(indexOf("Review"));
+		// The test is the exported copy the review step would read, so the step
+		// itself needs no secret context and exports nothing: it must not write to
+		// `$GITHUB_ENV`, where the agent's own commands would inherit it.
+		expect(preflight.run).toContain('printenv "$provider_env"');
+		expect(preflight.run).not.toContain("GITHUB_ENV");
+		expect(JSON.stringify(preflight.env ?? {})).not.toContain("secrets.");
+		// The agent never starts once the pre-flight says nothing can come of it.
+		expect(step("Review").if).toBe("steps.preflight.outputs.skip != 'true'");
+		// A missing App identity is degraded, not fatal, and must not skip a run.
+		expect(preflight.run).toContain("github-actions[bot]");
+	});
+
+	it("skips a bot pull request quietly and fails a person's with the cause named", () => {
+		const preflight = step("Check the run can review");
+		expect(preflight.env?.PR_AUTHOR_TYPE).toContain("github.event.pull_request.user.type");
+		expect(preflight.run).toContain("bot-secrets");
+		expect(preflight.run).toContain("no-credentials");
+		// The name of the missing credential, never a value.
+		expect(preflight.run).toContain("repo secret PI_REVIEW_API_KEY");
+
+		const conclude = step("Conclude the review");
+		expect(conclude.env?.PI_REVIEW_PREFLIGHT).toContain("preflight.json");
+		expect(conclude.run).toContain("$preflight");
+		// Neutral, not red: nothing crashed and no push can fix it.
+		expect(conclude.run).toContain("skipped) echo \"::notice::");
+		expect(conclude.run).toContain("bot-secrets");
+		expect(conclude.run).toContain("no-credentials");
+	});
+
+	it("runs the pre-flight, and says nothing about a bot pull request", () => {
+		// The step decides the outcome, so it is read by running it: an annotation
+		// emitted before the credential check made a run meant to be quiet carry a
+		// warning, which is what the bot path exists to avoid (#88).
+		const run = step("Check the run can review").run as string;
+		const decide = (options: {
+			provider: boolean;
+			bot: boolean;
+			appSecrets?: boolean;
+		}): { out: string; env: string; preflight: Record<string, unknown> } => {
+			const work = mkdtempSync(join(tmpdir(), "pi-review-preflight-"));
+			try {
+				const settings = join(work, "pi-review.json");
+				writeFileSync(
+					settings,
+					JSON.stringify({ identity: "app", providerEnv: "OPENCODE_API_KEY" })
+				);
+				const githubOutput = join(work, "output");
+				writeFileSync(githubOutput, "");
+				const env: Record<string, string | undefined> = {
+					...process.env,
+					RUNNER_TEMP: join(work, "runner"),
+					PI_REVIEW_SETTINGS: settings,
+					PI_REVIEW_APP_CONFIGURED: options.appSecrets ? "true" : "false",
+					GITHUB_OUTPUT: githubOutput,
+					PR_AUTHOR_TYPE: options.bot ? "Bot" : "User",
+					PR_AUTHOR_LOGIN: options.bot ? "dependabot[bot]" : "someone",
+				};
+				// The provider key arrives exactly the way `Read the settings` leaves
+				// it: exported under the name the project chose.
+				if (options.provider) env.OPENCODE_API_KEY = "not-a-real-key";
+				else delete env.OPENCODE_API_KEY;
+				const out = execFileSync("bash", ["-c", run], { encoding: "utf8", env });
+				return {
+					out,
+					env: readFileSync(githubOutput, "utf8"),
+					preflight: JSON.parse(
+						readFileSync(join(work, "runner", "pi-review", "preflight.json"), "utf8")
+					),
+				};
+			} finally {
+				rmSync(work, { recursive: true, force: true });
+			}
+		};
+
+		// A bot pull request that cannot be reviewed: one notice, no warning, and
+		// a neutral decision the conclude step turns into a green check.
+		const bot = decide({ provider: false, bot: true });
+		expect(bot.out).toContain("::notice::");
+		expect(bot.out).not.toContain("::warning::");
+		expect(bot.out).not.toContain("::error::");
+		expect(bot.env).toContain("skip=true");
+		expect(bot.preflight).toMatchObject({ skip: true, outcome: "skipped", kind: "bot-secrets" });
+		expect(String(bot.preflight.detail)).toContain("OPENCODE_API_KEY");
+
+		// The same gap on a person's pull request is a setup problem: red, named.
+		const person = decide({ provider: false, bot: false });
+		expect(person.out).toContain("::error::");
+		expect(person.out).toContain("PI_REVIEW_API_KEY");
+		expect(person.preflight).toMatchObject({ skip: true, outcome: "failure", kind: "no-credentials" });
+
+		// A run that can proceed says nothing, and warns only about the App
+		// identity, which is degraded rather than fatal.
+		const ok = decide({ provider: true, bot: false, appSecrets: true });
+		expect(ok.out.trim()).toBe("");
+		expect(ok.env).toContain("skip=false");
+		expect(ok.preflight).toEqual({ skip: false });
+		const noApp = decide({ provider: true, bot: false });
+		expect(noApp.out).toContain("::warning::");
+		expect(noApp.env).toContain("skip=false");
+	});
+
+	it("names an agent that exited before its first model call", () => {
+		// `lastError: " "` with an empty usage object is not a crash; saying it
+		// may have "timed out or crashed" sent a reader looking for the wrong
+		// cause.
+		const conclude = step("Conclude the review");
+		expect(conclude.run).toContain(".piExit");
+		expect(conclude.run).toContain(".usage.calls");
+		expect(conclude.run).toContain("no-turn");
+		expect(conclude.run).toContain("before its first model call");
+	});
+
 	it("concludes once, with a distinct provider warning", () => {
 		const conclude = step("Conclude the review");
 		expect(conclude.if).toBe("always()");
@@ -623,7 +744,9 @@ describe("the reusable workflow", () => {
 		expect(report.if).toBe("always() && !cancelled()");
 		// A cancelled run is a superseded review, not a failure worth reporting.
 		expect(report.run).toContain("--method DELETE");
-		expect(report.run).toContain("success|recovered");
+		// A run that was skipped on purpose clears a stale failure the same way
+		// without posting one of its own (#88).
+		expect(report.run).toContain("success|recovered|skipped");
 		expect(report.env?.GH_TOKEN).toBe("${{ github.token }}");
 		expect(report.run).toContain("<!-- pi-review:failed -->");
 		expect(report.run).toContain("github-actions[bot]");

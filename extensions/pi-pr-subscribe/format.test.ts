@@ -257,19 +257,25 @@ describe("widget and lists", () => {
 	});
 
 	it("describes an expired watch and offers the resume", () => {
-		const list = formatList([{ ref, state: "open", expiredAt: Date.now() - 60_000 }]);
+		const now = Date.now();
+		const list = formatList([{ ref, state: "open", expiredAt: now - 60_000 }], now);
 		expect(list).toContain("expired 1m");
 		expect(list).toContain("/subscribe 32 resumes it");
 		expect(formatWidgetLine({ ref, state: "open", checks: [], expiredAt: Date.now() })).toContain("◌ PR #32");
 	});
 
 	it("shows a recorded release in status", () => {
+		// One `now` for the call and the releases. Taking `Date.now()` twice made
+		// this a millisecond race: the argument is evaluated before the array, so a
+		// clock tick between them turned "1m ago" into 59 999 ms and the formatter
+		// honestly said "just now" (it failed on CI and passed locally).
+		const now = Date.now();
 		const status = formatStatus(
 			[],
-			Date.now(),
+			now,
 			[
-				{ ref, done: true, reason: "green, reviews addressed", at: Date.now() - 60_000 },
-				{ ref: { ...ref, number: 33 }, done: false, at: Date.now() - 120_000 },
+				{ ref, done: true, reason: "green, reviews addressed", at: now - 60_000 },
+				{ ref: { ...ref, number: 33 }, done: false, at: now - 120_000 },
 			]
 		);
 		expect(status).toContain("Nothing is subscribed.");
