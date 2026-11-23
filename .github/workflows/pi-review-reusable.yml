@@ -137,7 +137,12 @@ jobs:
             for path in REVIEW.md .github/REVIEW.md AGENTS.md CLAUDE.md; do
               if git cat-file -e "$base:$path" 2>/dev/null; then
                 mkdir -p "$(dirname "$path")"
-                if git show "$base:$path" > "$path" 2>/dev/null; then
+                # `git restore --worktree`, not `git show > file`: these paths
+                # are often symlinked (`CLAUDE.md -> AGENTS.md`), and a redirect
+                # follows the working tree's link while `git show` emits the
+                # link's target text — which restored one path through the other
+                # and left the rules file containing the word "AGENTS.md".
+                if git restore --source="$base" --worktree -- "$path" 2>/dev/null; then
                   restored="$restored $path"
                 else
                   echo "::warning::Could not restore $path from $base"
