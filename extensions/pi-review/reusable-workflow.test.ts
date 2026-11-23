@@ -519,11 +519,12 @@ describe("the reusable workflow", () => {
 		// can, so it lives in the shell, not in $RUNNER_TEMP.
 		expect(snapshot).toContain('env_before=$(cat "${GITHUB_ENV:-/dev/null}"');
 		expect(snapshot).not.toContain("guard-github-env");
-		// `git config --add` leaves a key with several values, which a
-		// single-value restore cannot overwrite.
-		expect(snapshot).toContain("--get-all core.hooksPath");
-		expect(restore).toContain('--unset-all "$key"');
-		expect(restore).toContain('--add "$key" "$value"');
+		// One snapshot of the whole local config, because a key can arrive with
+		// several values (`git config --add`) or through `include.path`, which
+		// `git config --local --get-all` does not follow.
+		expect(snapshot).toContain("--git-path config");
+		expect(restore).toContain("config_before");
+		expect(restore).toContain('> "$config_path"');
 
 		const dir = mkdtempSync(join(tmpdir(), "pi-review-guard-"));
 		try {
@@ -544,6 +545,9 @@ describe("the reusable workflow", () => {
 
 			// One shell, as in the workflow: the snapshot's variables have to
 			// survive into the restore.
+			// A config value injected through `include.path`: invisible to
+			// `--local --get-all`, effective for every later `git` in the job.
+			writeFileSync(join(dir, ".git", "evil.inc"), "[core]\n\thooksPath = /tmp/evil-hooks\n");
 			const script = [
 				"set -u",
 				`work=${JSON.stringify(join(dir, "work"))}`,
@@ -551,9 +555,11 @@ describe("the reusable workflow", () => {
 				snapshot,
 				`printf 'PI_REVIEW_ON_PROVIDER_FAILURE=warn\\n' >> "$GITHUB_ENV"`,
 				`printf '/tmp/pull-request-checkout\\n' >> "$GITHUB_PATH"`,
-				// `--add`, so the key ends up with two values.
-				"git config --local --add core.hooksPath /tmp/evil-hooks",
-				"git config --local --add core.fsmonitor /tmp/evil-monitor",
+				"git config --local include.path evil.inc",
+				"git config --local --add core.hooksPath /tmp/added-hook",
+				// The checkpoint is in the shell, so deleting the work directory
+				// (which the agent can write to) must not defeat the restore.
+				'rm -rf "$work"',
 				restore,
 			].join("\n");
 			const output = execFileSync("bash", ["-c", script], {
@@ -567,9 +573,11 @@ describe("the reusable workflow", () => {
 			expect(output).toContain("changed $GITHUB_PATH");
 			expect(readFileSync(envFile, "utf8").trim()).toBe("PI_REVIEW_ON_PROVIDER_FAILURE=fail");
 			expect(readFileSync(pathFile, "utf8").trim()).toBe("/usr/bin");
-			// Back to one value, ours — not two with the injected one last.
-			expect(git("config", "--local", "--get-all", "core.hooksPath")).toBe("/dev/null");
-			expect(() => git("config", "--local", "--get-all", "core.fsmonitor")).toThrow();
+			// The include and the added value are both gone: `git config` follows
+			// includes, so this is what a later step would actually read.
+			expect(git("config", "core.hooksPath")).toBe("/dev/null");
+			expect(git("config", "--local", "--get-all", "core.hooksPath").split("\n")).toEqual(["/dev/null"]);
+			expect(() => git("config", "--local", "include.path")).toThrow();
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

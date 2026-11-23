@@ -491,11 +491,12 @@ jobs:
           # only what the agent lets it be.
           env_before=$(cat "${GITHUB_ENV:-/dev/null}" 2>/dev/null || true)
           path_before=$(cat "${GITHUB_PATH:-/dev/null}" 2>/dev/null || true)
-          # `--get-all`, because `git config --add` leaves a key with several
-          # values and a single-value restore cannot overwrite that (exit 5),
-          # which would leave the injected value in force.
-          hooks_before=$(git config --local --get-all core.hooksPath 2>/dev/null || true)
-          fsmonitor_before=$(git config --local --get-all core.fsmonitor 2>/dev/null || true)
+          # The whole local config, not `--get-all` for two keys: a key can also
+          # arrive through `include.path` (which `--local` does not follow) or
+          # with several values from `git config --add`, and one file snapshot
+          # covers every shape, then puts back a config the later steps can trust.
+          config_path=$(git rev-parse --git-path config 2>/dev/null || echo .git/config)
+          config_before=$(cat "$config_path" 2>/dev/null || true)
           # --- session guard: snapshot end ---
           set +e
           pi "${args[@]}" "Review pull request #$PR_NUMBER." > "$PI_REVIEW_EVENTS" 2> "$work/stderr.log"
@@ -516,22 +517,13 @@ jobs:
               printf '%s\n' "${path_before:-}" > "$GITHUB_PATH"
             fi
           fi
-          for key in core.hooksPath core.fsmonitor; do
-            case "$key" in
-              core.hooksPath) before=${hooks_before:-} ;;
-              *) before=${fsmonitor_before:-} ;;
-            esac
-            now=$(git config --local --get-all "$key" 2>/dev/null || true)
-            [ "$now" = "$before" ] && continue
-            echo "::warning::The review agent changed $key; restoring it."
-            # `--unset-all` then one `--add` per saved value: the only shape
-            # that also undoes an added value instead of failing on it.
-            git config --local --unset-all "$key" 2>/dev/null || true
-            [ -n "$before" ] || continue
-            while IFS= read -r value; do
-              git config --local --add "$key" "$value"
-            done <<< "$before"
-          done
+          if [ -n "${config_path:-}" ]; then
+            config_now=$(cat "$config_path" 2>/dev/null || true)
+            if [ "$config_now" != "${config_before:-}" ]; then
+              echo "::warning::The review agent changed the checkout's git config; restoring it."
+              printf '%s\n' "${config_before:-}" > "$config_path"
+            fi
+          fi
           # --- session guard: restore end ---
           echo "PI_PI_EXIT=$status" >> "$GITHUB_ENV"
 
