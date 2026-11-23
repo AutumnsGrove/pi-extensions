@@ -40,6 +40,7 @@ describe("attentionState", () => {
 		toolCalls: 1,
 		prompted: false,
 		aborted: false,
+		errored: false,
 		released: false,
 		lastText: "Fixed the flaky test.",
 		wake: {

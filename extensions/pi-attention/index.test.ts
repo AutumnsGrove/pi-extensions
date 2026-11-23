@@ -214,6 +214,27 @@ describe("states", () => {
 		expect(states(permission)).toEqual(["needs_you"]);
 	});
 
+	it("needs you for a run that failed, from either signal", async () => {
+		const outcome = await load();
+		await outcome.handler("session_start")?.({ type: "session_start", reason: "startup" }, outcome.ctx);
+		await outcome.handler("agent_start")?.({ type: "agent_start" }, outcome.ctx);
+		await outcome.handler("agent_before_settle")?.({ type: "agent_before_settle", outcome: "error" }, outcome.ctx);
+		await outcome.settle();
+		expect(states(outcome)).toEqual(["working", "needs_you"]);
+		expect(outcome.hookEvents.at(-1)?.input.reason).toBe("the run failed");
+
+		// The settle outcome is portable, the message is not always there.
+		const message = await load();
+		await message.handler("session_start")?.({ type: "session_start", reason: "startup" }, message.ctx);
+		await message.handler("agent_start")?.({ type: "agent_start" }, message.ctx);
+		await message.handler("message_end")?.({
+			type: "message_end",
+			message: { role: "assistant", content: [], stopReason: "error", errorMessage: "rate limited" },
+		}, message.ctx);
+		await message.settle();
+		expect(states(message)).toEqual(["working", "needs_you"]);
+	});
+
 	it("does not repeat an identical consecutive state", async () => {
 		const h = await load();
 		await h.handler("session_start")?.({ type: "session_start", reason: "startup" }, h.ctx);

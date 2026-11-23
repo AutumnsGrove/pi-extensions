@@ -59,6 +59,7 @@ const freshFacts = (): TurnFacts => ({
 	toolCalls: 0,
 	prompted: false,
 	aborted: false,
+	errored: false,
 	released: false,
 });
 
@@ -168,6 +169,7 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 						: {}),
 					...(turn.lastText ? { lastText: turn.lastText } : {}),
 					toolCalls: turn.toolCalls,
+					...(turn.errored ? { errored: true } : {}),
 				},
 			});
 		}
@@ -318,6 +320,16 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 	pi.on("message_end", (event) => {
 		const text = messageText(event.message);
 		if (text) facts.lastText = text;
+		// The last assistant message carries the provider failure; `notify` reads
+		// the same field for the error text, and the settle outcome can arrive
+		// without the message (and the other way round).
+		if ((event.message as { stopReason?: unknown }).stopReason === "error") {
+			facts.errored = true;
+		}
+	});
+
+	pi.on("agent_before_settle", (event) => {
+		if (event.outcome === "error") facts.errored = true;
 	});
 
 	pi.on("ui_prompt_start", () => {

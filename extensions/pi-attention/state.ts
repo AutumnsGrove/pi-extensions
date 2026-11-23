@@ -6,6 +6,10 @@
  * classifier can never talk itself into "nothing to do" about them — PR text is
  * attacker-writable and a decision model can be nudged.
  *
+ * A failed run outranks everything, including a done release: an error after a
+ * release means the release did not finish the job, and it is the one outcome
+ * that must never go quiet.
+ *
  * Only one case is left to the model: an informational wake (passing checks)
  * where the agent still did something. Did it report something worth reading,
  * or was the work invisible and the turn a no-op?
@@ -21,6 +25,14 @@ const decided = (update: AttentionUpdate): RuleOutcome => ({ kind: "decided", up
 
 /** Turn facts with nothing meaningful still become `idle`. */
 export function decideRules(facts: TurnFacts): RuleOutcome {
+	if (facts.errored) {
+		return decided({
+			state: "needs_you",
+			source: "rule",
+			reason: "the run failed",
+		});
+	}
+
 	if (facts.released) {
 		return decided({
 			state: "ready",

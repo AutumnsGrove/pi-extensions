@@ -53,6 +53,8 @@ export interface TurnFacts {
 	prompted: boolean;
 	/** The run ended because it was aborted. */
 	aborted: boolean;
+	/** The run failed: a provider error, not a decision to stop. */
+	errored: boolean;
 }
 
 export interface VerdictRecord {
@@ -78,5 +80,7 @@ export interface VerdictRecord {
 		wakeSummary?: string;
 		lastText?: string;
 		toolCalls: number;
+		/** The run failed, so the state was decided by that and not by the text. */
+		errored?: boolean;
 	};
 }

@@ -18,6 +18,7 @@ const facts = (overrides: Partial<TurnFacts> = {}): TurnFacts => ({
 	toolCalls: 0,
 	prompted: false,
 	aborted: false,
+	errored: false,
 	released: false,
 	...overrides,
 });
@@ -34,6 +35,22 @@ describe("decideRules", () => {
 		if (outcome.kind === "decided") {
 			expect(outcome.update.reason).toBe("released as done: green");
 			expect(outcome.update.source).toBe("signal");
+		}
+	});
+
+	it("always needs you for a run that failed, even after a release", () => {
+		for (const overrides of [
+			{},
+			{ released: true, releaseReason: "green" },
+			{ aborted: true },
+			{ wake: wake(true), toolCalls: 0 },
+		]) {
+			const outcome = decideRules(facts({ ...overrides, errored: true }));
+			expect(state(outcome)).toBe("needs_you");
+			if (outcome.kind === "decided") {
+				expect(outcome.update.reason).toBe("the run failed");
+				expect(outcome.update.source).toBe("rule");
+			}
 		}
 	});
 
