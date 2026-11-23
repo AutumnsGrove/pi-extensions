@@ -405,14 +405,6 @@ jobs:
           mkdir -p "$work"
           preflight="$work/preflight.json"
 
-          # `identity: "app"` without the App secrets is degraded, not fatal: the
-          # workflow falls back to `github.token`, and the review posts as
-          # `github-actions[bot]`. Worth naming once, not worth stopping for.
-          if [ "$(jq -r '.identity // "app"' "$PI_REVIEW_SETTINGS")" = "app" ] && \
-            [ "${PI_REVIEW_APP_CONFIGURED:-}" != "true" ]; then
-            echo "::warning::pi-review: identity is app but PI_REVIEW_APP_ID or PI_REVIEW_APP_PRIVATE_KEY is missing; the review would post as github-actions[bot]."
-          fi
-
           # The provider key is the one credential a run cannot work without. The
           # test is the exported variable the review step would read, not the
           # secret context: that copy is made in `Read the settings`, and an empty
@@ -423,38 +415,50 @@ jobs:
             missing="$provider_env (repo secret PI_REVIEW_API_KEY)"
           fi
 
-          if [ -z "$missing" ]; then
-            jq -n '{skip:false}' > "$preflight"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+          if [ -n "$missing" ]; then
+            # A bot pull request is not a mistake anybody can fix, so it concludes
+            # neutrally; a person's pull request with no credential is a setup
+            # problem and stays red, now naming what is missing.
+            bot=false
+            case "${PR_AUTHOR_TYPE:-}" in
+              Bot|bot) bot=true ;;
+            esac
+            if [ "$bot" = "true" ]; then
+              outcome=skipped
+              kind=bot-secrets
+              reason="bot-authored pull request: this trigger receives no repository secrets, so the review cannot start"
+            else
+              outcome=failure
+              kind=no-credentials
+              reason="the credential the settings name was not available to the job, so the review could not start"
+            fi
+
+            jq -n --arg outcome "$outcome" --arg kind "$kind" --arg reason "$reason" \
+              --arg detail "missing: $missing" --arg author "${PR_AUTHOR_LOGIN:-unknown}" \
+              '{skip:true, outcome:$outcome, kind:$kind, reason:$reason, detail:$detail, author:$author}' \
+              > "$preflight"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            # One annotation, about the thing that stops the run. A bot pull
+            # request is supposed to be quiet, so nothing else is said about it
+            # (#88).
+            if [ "$outcome" = "skipped" ]; then
+              echo "::notice::pi-review skipped ${PR_AUTHOR_LOGIN:-this bot}: $reason. $missing"
+            else
+              echo "::error::pi-review cannot review: $missing is not set. Store the secret and re-run."
+            fi
             exit 0
           fi
 
-          # A bot pull request is not a mistake anybody can fix, so it concludes
-          # neutrally; a person's pull request with no credential is a setup
-          # problem and stays red, now naming what is missing.
-          bot=false
-          case "${PR_AUTHOR_TYPE:-}" in
-            Bot|bot) bot=true ;;
-          esac
-          if [ "$bot" = "true" ]; then
-            outcome=skipped
-            kind=bot-secrets
-            reason="bot-authored pull request: this trigger receives no repository secrets, so the review cannot start"
-          else
-            outcome=failure
-            kind=no-credentials
-            reason="the credential the settings name was not available to the job, so the review could not start"
-          fi
+          jq -n '{skip:false}' > "$preflight"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
 
-          jq -n --arg outcome "$outcome" --arg kind "$kind" --arg reason "$reason" \
-            --arg detail "missing: $missing" --arg author "${PR_AUTHOR_LOGIN:-unknown}" \
-            '{skip:true, outcome:$outcome, kind:$kind, reason:$reason, detail:$detail, author:$author}' \
-            > "$preflight"
-          echo "skip=true" >> "$GITHUB_OUTPUT"
-          if [ "$outcome" = "skipped" ]; then
-            echo "::notice::pi-review skipped ${PR_AUTHOR_LOGIN:-this bot}: $reason. $missing"
-          else
-            echo "::error::pi-review cannot review: $missing is not set. Store the secret and re-run."
+          # Only a run that will actually review is worth a warning about the
+          # App identity. `identity: "app"` without the App secrets is degraded,
+          # not fatal: the workflow falls back to `github.token` and the review
+          # posts as `github-actions[bot]`.
+          if [ "$(jq -r '.identity // "app"' "$PI_REVIEW_SETTINGS")" = "app" ] && \
+            [ "${PI_REVIEW_APP_CONFIGURED:-}" != "true" ]; then
+            echo "::warning::pi-review: identity is app but PI_REVIEW_APP_ID or PI_REVIEW_APP_PRIVATE_KEY is missing; the review would post as github-actions[bot]."
           fi
           exit 0
 

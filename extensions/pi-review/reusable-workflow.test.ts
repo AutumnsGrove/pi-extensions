@@ -647,6 +647,78 @@ describe("the reusable workflow", () => {
 		expect(conclude.run).toContain("no-credentials");
 	});
 
+	it("runs the pre-flight, and says nothing about a bot pull request", () => {
+		// The step decides the outcome, so it is read by running it: an annotation
+		// emitted before the credential check made a run meant to be quiet carry a
+		// warning, which is what the bot path exists to avoid (#88).
+		const run = step("Check the run can review").run as string;
+		const decide = (options: {
+			provider: boolean;
+			bot: boolean;
+			appSecrets?: boolean;
+		}): { out: string; env: string; preflight: Record<string, unknown> } => {
+			const work = mkdtempSync(join(tmpdir(), "pi-review-preflight-"));
+			try {
+				const settings = join(work, "pi-review.json");
+				writeFileSync(
+					settings,
+					JSON.stringify({ identity: "app", providerEnv: "OPENCODE_API_KEY" })
+				);
+				const githubOutput = join(work, "output");
+				writeFileSync(githubOutput, "");
+				const env: Record<string, string | undefined> = {
+					...process.env,
+					RUNNER_TEMP: join(work, "runner"),
+					PI_REVIEW_SETTINGS: settings,
+					PI_REVIEW_APP_CONFIGURED: options.appSecrets ? "true" : "false",
+					GITHUB_OUTPUT: githubOutput,
+					PR_AUTHOR_TYPE: options.bot ? "Bot" : "User",
+					PR_AUTHOR_LOGIN: options.bot ? "dependabot[bot]" : "someone",
+				};
+				// The provider key arrives exactly the way `Read the settings` leaves
+				// it: exported under the name the project chose.
+				if (options.provider) env.OPENCODE_API_KEY = "not-a-real-key";
+				else delete env.OPENCODE_API_KEY;
+				const out = execFileSync("bash", ["-c", run], { encoding: "utf8", env });
+				return {
+					out,
+					env: readFileSync(githubOutput, "utf8"),
+					preflight: JSON.parse(
+						readFileSync(join(work, "runner", "pi-review", "preflight.json"), "utf8")
+					),
+				};
+			} finally {
+				rmSync(work, { recursive: true, force: true });
+			}
+		};
+
+		// A bot pull request that cannot be reviewed: one notice, no warning, and
+		// a neutral decision the conclude step turns into a green check.
+		const bot = decide({ provider: false, bot: true });
+		expect(bot.out).toContain("::notice::");
+		expect(bot.out).not.toContain("::warning::");
+		expect(bot.out).not.toContain("::error::");
+		expect(bot.env).toContain("skip=true");
+		expect(bot.preflight).toMatchObject({ skip: true, outcome: "skipped", kind: "bot-secrets" });
+		expect(String(bot.preflight.detail)).toContain("OPENCODE_API_KEY");
+
+		// The same gap on a person's pull request is a setup problem: red, named.
+		const person = decide({ provider: false, bot: false });
+		expect(person.out).toContain("::error::");
+		expect(person.out).toContain("PI_REVIEW_API_KEY");
+		expect(person.preflight).toMatchObject({ skip: true, outcome: "failure", kind: "no-credentials" });
+
+		// A run that can proceed says nothing, and warns only about the App
+		// identity, which is degraded rather than fatal.
+		const ok = decide({ provider: true, bot: false, appSecrets: true });
+		expect(ok.out.trim()).toBe("");
+		expect(ok.env).toContain("skip=false");
+		expect(ok.preflight).toEqual({ skip: false });
+		const noApp = decide({ provider: true, bot: false });
+		expect(noApp.out).toContain("::warning::");
+		expect(noApp.env).toContain("skip=false");
+	});
+
 	it("names an agent that exited before its first model call", () => {
 		// `lastError: " "` with an empty usage object is not a crash; saying it
 		// may have "timed out or crashed" sent a reader looking for the wrong
