@@ -124,7 +124,8 @@ describe("registerReviewRunner", () => {
 					ok: true,
 					status: 200,
 					headers: new Headers({ "content-type": "image/png" }),
-					arrayBuffer: async () => new Uint8Array([1, 2, 3]),
+					arrayBuffer: async () =>
+						new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]),
 				}) as unknown as Response) as typeof fetch,
 		});
 		const result = (await events.get("before_agent_start")!(
@@ -136,7 +137,10 @@ describe("registerReviewRunner", () => {
 		expect(parts[0]?.type).toBe("text");
 		expect(parts[0]?.text).toContain("screenshots");
 		expect(parts[0]?.text).toContain("1 image(s) from the request are attached");
-		expect(parts[1]).toEqual({ type: "image", mimeType: "image/png", data: "AQID" });
+		expect(parts[1]?.mimeType).toBe("image/png");
+		expect(parts[1]?.data).toBe(
+			Buffer.from(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])).toString("base64")
+		);
 	});
 
 	it("says so when a screenshot cannot be read", async () => {

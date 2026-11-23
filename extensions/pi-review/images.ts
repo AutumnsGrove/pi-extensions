@@ -83,20 +83,31 @@ export function extractImages(text: string): ImageRef[] {
 	return [...seen.values()];
 }
 
-function mimeTypeFrom(url: URL, contentType: string | null): string {
-	if (contentType?.startsWith("image/")) return contentType.split(";")[0] ?? "image/png";
-	const extension = url.pathname.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase();
-	switch (extension) {
-		case "jpg":
-		case "jpeg":
-			return "image/jpeg";
-		case "gif":
-			return "image/gif";
-		case "webp":
-			return "image/webp";
-		default:
-			return "image/png";
-	}
+/**
+ * The four types every provider accepts. Anthropic's
+ * `convertImageBlock` forwards our `mimeType` verbatim as
+ * `source.media_type` and rejects anything outside `image/jpeg`, `image/png`,
+ * `image/gif` and `image/webp`; the other providers are as strict about the
+ * payload. An attachment outside this set has to become a note, or it fails the
+ * whole run with a 400 instead of a review.
+ */
+const SUPPORTED_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+
+/**
+ * What the bytes actually are, from their signature. The content type is
+ * whatever the server said, and a 200 with `text/html` labelled `image/png`
+ * would otherwise be handed to the model as an image. A real PNG starts with
+ * the PNG signature, so a payload that does not sniff as one of the four is not
+ * one of the four, whatever the header claims.
+ */
+function sniffImageType(bytes: Uint8Array): string | undefined {
+	const at = (offset: number, ...expected: number[]) =>
+		expected.every((value, index) => bytes[offset + index] === value);
+	if (at(0, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return "image/png";
+	if (at(0, 0xff, 0xd8, 0xff)) return "image/jpeg";
+	if (at(0, 0x47, 0x49, 0x46, 0x38)) return "image/gif";
+	if (at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50)) return "image/webp";
+	return undefined;
 }
 
 export interface FetchImagesOptions {
@@ -148,9 +159,17 @@ export async function fetchImages(
 				notes.push(`screenshot ${ref.guid} was empty`);
 				continue;
 			}
+			const sniffed = sniffImageType(buffer);
+			if (!sniffed || !SUPPORTED_MIME_TYPES.has(sniffed)) {
+				const stated = response.headers.get("content-type") ?? "no content type";
+				notes.push(
+					`screenshot ${ref.guid} is not an image the reviewer can read (${stated}); attach a PNG, JPEG, GIF or WebP`
+				);
+				continue;
+			}
 			images.push({
 				guid: ref.guid,
-				mimeType: mimeTypeFrom(new URL(ref.url), response.headers.get("content-type")),
+				mimeType: sniffed,
 				data: Buffer.from(buffer).toString("base64"),
 			});
 		} catch (error) {
