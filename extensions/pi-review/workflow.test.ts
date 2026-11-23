@@ -140,6 +140,25 @@ describe("renderWorkflow", () => {
 		).not.toContain("draft");
 	});
 
+	it("skips only the bot logins a list names, and keeps the rest reviewable", () => {
+		const list = render({ triggers: { ...settings().triggers, skipBots: ["dependabot[bot]"] } });
+		expect(list.jobs.review.if).toContain(
+			"!contains(fromJSON('[\"dependabot[bot]\"]'), github.event.pull_request.user.login)"
+		);
+		// A list is not the boolean shorthand: every bot except the named one is
+		// still reviewed (#88).
+		expect(list.jobs.review.if).not.toContain("github.event.pull_request.user.type != 'Bot'");
+		// The skip is part of the shared condition, so an ignored bot run cannot
+		// join the pull request's concurrency group and cancel a review.
+		expect(list.concurrency.group).toContain("dependabot[bot]");
+	});
+
+	it("treats an empty skip list as skipping none", () => {
+		const rendered = render({ triggers: { ...settings().triggers, skipBots: [] } });
+		expect(rendered.jobs.review.if).not.toContain("user.login");
+		expect(rendered.jobs.review.if).not.toContain("github.event.pull_request.user.type != 'Bot'");
+	});
+
 	it("filters paths with a single list of negations when excludes are set", () => {
 		expect(
 			render({ paths: { include: ["src/**"], exclude: ["**/*.md"] } }).on.pull_request.paths
