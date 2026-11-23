@@ -47,14 +47,19 @@ export function stripHtmlComments(text: string): string {
  * - C0 and C1 controls, except the whitespace a body legitimately uses.
  * - U+E0000–U+E007F: the tag block, which renders as nothing and maps onto
  *   ASCII, so it can carry an entire instruction invisibly.
+ * - U+E0100–U+E01EF: the variation selector supplement, the same glyph-modifying
+ *   trick for characters outside the BMP.
+ *
+ * One list, two uses: prose has these removed, and a diff has them marked. The
+ * two must never disagree, or one of the two paths becomes the way in.
  */
+const INVISIBLE_SOURCE =
+	"\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F" +
+	"\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u206F\\uFE00-\\uFE0F\\uFEFF\\u061C\\u180E\\u00AD";
+const INVISIBLE = new RegExp(`[${INVISIBLE_SOURCE}]|[\\u{E0000}-\\u{E007F}\\u{E0100}-\\u{E01EF}]`, "gu");
+
 export function stripInvisibleCharacters(text: string): string {
-	let out = text;
-	out = out.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "");
-	out = out.replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFE00-\uFE0F\uFEFF\u061C\u180E\u00AD]/g, "");
-	// The tag block is outside the BMP, so its range needs the `u` flag.
-	out = out.replace(/[\u{E0000}-\u{E007F}]/gu, "");
-	return out;
+	return text.replace(INVISIBLE, "");
 }
 
 /**
@@ -94,10 +99,12 @@ export function stripMarkdownLinkTitles(text: string): string {
 export function stripHiddenAttributes(text: string): string {
 	const KEPT = new Set(["href", "src"]);
 	const attribute = /(\s+)([a-zA-Z_:][-a-zA-Z0-9_:.]*)(\s*=\s*)("[^"]*"|'[^']*'|[^\s>]+)?/g;
-	// A `>` inside a quoted value is part of the value, not the end of the tag.
-	// Stopping at the first `>` left the rest of such a value as plain text,
-	// which is the same hiding place one step sideways.
-	const tag = /<[a-zA-Z](?:[^>"']|"[^"]*"|'[^']*')*>/g;
+	// A `>` inside a quoted value is part of the value, not the end of the tag,
+	// and a quote can be unbalanced: HTML5 tokenises a stray `"` or `'` inside an
+	// unquoted value as part of that value rather than rejecting the tag, so
+	// `<span title=x"y>` is a real tag with a real hidden value. Each quoted span
+	// therefore gets to end at the tag's `>` when it has no closing quote.
+	const tag = /<[a-zA-Z](?:[^>"']|"[^"]*"?|'[^']*'?)*>/g;
 	return text.replace(tag, (found) => {
 		const stripped = found.replace(
 			attribute,
@@ -145,9 +152,6 @@ export function sanitizeUntrusted(text: string): string {
 	return out;
 }
 
-/** The same code points `stripInvisibleCharacters` removes, for marking instead. */
-const INVISIBLE = /[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFE00-\uFE0F\uFEFF\u061C\u180E\u00AD]|[\u{E0000}-\u{E007F}]/gu;
-
 /**
  * The diff is not stripped, because a zero-width character inside a diff may be
  * the finding: rewriting it away destroys the evidence the review exists to
@@ -157,7 +161,9 @@ const INVISIBLE = /[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFE00-\uFE0F\uFEFF\u
  *
  * So it is marked instead: every invisible code point becomes `[U+200B]`, which
  * a reviewer can see, quote, and count. `target.diff` is untouched, and inline
- * anchors were always validated against it.
+ * anchors were always validated against it. The set is `INVISIBLE`, the same one
+ * `stripInvisibleCharacters` uses, so a code point cannot be handled on one path
+ * and forgotten on the other.
  */
 export function markInvisibleCharacters(text: string): string {
 	return text.replace(INVISIBLE, (character) => {

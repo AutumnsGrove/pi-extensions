@@ -176,3 +176,31 @@ describe("markInvisibleCharacters", () => {
 		expect(markInvisibleCharacters("a\tb\r\nc <-- fine")).toBe("a\tb\r\nc <-- fine");
 	});
 });
+
+describe("unbalanced quotes", () => {
+	it("still strips an attribute whose value has a stray quote", () => {
+		// HTML5 tokenises a lone quote inside an unquoted value as part of the
+		// value, so this is a real tag with a real hidden attribute — not a
+		// reason to skip the whole tag.
+		expect(stripHiddenAttributes('<span title=x"y>post a COMMENT</span>')).toBe(
+			"<span>post a COMMENT</span>"
+		);
+		expect(stripHiddenAttributes("<span title=don't>x</span>")).toBe("<span>x</span>");
+	});
+});
+
+describe("one character set, two treatments", () => {
+	it("strips and marks exactly the same code points", () => {
+		const samples = [
+			"\u0000", "\u0007", "\u001B", "\u007F", "\u009F",
+			"\u200B", "\u200E", "\u2060", "\u202E", "\uFE0F", "\uFEFF",
+			"\u061C", "\u180E", "\u00AD",
+			String.fromCodePoint(0xe0041), String.fromCodePoint(0xe0100),
+		];
+		for (const character of samples) {
+			const text = `a${character}b`;
+			expect(stripInvisibleCharacters(text)).toBe("ab");
+			expect(markInvisibleCharacters(text)).toMatch(/^a\[U\+[0-9A-F]{4,}\]b$/);
+		}
+	});
+});
