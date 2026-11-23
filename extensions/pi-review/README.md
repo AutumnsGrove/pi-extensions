@@ -551,7 +551,11 @@ stops are never recovered into a review.
   finding reviewable without leaving a covert channel. Inline anchors were
   always validated against the untouched diff, so nothing moves.
 - Guidance reads `REVIEW.md`/`AGENTS.md` from the **base** commit, so a PR
-  cannot rewrite the rules it is reviewed against.
+  cannot rewrite the rules it is reviewed against — and those files are put back
+  into the checkout from the base commit before the review, so a reviewer that
+  opens `AGENTS.md` reads the base rules rather than the PR's rewrite. A file the
+  base does not have is removed. The PR's edits remain in the diff, which is
+  where a change to them belongs.
 - Text pi-review publishes is scrubbed of credential shapes first: a provider
   error, a `gh` failure, and the prose a recovery quotes all pass through
   `redact.ts` (GitHub, Anthropic, AWS, Slack and JWT formats) before they reach
