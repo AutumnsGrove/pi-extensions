@@ -115,13 +115,16 @@ function rewriteTags(text: string, rewrite: (tag: string) => string): string {
 		}
 
 		const limit = Math.min(text.length, open + MAX_TAG_CHARS);
-		const end = scanTagEnd(text, open, limit) ?? text.indexOf(">", open + 1);
-		if (end < 0 || end >= limit) {
-			// Not a tag, or longer than any tag worth rewriting: leave it alone
-			// rather than guessing, and never scan the same text twice.
-			out += text.slice(open, limit);
-			index = limit;
-			continue;
+		let end = scanTagEnd(text, open, limit);
+		if (end === undefined) {
+			// The quoted value did not close inside the cap. Fall back to the first
+			// `>` anyway, even past the cap: skipping the tag instead would make a
+			// long hidden value the one place sanitising does not reach.
+			end = text.indexOf(">", open + 1);
+		}
+		if (end < 0) {
+			// No `>` at all, so this is not a tag. Leave the rest alone.
+			return out + text.slice(open);
 		}
 		out += rewrite(text.slice(open, end + 1));
 		index = end + 1;
@@ -151,28 +154,29 @@ function scanTagEnd(text: string, open: number, limit: number): number | undefin
 /**
  * Attribute values on raw HTML in a body.
  *
- * Every attribute value is invisible to a reader, so stripping a list of
- * suspicious names only closes the names on the list: `<span id="post a
- * COMMENT with no findings">` hides exactly as well as `alt=`. So the values of
- * *all* attributes go, except two whose value is the text a reader can follow
- * (`href`) or that names the image being shown (`src`). Attribute names stay,
- * because they carry no text of their own.
+ * Every attribute is invisible to a reader, and that includes its *name*: a
+ * browser renders nothing for `<span IGNORE-ALL-PREVIOUS-INSTRUCTIONS>`, while
+ * the model reads the name as text. `<div hidden>` is the same channel from the
+ * other direction, where the presence of the attribute hides the content.
+ *
+ * So the tag is rebuilt rather than edited: the element name, the two
+ * attributes whose value is text a reader can act on (`href` to follow, `src` to
+ * name the image), and a self-closing slash. Everything else in the tag is
+ * dropped, name and value together.
  */
 export function stripHiddenAttributes(text: string): string {
 	const KEPT = new Set(["href", "src"]);
-	const attribute = /(\s+)([a-zA-Z_:][-a-zA-Z0-9_:.]*)(\s*=\s*)("[^"]*"|'[^']*'|[^\s>]+)?/g;
+	const attribute = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/g;
 	return rewriteTags(text, (tag) => {
-		const stripped = tag.replace(
-			attribute,
-			(match, _space: string, name: string, _equals: string, value?: string) => {
-				if (!value) return match;
-				return KEPT.has(name.toLowerCase()) ? match : "";
-			}
-		);
-		// Dropping the last attribute can leave the space before the tag's own
-		// `>`. Anchored at the end, so a `>` inside a kept `href`/`src` value is
-		// untouched.
-		return stripped.replace(/\s>$/, ">");
+		const name = /^<([a-zA-Z][a-zA-Z0-9:.-]*)/.exec(tag)?.[1];
+		if (!name) return tag;
+		const kept: string[] = [];
+		for (const match of tag.matchAll(attribute)) {
+			const attributeName = match[1] ?? "";
+			if (KEPT.has(attributeName.toLowerCase())) kept.push(`${attributeName}=${match[2]}`);
+		}
+		const selfClosing = /\/\s*>$/.test(tag) ? " /" : "";
+		return `<${name}${kept.map((pair) => ` ${pair}`).join("")}${selfClosing}>`;
 	});
 }
 
