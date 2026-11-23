@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	appleScript,
+	attentionWantsBanner,
 	buildAborted,
 	buildAttention,
 	buildError,
@@ -10,6 +11,7 @@ import {
 	encodeTerminal,
 	formatDuration,
 	notificationTitle,
+	parseAttentionState,
 	planDelivery,
 	plainText,
 	promptLabel,
@@ -358,5 +360,24 @@ describe("snippet", () => {
 		const result = snippet(long);
 		expect(result.length).toBeLessThanOrEqual(160);
 		expect(result.endsWith("…")).toBe(true);
+	});
+});
+
+describe("attention verdicts", () => {
+	it("reads the five states off the bus and nothing else", () => {
+		for (const state of ["working", "needs_you", "waiting", "ready", "idle"]) {
+			expect(parseAttentionState(state)).toBe(state);
+		}
+		for (const value of [undefined, null, 1, {}, "needs-you", "Needs_You", ""]) {
+			expect(parseAttentionState(value)).toBeUndefined();
+		}
+	});
+
+	it("banners only the two states that ask for you", () => {
+		expect(attentionWantsBanner("needs_you")).toBe(true);
+		expect(attentionWantsBanner("ready")).toBe(true);
+		expect(attentionWantsBanner("waiting")).toBe(false);
+		expect(attentionWantsBanner("idle")).toBe(false);
+		expect(attentionWantsBanner("working")).toBe(false);
 	});
 });
