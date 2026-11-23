@@ -398,6 +398,16 @@ describe("the reusable workflow", () => {
 		// and `SECRET_SAMPLES` is what keeps the two honest.
 		const recover = step("Recover the review");
 		expect(recover.run).toContain("| redact)");
+		// The extension's own recovery posts the prose directly, so the workflow's
+		// fallback is a second belt. An artifact that already carries
+		// `recovered: true` is that same quoted prose, not a review the model
+		// chose to write, so its summary is scrubbed before the retry too.
+		expect(recover.run).toContain('if [ "$recovered_artifact" = "true" ]');
+		expect(recover.run).toContain('summary=$(printf \'%s\' "$summary" | redact)');
+		// And its inline comments are dropped, because a recovery never had any.
+		expect(recover.run).toContain('if $recovered == "true" then []');
+		// `gh`'s stderr from a rejected post lands in the uploaded recovery.json.
+		expect(recover.run).toContain("| redact | cut -c1-400");
 
 		const definition = (recover.run ?? "").match(/redact\(\) \{[\s\S]*?\n\s*\}/)?.[0];
 		expect(definition).toBeTruthy();

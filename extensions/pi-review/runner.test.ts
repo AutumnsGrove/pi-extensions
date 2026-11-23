@@ -616,6 +616,31 @@ new file mode 100644
 		expect(artifact.review.summary).toContain("The new path is covered by a test");
 	});
 
+	it("scrubs a credential out of the prose it recovers and posts", async () => {
+		// The extension recovers prose in `agent_settled` and posts it directly,
+		// which is the common case; the workflow's fallback only runs when this
+		// did not post. Same text, same leak.
+		const path = await outputPath();
+		const { pi, events } = fakePi(fakeExec());
+		registerReviewRunner(pi, {
+			env: { PI_REVIEW: "1", PI_REVIEW_OUTPUT: path, PR_NUMBER: "5" },
+		});
+		await events.get("before_agent_start")!(
+			{ messageType: "user", prompt: "x", systemPrompt: "BASE" },
+			{ cwd: "/repo" }
+		);
+		const token = `ghp_${"a".repeat(36)}`;
+		const prose = `The workflow leaks ${token} in its debug output. ${"It should be redacted before the run ends. ".repeat(12)}`;
+		events.get("message_end")!(
+			{ message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: prose }] } },
+			{ cwd: "/repo" }
+		);
+		await events.get("agent_settled")!({}, { cwd: "/repo" });
+		const artifact = JSON.parse(await readFile(path, "utf8"));
+		expect(artifact.review.summary).not.toContain(token);
+		expect(artifact.review.summary).toContain("[REDACTED_GITHUB_TOKEN]");
+	});
+
 	it("never recovers a provider error", async () => {
 		const path = await outputPath();
 		let reviewPosts = 0;

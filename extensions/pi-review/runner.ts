@@ -22,6 +22,7 @@ import {
 	recoverySummary,
 } from "./failure.ts";
 import { buildReviewPrompt } from "./prompt.ts";
+import { redactSecrets } from "./redact.ts";
 import { type ValidatedReview, renderReviewMarkdown } from "./review.ts";
 import { createSubmitReviewTool, postReview, upsertStickyComment } from "./submit.ts";
 import {
@@ -358,7 +359,13 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 			return;
 		}
 
-		const text = lastSubstantiveText || assistantText(lastAssistant);
+		// This prose is quoted from the diff and from tool output, and it is about to
+		// be published under the reviewer's name: the artifact, the markdown and the
+		// posted comment body all come from here. Scrub it once, at the source, so
+		// the extension's own recovery cannot leak what the workflow's fallback
+		// would have caught (#74). The workflow's fallback stays as a second belt.
+		const raw = lastSubstantiveText || assistantText(lastAssistant);
+		const text = redactSecrets(raw);
 		if (!isSubstantiveReview(text)) {
 			await writeRunnerArtifact({
 				...base,
@@ -399,7 +406,7 @@ export function registerReviewRunner(pi: ExtensionAPI, options: RunnerOptions = 
 				error: "the run ended without calling submit_review; its final answer was posted as a COMMENT review",
 			});
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
+			const message = redactSecrets(error instanceof Error ? error.message : String(error));
 			await writeRunnerArtifact({
 				...recovered,
 				errorKind: "post",

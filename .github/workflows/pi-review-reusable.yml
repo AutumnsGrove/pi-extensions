@@ -571,8 +571,19 @@ jobs:
 
           # A validated review that never reached GitHub (a rejected post, a
           # timeout after submit_review) is the best thing to retry.
+          #
+          # A review the model chose to write is re-posted as it stands. A
+          # `recovered: true` artifact is not that: its summary is prose quoted
+          # from the diff and from tool output, so it is scrubbed like the text
+          # below before it is published (#74).
           if [ -f "$artifact" ] && jq -e '.review != null' "$artifact" > /dev/null 2>&1; then
-            jq '{event: (.review.event // "COMMENT"), body: (((.review.summary // "") | if length > 0 then . + "\n\n" else "" end) + "<!-- pi-review:review -->"), comments: [(.review.comments // [])[] | {path, line, side: (.side // "RIGHT"), body} + (if .start_line then {start_line} else {} end)]}' \
+            recovered_artifact=$(jq -r '.recovered // false' "$artifact")
+            summary=$(jq -r '.review.summary // ""' "$artifact")
+            if [ "$recovered_artifact" = "true" ]; then
+              summary=$(printf '%s' "$summary" | redact)
+            fi
+            jq --arg summary "$summary" --arg recovered "$recovered_artifact" \
+              '{event: (.review.event // "COMMENT"), body: (($summary | if length > 0 then . + "\n\n" else "" end) + "<!-- pi-review:review -->"), comments: (if $recovered == "true" then [] else [(.review.comments // [])[] | {path, line, side: (.side // "RIGHT"), body} + (if .start_line then {start_line} else {} end)] end)}' \
               "$artifact" > "$work/recovery-full.json"
             if url=$(post_review "$work/recovery-full.json") && [ -n "$url" ]; then
               write_recovery true "$url" "posted the validated review" ""
@@ -580,10 +591,10 @@ jobs:
             fi
             # Inline anchors are the most likely reason GitHub rejects the whole
             # review; the summary is still useful on its own.
-            summary=$(jq -r '.review.summary // ""' "$artifact")
             if [ "${#summary}" -ge 40 ]; then
-              jq '{event: "COMMENT", body: ((.review.summary // "") + "\n\n<!-- pi-review:review -->"), comments: []}' \
-                "$artifact" > "$work/recovery-summary.json"
+              jq -n --arg summary "$summary" \
+                '{event: "COMMENT", body: ($summary + "\n\n<!-- pi-review:review -->"), comments: []}' \
+                > "$work/recovery-summary.json"
               if url=$(post_review "$work/recovery-summary.json") && [ -n "$url" ]; then
                 write_recovery true "$url" "posted the review summary" ""
                 exit 0
@@ -630,7 +641,10 @@ jobs:
 
           detail=""
           if [ -f "$work/recovery-error.txt" ]; then
-            detail=$(tr '\n' ' ' < "$work/recovery-error.txt" | cut -c1-400)
+            # `gh`'s own stderr against a payload it refused, and it is uploaded
+            # with the run in `recovery.json`, the same surface the runner's
+            # post failure is scrubbed for (#74).
+            detail=$(tr '\n' ' ' < "$work/recovery-error.txt" | redact | cut -c1-400)
           fi
           write_recovery false "" "nothing to recover" "$detail"
           exit 0
