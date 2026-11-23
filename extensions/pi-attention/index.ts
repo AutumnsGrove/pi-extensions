@@ -59,6 +59,7 @@ const freshFacts = (): TurnFacts => ({
 	toolCalls: 0,
 	prompted: false,
 	aborted: false,
+	errored: false,
 	released: false,
 });
 
@@ -168,6 +169,7 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 						: {}),
 					...(turn.lastText ? { lastText: turn.lastText } : {}),
 					toolCalls: turn.toolCalls,
+					...(turn.errored ? { errored: true } : {}),
 				},
 			});
 		}
@@ -318,6 +320,21 @@ export function createAttention(pi: ExtensionAPI, deps: AttentionDeps = {}): voi
 	pi.on("message_end", (event) => {
 		const text = messageText(event.message);
 		if (text) facts.lastText = text;
+		const record = event.message as { role?: unknown; stopReason?: unknown };
+		// Assign rather than latch: pi retries a failed attempt in place and keeps
+		// it in raw history (`_omitRecoveryAttempt` only hides it from the model
+		// projection), so a later successful message means the run recovered. Its
+		// transient rate limit or 500 is not a failed run, and must not be logged
+		// as one either.
+		if (record.role === "assistant") {
+			facts.errored = record.stopReason === "error";
+		}
+	});
+
+	// The last word: this fires after every retry and compaction, so the settled
+	// outcome outranks whatever the last message said.
+	pi.on("agent_before_settle", (event) => {
+		if (event.outcome === "error") facts.errored = true;
 	});
 
 	pi.on("ui_prompt_start", () => {

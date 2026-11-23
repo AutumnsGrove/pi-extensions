@@ -34,11 +34,16 @@ can act on it, and a remote runner can show it as a per-session badge.
 
 ## Two layers, rules first
 
-1. **Rules** decide the common cases and always win. A failure, a comment, a
+1. **Rules** decide the common cases and always win. A failed run is
+   `needs_you` — ahead of everything else, including a done release, because it
+   is the one outcome that must never go quiet. A failed *attempt* is not a
+   failed run: pi retries a transient error in place, so only the settled
+   outcome (or a final message that is still an error) counts. A comment, a
    requested-changes review, a subscription error, or an open prompt is
-   `needs_you`; a passing-check wake that made no tool calls is `waiting`; so is a
-   wake whose only other event is a head already at this checkout's tip; a
-   deliberate done release is `ready`; an ordinary turn is `idle`.
+   `needs_you`; a passing-check wake that made no tool calls is `waiting`; so is
+   a wake whose only other event is a head already at this checkout's tip; a
+   deliberate done release is `ready`; an ordinary turn, or a run you aborted
+   yourself, is `idle`.
 2. **A decision model** classifies the one ambiguous case: a wake that was
    informational but where the agent still did something. Did it report
    something worth reading, or was the turn a no-op?
@@ -104,9 +109,9 @@ prints the tail.
 The log is the input to a real calibration pass: use the extension for a while,
 go back through the sessions it points at, label what each decision should have
 been, and replay those cases through a candidate cascade. That measurement is not
-built yet — see the follow-up issue, along with the `notify` mapping.
+built yet — see the follow-up issue.
 
-## What sounds does with it
+## What sounds and notify do with it
 
 When this extension is loaded, `sounds` stops playing `Stop`/`AgentSettled` and
 plays the state instead: `needs_you` gets a distinct cue, `ready` its own generated cue (`ready_to_merge.wav`),
@@ -114,14 +119,23 @@ plays the state instead: `needs_you` gets a distinct cue, `ready` its own genera
 what turns the string of identical sounds into "this one is done" versus "this
 one was nothing". Set `sounds.attention: false` to keep the old double cue.
 
+`notify` hands over its settled banner the same way: it banners `needs_you` and
+`ready`, and stays quiet for `waiting`, `idle` and the `working` transient, so a
+passing-CI turn that did nothing no longer buzzes a phone. The three-second
+minimum only applies when this extension is absent or disabled. A banner is held
+until the verdict arrives, because the decision can be a model call that answers
+after settlement; if no verdict arrives at all, `notify` falls back to its own
+duration rule rather than lose the banner. A failed run is `needs_you` by rule,
+so an error still banners, with the error wording.
+
 ## Ownership
 
 `pi-attention` announces itself (`pi-attention:ready` plus a flag in
-`globalThis`) so `sounds` can hand over the settle cue no matter which extension
-loads first. The announcement follows the configuration: it is made only while
-`enabled` is true, re-synced on `/attention reload`, withdrawn by `/attention
-off`, and withdrawn on quit. Announcing while disabled would take the settle cue
-away with nothing to replace it.
+`globalThis`) so `sounds` and `notify` can hand over the settle cue no matter
+which extension loads first. The announcement follows the configuration: it is
+made only while `enabled` is true, re-synced on `/attention reload`, withdrawn by
+`/attention off`, and withdrawn on quit. Announcing while disabled would take
+the settle cue away with nothing to replace it.
 
 A decision that is still in flight when the next turn starts is dropped rather
 than published: its turn no longer exists, and its answer would overwrite the

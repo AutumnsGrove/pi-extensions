@@ -30,6 +30,36 @@ moments that need attention. A dialog you opened yourself while pi is idle
 (`/settings`, a menu command) stays silent; only prompts raised while the agent
 runs notify.
 
+## With pi-attention loaded
+
+[`pi-attention`](../pi-attention/README.md) decides whether a settled run needs
+you, and `notify` defers to it. The banner follows the verdict instead of the
+duration:
+
+| Verdict | Banner |
+| --- | --- |
+| `needs_you` | yes |
+| `ready` | yes |
+| `waiting` | no — nothing to do until something happens |
+| `idle` | no — the ordinary turn that used to buzz you |
+| `working` | no — the transient while the agent runs |
+
+The three-second minimum only applies when attention is absent or disabled: a
+verdict of `ready` earns a banner even for a two-second interaction, because
+the decision is about what the turn did, not how long it took. Error wording is
+kept — attention decides *whether* to banner, the outcome decides what the
+banner says.
+
+The verdict is not always instant (the ambiguous middle is a model call that
+answers after settlement), so a settled banner is held until it arrives, for at
+most ten seconds. If attention never answers, the duration rule above takes
+over rather than losing the banner. `ui_prompt_start` banners stay immediate:
+the agent is blocked *now*, and that does not need a verdict.
+
+The handover is the same one `sounds` uses: `pi-attention` announces itself on
+load and withdraws the announcement when it is disabled, so whichever extension
+loads first, the current one decides.
+
 ## Delivery
 
 | Terminal | Sequence | Behavior |
@@ -79,10 +109,10 @@ default.
 ## Files
 
 - `index.ts` — event wiring: run timing, outcome detection, prompt routing, the
-  `/notify` command.
+  attention handover, the `/notify` command.
 - `notify.ts` — pure helpers: text flattening and truncation, duration
-  formatting, notification builders, terminal detection, escape encoding, and
-  the `osascript`/`notify-send` fallback.
+  formatting, notification builders, the attention verdict mapping, terminal
+  detection, escape encoding, and the `osascript`/`notify-send` fallback.
 - `notify.test.ts`, `index.test.ts` — the helpers and the event flow.
 
 To add another terminal, extend `terminalProtocol` and `encodeTerminal` in

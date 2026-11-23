@@ -10,6 +10,12 @@
  *   - `agent_settled` — finished / stopped / errored (success needs >= 3s)
  *   - `ui_prompt_start` — a blocking dialog, approval, or `pi-q-n-a` form
  *
+ * With `pi-attention` loaded, the settled banner defers to its verdict: a
+ * banner for `needs_you` and `ready`, silence for `waiting`, `idle` and the
+ * `working` transient. Attention decides after it has looked at the turn, so
+ * the banner is held until its `AttentionChanged` arrives — and if none ever
+ * does, it falls back to the duration rule below.
+ *
  * Delivery prefers the terminal's own notification protocol (OSC 9 for
  * Ghostty, iTerm2 and WezTerm — the sequence Claude Code uses; OSC 777 for
  * rxvt; OSC 99 for kitty), which macOS routes to Notification Center with the
@@ -26,7 +32,15 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
+import { attentionActive } from "../_shared/attention.ts";
 import {
+	HOOK_EVENT_CHANNEL,
+	isHookEventEmission,
+} from "../_shared/hook-events.ts";
+import {
+	VERDICT_GRACE_MS,
+	attentionWantsBanner,
+	parseAttentionState,
 	buildAborted,
 	buildAttention,
 	buildError,
@@ -37,6 +51,7 @@ import {
 	shouldNotify,
 	sessionLabel,
 	terminalBundleId,
+	type AttentionState,
 	type DeliveryPlan,
 	type Notification,
 } from "./notify.ts";
@@ -89,6 +104,21 @@ export default function notify(pi: ExtensionAPI): void {
 	let hasTerminalNotifier = false;
 	/** Pending `/notify test <seconds>` timer, cleared on shutdown. */
 	let testTimer: NodeJS.Timeout | undefined;
+	/**
+	 * Attention's latest verdict, and `undefined` from the start of a run until it
+	 * decides: `working` is the transient it publishes while the agent runs, so a
+	 * verdict that outlives it belongs to the turn that just settled.
+	 */
+	let verdict: AttentionState | undefined;
+	/** A settled banner waiting on attention's verdict for this run. */
+	let pending:
+		| {
+				notification: Notification;
+				durationMs: number;
+				ctx: ExtensionContext;
+				timer: NodeJS.Timeout;
+		  }
+		| undefined;
 
 	const session = (ctx: ExtensionContext): string =>
 		sessionLabel(ctx.sessionManager.getSessionName(), ctx.cwd);
@@ -132,6 +162,49 @@ export default function notify(pi: ExtensionAPI): void {
 		if (enabled) deliver(notification, ctx);
 	};
 
+	/** Drop a held banner and its timer. */
+	const clearPending = (): void => {
+		if (pending) clearTimeout(pending.timer);
+		pending = undefined;
+	};
+
+	/**
+	 * Settle a held banner against the newest verdict. Called both when the
+	 * verdict arrives and when the banner is first held, because attention may
+	 * have decided before `agent_settled` reached this extension.
+	 */
+	const applyVerdict = (): void => {
+		const held = pending;
+		if (!held || verdict === undefined) return;
+		clearPending();
+		if (attentionWantsBanner(verdict)) notify(held.notification, held.ctx);
+	};
+
+	/**
+	 * Hold a settled banner for attention. Its verdict is what decides whether the
+	 * run earned one, so the duration rule only applies if attention never speaks.
+	 */
+	const holdForAttention = (
+		notification: Notification,
+		durationMs: number,
+		ctx: ExtensionContext
+	): void => {
+		clearPending();
+		pending = {
+			notification,
+			durationMs,
+			ctx,
+			timer: setTimeout(() => {
+				const expired = pending;
+				pending = undefined;
+				if (expired && shouldNotify(expired.notification.kind, expired.durationMs)) {
+					notify(expired.notification, expired.ctx);
+				}
+			}, VERDICT_GRACE_MS),
+		};
+		applyVerdict();
+	};
+
 	pi.on("session_start", () => {
 		execFile("which", ["terminal-notifier"], (error) => {
 			hasTerminalNotifier = !error;
@@ -141,6 +214,9 @@ export default function notify(pi: ExtensionAPI): void {
 	pi.on("agent_start", () => {
 		runStartedAt ??= Date.now();
 		outcome = "completed";
+		// A banner held for the previous run is stale, and a new turn answers for
+		// itself.
+		clearPending();
 	});
 
 	pi.on("agent_before_settle", (event) => {
@@ -180,9 +256,29 @@ export default function notify(pi: ExtensionAPI): void {
 						text: last ? assistantText(last) : "",
 					});
 
+		if (attentionActive()) {
+			// Attention has looked at the turn; its verdict says whether this earned a
+			// banner, and the duration rule above does not apply when it is loaded.
+			holdForAttention(notification, durationMs, ctx);
+			return;
+		}
 		if (shouldNotify(notification.kind, durationMs)) {
 			notify(notification, ctx);
 		}
+	});
+
+	/**
+	 * `pi-attention` publishes its verdicts on the hooks channel. Listen to the
+	 * channel directly rather than registering with the hooks engine: a settle
+	 * banner depends on this and must not go quiet because `hooks` is absent.
+	 */
+	pi.events.on(HOOK_EVENT_CHANNEL, (data) => {
+		if (!isHookEventEmission(data) || data.event !== "AttentionChanged") return;
+		const state = parseAttentionState(data.input.state);
+		if (!state) return;
+		// `working` opens a turn, so it retires the verdict of the one before it.
+		verdict = state === "working" ? undefined : state;
+		applyVerdict();
 	});
 
 	pi.on("ui_prompt_start", (event, ctx) => {
@@ -233,6 +329,8 @@ export default function notify(pi: ExtensionAPI): void {
 		outcome = "completed";
 		askCalls.clear();
 		announcedAsks.clear();
+		clearPending();
+		verdict = undefined;
 		if (testTimer) {
 			clearTimeout(testTimer);
 			testTimer = undefined;

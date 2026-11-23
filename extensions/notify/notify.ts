@@ -15,6 +15,48 @@ export const MIN_COMPLETION_MS = 3_000;
 export const MAX_TITLE = 80;
 export const MAX_BODY = 220;
 
+/**
+ * How long a settle banner waits for `pi-attention`'s verdict before `notify`
+ * falls back to its own rule. Attention answers in well under a second from a
+ * rule and within its model timeout otherwise, so reaching this means it is
+ * broken or gone; falling back keeps a banner from vanishing entirely.
+ */
+export const VERDICT_GRACE_MS = 10_000;
+
+/** The five states `pi-attention` publishes on `AttentionChanged`. */
+export type AttentionState =
+	| "working"
+	| "needs_you"
+	| "waiting"
+	| "ready"
+	| "idle";
+
+const ATTENTION_STATES = new Set<string>([
+	"working",
+	"needs_you",
+	"waiting",
+	"ready",
+	"idle",
+]);
+
+/** Read a state off the bus, or `undefined` for anything unrecognised. */
+export function parseAttentionState(value: unknown): AttentionState | undefined {
+	return typeof value === "string" && ATTENTION_STATES.has(value)
+		? (value as AttentionState)
+		: undefined;
+}
+
+/**
+ * Does this verdict earn a banner?
+ *
+ * `needs_you` and `ready` are the two states that ask for the user. `working`
+ * is a transient between turns, and `waiting`/`idle` mean the run settled with
+ * nothing outstanding — the banners she was getting for "ci looks good".
+ */
+export function attentionWantsBanner(state: AttentionState): boolean {
+	return state === "needs_you" || state === "ready";
+}
+
 export type NotificationKind =
 	| "finished"
 	| "error"
