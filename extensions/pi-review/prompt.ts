@@ -12,7 +12,7 @@
 
 import { type GuidanceFile, type ReviewTarget } from "./context.ts";
 import { RESOLVE_REQUIRES_CONTENTS_WRITE } from "./github/threads.ts";
-import { sanitizeDiff, sanitizeUntrusted } from "./sanitize.ts";
+import { sanitizeUntrusted } from "./sanitize.ts";
 import type { ReviewStrictness } from "./settings.ts";
 import { parseDiff, summarizeDiff } from "./diff.ts";
 
@@ -159,10 +159,10 @@ export function buildReviewPrompt(
 	const diffBudget = options.diffBudget ?? DIFF_BUDGET_CHARS;
 	const guidanceBudget = options.guidanceBudget ?? GUIDANCE_BUDGET_CHARS;
 	const parsed = parseDiff(target.diff);
-	const { text: diff, truncated } = truncate(
-		neutralizeFences(sanitizeDiff(target.diff)),
-		diffBudget
-	);
+	// The diff is not sanitised: it is source text, so a comment in it is visible
+	// to a human, and a zero-width character in it may be the finding. Only the
+	// fence tags are escaped.
+	const { text: diff, truncated } = truncate(neutralizeFences(target.diff), diffBudget);
 
 	const body = untrusted(target.body.trim());
 	const bodyBlock = body

@@ -239,16 +239,23 @@ describe("hidden instructions", () => {
 		expect(prompt.context).toContain("Please review");
 	});
 
-	it("leaves the reviewable content of a diff in place", () => {
+	it("leaves the diff byte-exact, because a diff is source text", () => {
+		// A diff is not rendered markdown: `<!-- ... -->` in it is visible in the
+		// files-changed view and arrives as plain text, so it is not an invisible
+		// channel. Stripping it deleted every line between a crafted pair of
+		// markers — code under review — which is a way to hide a change from the
+		// reviewer while a human still sees it.
+		const crafted = [
+			'+const _open = "<!--";',
+			"+export function backdoor(req) { return req.query.cmd; }",
+			'+const _close = "-->";',
+		].join("\n");
 		const prompt = buildReviewPrompt(
-			target({
-				diff: `${diff}+<!-- hidden note -->\n+<p title="kept">&#39;</p>\n`,
-			}),
+			target({ diff: `${diff}${crafted}\n+<!-- a real comment -->\n+<p title="kept">&#39;</p>\n` }),
 			guidance
 		);
-		// The comment cannot be reviewed and is the hiding place; the HTML is the
-		// code under review, so its entities and attributes stay.
-		expect(prompt.context).not.toContain("hidden note");
+		expect(prompt.context).toContain("export function backdoor(req)");
+		expect(prompt.context).toContain("a real comment");
 		expect(prompt.context).toContain('title="kept"');
 		expect(prompt.context).toContain("&#39;");
 	});

@@ -542,12 +542,13 @@ stops are never recovered into a review.
   followed; pi-review's own fence tags are escaped in that text, so a PR cannot
   close the data region early.
 - Before that fenced text reaches the model, the invisible channels are removed
-  (`sanitize.ts`): HTML comments, zero-width and bidi characters, markdown image
-  alt text and link titles, HTML `alt`/`title`/`aria-label`/`data-*`/
-  `placeholder` attributes, and numeric HTML entities. A PR can hide an
-  instruction in any of them without a reviewer seeing it in the diff. The diff
-  itself only loses comments and invisible characters — its HTML and entities
-  are the code under review — and inline anchors were always validated against
+  (`sanitize.ts`): HTML comments, zero-width and bidi characters (including the
+  tag block that maps onto ASCII), markdown image alt text and link titles,
+  every HTML attribute value except `href`/`src`, and numeric HTML entities. A
+  PR can hide an instruction in any of them without a reviewer seeing it in the
+  diff. The **diff itself is left byte-exact** — a comment in a diff is visible
+  source, and a zero-width character in a diff is the finding — with only
+  pi-review's fence tags escaped. Inline anchors were always validated against
   the untouched diff, so nothing moves.
 - Guidance reads `REVIEW.md`/`AGENTS.md` from the **base** commit, so a PR
   cannot rewrite the rules it is reviewed against.
