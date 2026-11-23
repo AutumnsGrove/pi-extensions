@@ -382,6 +382,82 @@ jobs:
           ' "$settings" > "$agent_dir/settings.json"
           jq -e . "$agent_dir/settings.json" > /dev/null
 
+      # A bot-triggered run is handed no repository secrets at all, which means
+      # the provider key the settings name never arrives and the agent exits
+      # before its first event. Nothing crashed, and no push by the author can
+      # fix it, so this is decided here rather than reported as a red check with
+      # a blank error (#88).
+      #
+      # It has to run after `Read the settings`: the provider key is exported into
+      # the environment there, and until then no step may hold it. The payoff is
+      # that `Review` never starts, so a run that cannot work costs a checkout and
+      # an install, not a review timeout. A repository that wants to save even
+      # that names the bot in `triggers.skipBots`, and the caller's `if:` never
+      # creates the run at all.
+      - name: Check the run can review
+        id: preflight
+        env:
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type || github.event.comment.user.type }}
+          PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login || github.event.comment.user.login }}
+        run: |
+          set -uo pipefail
+          work="$RUNNER_TEMP/pi-review"
+          mkdir -p "$work"
+          preflight="$work/preflight.json"
+
+          # `identity: "app"` without the App secrets is degraded, not fatal: the
+          # workflow falls back to `github.token`, and the review posts as
+          # `github-actions[bot]`. Worth naming once, not worth stopping for.
+          if [ "$(jq -r '.identity // "app"' "$PI_REVIEW_SETTINGS")" = "app" ] && \
+            [ "${PI_REVIEW_APP_CONFIGURED:-}" != "true" ]; then
+            echo "::warning::pi-review: identity is app but PI_REVIEW_APP_ID or PI_REVIEW_APP_PRIVATE_KEY is missing; the review would post as github-actions[bot]."
+          fi
+
+          # The provider key is the one credential a run cannot work without. The
+          # test is the exported variable the review step would read, not the
+          # secret context: that copy is made in `Read the settings`, and an empty
+          # one is exactly what a bot trigger produces.
+          missing=""
+          provider_env=$(jq -r '.providerEnv // ""' "$PI_REVIEW_SETTINGS")
+          if [ -n "$provider_env" ] && [ -z "$(printenv "$provider_env" 2>/dev/null || true)" ]; then
+            missing="$provider_env (repo secret PI_REVIEW_API_KEY)"
+          fi
+
+          if [ -z "$missing" ]; then
+            jq -n '{skip:false}' > "$preflight"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # A bot pull request is not a mistake anybody can fix, so it concludes
+          # neutrally; a person's pull request with no credential is a setup
+          # problem and stays red, now naming what is missing.
+          bot=false
+          case "${PR_AUTHOR_TYPE:-}" in
+            Bot|bot) bot=true ;;
+          esac
+          if [ "$bot" = "true" ]; then
+            outcome=skipped
+            kind=bot-secrets
+            reason="bot-authored pull request: this trigger receives no repository secrets, so the review cannot start"
+          else
+            outcome=failure
+            kind=no-credentials
+            reason="the credential the settings name was not available to the job, so the review could not start"
+          fi
+
+          jq -n --arg outcome "$outcome" --arg kind "$kind" --arg reason "$reason" \
+            --arg detail "missing: $missing" --arg author "${PR_AUTHOR_LOGIN:-unknown}" \
+            '{skip:true, outcome:$outcome, kind:$kind, reason:$reason, detail:$detail, author:$author}' \
+            > "$preflight"
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+          if [ "$outcome" = "skipped" ]; then
+            echo "::notice::pi-review skipped ${PR_AUTHOR_LOGIN:-this bot}: $reason. $missing"
+          else
+            echo "::error::pi-review cannot review: $missing is not set. Store the secret and re-run."
+          fi
+          exit 0
+
       # `client-id` is the v3 name for the same identity input; the secret keeps
       # its historical name and holds the client ID for a new install, or the
       # numeric App ID an older install stored (GitHub accepts either as the JWT
@@ -407,6 +483,9 @@ jobs:
       # and a recovered review can still post.
       - name: Review
         id: review
+        # The pre-flight already decided nothing can come of starting the agent.
+        # An implicit `success()` still guards this, as it always did.
+        if: steps.preflight.outputs.skip != 'true'
         timeout-minutes: ${{ inputs.review-timeout-minutes }}
         env:
           PI_REVIEW_OUTPUT: ${{ runner.temp }}/pi-review/review.json
@@ -770,12 +849,14 @@ jobs:
           PI_REVIEW_RECOVERY: ${{ runner.temp }}/pi-review/recovery.json
           PI_REVIEW_CONCLUSION: ${{ runner.temp }}/pi-review/conclusion.json
           PI_REVIEW_RUN_META: ${{ runner.temp }}/pi-review/run-meta.json
+          PI_REVIEW_PREFLIGHT: ${{ runner.temp }}/pi-review/preflight.json
         run: |
           set -uo pipefail
           artifact="$PI_REVIEW_OUTPUT"
           recovery="$PI_REVIEW_RECOVERY"
           conclusion="$PI_REVIEW_CONCLUSION"
           run_meta="$PI_REVIEW_RUN_META"
+          preflight="$PI_REVIEW_PREFLIGHT"
           kind=""
           detail=""
           url=""
@@ -823,6 +904,17 @@ jobs:
             reason="review posted"
           fi
 
+          # A pre-flight that decided the run could not start is the whole
+          # outcome: no review was attempted, so there is nothing to recover and
+          # the red/green decision has already been made (#88).
+          if [ -z "$outcome" ] && [ -f "$preflight" ] && \
+            [ "$(jq -r '.skip // false' "$preflight" 2>/dev/null)" = "true" ]; then
+            outcome=$(jq -r '.outcome // "failure"' "$preflight")
+            kind=$(jq -r '.kind // "no-credentials"' "$preflight")
+            reason=$(jq -r '.reason // ""' "$preflight")
+            detail=$(jq -r '.detail // ""' "$preflight")
+          fi
+
           if [ -z "$outcome" ] && [ -z "$kind" ]; then
             if [ -f "$artifact" ]; then
               kind="incomplete"
@@ -830,6 +922,19 @@ jobs:
             else
               kind="no-artifact"
               detail="no review artifact was written; the review step may have timed out or crashed"
+            fi
+          fi
+
+          # "It may have timed out or crashed" was the wrong diagnosis for a run
+          # that never started: the agent exits before its first model call and
+          # leaves a blank `lastError`, which reads as a crash. Say what actually
+          # happened, from the run metadata rather than a guess (#88).
+          if [ "$kind" = "no-artifact" ]; then
+            pi_exit=$(jq -r '.piExit // ""' "$run_meta" 2>/dev/null || true)
+            calls=$(jq -r '.usage.calls // 0' "$run_meta" 2>/dev/null || true)
+            if [ -n "$pi_exit" ] && [ "$pi_exit" != "0" ] && [ "${calls:-0}" = "0" ]; then
+              kind="no-turn"
+              detail="the agent exited $pi_exit before its first model call; a credential or model setting the job did not receive is the usual cause"
             fi
           fi
 
@@ -856,6 +961,9 @@ jobs:
               aborted) reason="the review run was cancelled or timed out" ;;
               budget) reason="the review hit the model's output limit before it could submit" ;;
               post) reason="the review was validated but GitHub rejected the post" ;;
+              no-turn) reason="the review agent exited before its first model call, so nothing was reviewed" ;;
+              no-credentials) reason="the credential the settings name was not available to the job, so the review could not start" ;;
+              bot-secrets) reason="bot-authored pull request: this trigger receives no repository secrets" ;;
               no-artifact) reason="the review step produced no artifact; it may have timed out or crashed" ;;
               unreadable) reason="the review artifact was not valid JSON, so the outcome could not be read" ;;
               recovered) reason="the run ended without calling submit_review; its final answer was posted as a COMMENT review" ;;
@@ -882,6 +990,8 @@ jobs:
             echo
             if [ -f "$artifact" ] && jq -e '.review != null' "$artifact" > /dev/null 2>&1; then
               jq -r '"**" + (.review.event // "incomplete") + "** · inline comments: " + (((.review.comments // []) | length) | tostring) + (if .url then " · " + .url else "" end)' "$artifact"
+            elif [ "$outcome" = "skipped" ]; then
+              echo "Nothing was reviewed: this run was skipped on purpose."
             else
               echo "No review was posted."
             fi
@@ -890,7 +1000,9 @@ jobs:
             echo "- reason: \`$kind\` — $reason"
             if [ -n "$detail" ]; then echo "- detail: \`$detail\`"; fi
             if [ -n "$url" ]; then echo "- review: $url"; fi
-            echo "- pi exit: \`${PI_PI_EXIT:-unknown}\`"
+            # A run that never started has no exit code worth showing, and
+            # `unknown` there reads as another mystery.
+            if [ -n "${PI_PI_EXIT:-}" ]; then echo "- pi exit: \`$PI_PI_EXIT\`"; fi
             # Cost is a run property nobody can read anywhere else: the artifact
             # has it, but only if you download it. Round to the micro-dollar the
             # providers actually bill in.
@@ -909,6 +1021,7 @@ jobs:
 
           case "$outcome" in
             success) exit 0 ;;
+            skipped) echo "::notice::pi-review skipped this pull request: $reason"; exit 0 ;;
             recovered) echo "::warning::pi-review recovered the review: $reason"; exit 0 ;;
             provider-warn) echo "::warning::pi-review could not post a review: $reason"; exit 0 ;;
             *) echo "::error::pi-review could not post a review: $reason"; exit 1 ;;
@@ -939,7 +1052,7 @@ jobs:
             --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | contains("<!-- pi-review:failed -->")) | .id' \
             2>/dev/null | tail -n 1 || true)
           case "$outcome" in
-            success|recovered)
+            success|recovered|skipped)
               if [ -n "$failure_comment" ]; then
                 gh api --method DELETE "repos/$GITHUB_REPOSITORY/issues/comments/$failure_comment" > /dev/null 2>&1 \
                   || echo "::warning::Could not clear the pi-review failure comment."
@@ -986,6 +1099,7 @@ jobs:
             ${{ runner.temp }}/pi-review/events.jsonl
             ${{ runner.temp }}/pi-review/review.json
             ${{ runner.temp }}/pi-review/recovery.json
+            ${{ runner.temp }}/pi-review/preflight.json
             ${{ runner.temp }}/pi-review/conclusion.json
             ${{ runner.temp }}/pi-review/run-meta.json
           if-no-files-found: warn
