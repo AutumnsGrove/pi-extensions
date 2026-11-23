@@ -569,15 +569,18 @@ stops are never recovered into a review.
   developer key.
 - `bash` is opt-in; the runner is the security boundary because pi does not
   sandbox tools. The review step snapshots `$GITHUB_ENV`, `$GITHUB_PATH` and the
-  checkout's `core.hooksPath`/`core.fsmonitor` before the agent starts and puts
-  them back afterwards, warning when it had to: every later step is a fresh
-  process that the runner hands those files to, and one appended `PATH` entry is
-  enough to run a check-out-authored `gh` in a step that holds the token. The
-  saved copies live in the step's own shell variables, not in a file, because a
-  command the review runs can write anywhere the step can. The limit is real and
-  worth stating: a cancelled review restores nothing, and a process the review
-  leaves running in the background can append after the restore. This guard
-  contains the ordinary case, it is not a sandbox.
+  checkout's whole `.git/config` before the agent starts and puts them back
+  afterwards, warning when it had to (and failing loudly if a restore could not
+  be written): every later step is a fresh process that the runner hands those
+  files to, and one appended `PATH` entry is enough to run a
+  check-out-authored `gh` in a step that holds the token. The whole config rather
+  than two keys, because a key can also arrive through `include.path` or with
+  several values. The saved copies live in the step's own shell variables, not in
+  a file, because a command the review runs can write anywhere the step can. The
+  limit is real and worth stating: a cancelled review restores nothing, a process
+  the review leaves running in the background can append after the restore, and
+  `~/.gitconfig` is not covered. This guard contains the ordinary case, it is not
+  a sandbox.
   The transcript artifact keeps the whole model stream for seven
   days, so a command that prints its environment can put the provider key there;
   keep the key dedicated and revocable, and leave `bash` off when a review does

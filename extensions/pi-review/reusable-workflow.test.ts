@@ -525,6 +525,8 @@ describe("the reusable workflow", () => {
 		expect(snapshot).toContain("--git-path config");
 		expect(restore).toContain("config_before");
 		expect(restore).toContain('> "$config_path"');
+		// A restore that did not write is reported instead of assumed.
+		expect(restore?.match(/Could not restore/g)?.length).toBe(3);
 
 		const dir = mkdtempSync(join(tmpdir(), "pi-review-guard-"));
 		try {

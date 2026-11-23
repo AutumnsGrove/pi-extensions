@@ -507,21 +507,26 @@ jobs:
             env_now=$(cat "$GITHUB_ENV" 2>/dev/null || true)
             if [ "$env_now" != "${env_before:-}" ]; then
               echo "::warning::The review agent changed \$GITHUB_ENV; restoring it before the later steps read it."
-              printf '%s\n' "${env_before:-}" > "$GITHUB_ENV"
+              printf '%s\n' "${env_before:-}" > "$GITHUB_ENV" 2>/dev/null \
+                || echo "::error::Could not restore \$GITHUB_ENV; the later steps should not trust it."
             fi
           fi
           if [ -n "${GITHUB_PATH:-}" ]; then
             path_now=$(cat "$GITHUB_PATH" 2>/dev/null || true)
             if [ "$path_now" != "${path_before:-}" ]; then
               echo "::warning::The review agent changed \$GITHUB_PATH; restoring it before the later steps read it."
-              printf '%s\n' "${path_before:-}" > "$GITHUB_PATH"
+              printf '%s\n' "${path_before:-}" > "$GITHUB_PATH" 2>/dev/null \
+                || echo "::error::Could not restore \$GITHUB_PATH; the later steps should not trust it."
             fi
           fi
           if [ -n "${config_path:-}" ]; then
             config_now=$(cat "$config_path" 2>/dev/null || true)
             if [ "$config_now" != "${config_before:-}" ]; then
               echo "::warning::The review agent changed the checkout's git config; restoring it."
-              printf '%s\n' "${config_before:-}" > "$config_path"
+              # A config the agent made unwritable would otherwise be reported
+              # as restored and left in place, which is worse than saying so.
+              printf '%s\n' "${config_before:-}" > "$config_path" 2>/dev/null \
+                || echo "::error::Could not restore the checkout's git config; the later steps should not trust it."
             fi
           fi
           # --- session guard: restore end ---
