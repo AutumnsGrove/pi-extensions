@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
 import { describe, expect, it } from "vitest";
+import { SECRET_SAMPLES } from "./redact.ts";
 import { PACKAGE_REPO, REUSABLE_WORKFLOW_PATH, REUSABLE_REF } from "./workflow.ts";
 
 interface Step {
@@ -388,6 +389,38 @@ describe("the reusable workflow", () => {
 			}).trim();
 		expect(summaryLine(summed)).toBe("2 call(s), 2220 tokens (300 in, 20 out, 2000 cache read) · $0.0002");
 		expect(summaryLine({})).toBe("not reported");
+	});
+
+	it("scrubs credentials out of the text it recovers and publishes", () => {
+		// The recovered prose is quoted from the diff and from tool output, so a
+		// credential the model printed travels with it into a public comment.
+		// `redact.ts` covers the runner path; this is the second implementation,
+		// and `SECRET_SAMPLES` is what keeps the two honest.
+		const recover = step("Recover the review");
+		expect(recover.run).toContain("| redact)");
+		// The extension's own recovery posts the prose directly, so the workflow's
+		// fallback is a second belt. An artifact that already carries
+		// `recovered: true` is that same quoted prose, not a review the model
+		// chose to write, so its summary is scrubbed before the retry too.
+		expect(recover.run).toContain('if [ "$recovered_artifact" = "true" ]');
+		expect(recover.run).toContain('summary=$(printf \'%s\' "$summary" | redact)');
+		// And its inline comments are dropped, because a recovery never had any.
+		expect(recover.run).toContain('if $recovered == "true" then []');
+		// `gh`'s stderr from a rejected post lands in the uploaded recovery.json.
+		expect(recover.run).toContain("| redact | cut -c1-400");
+
+		const definition = (recover.run ?? "").match(/redact\(\) \{[\s\S]*?\n\s*\}/)?.[0];
+		expect(definition).toBeTruthy();
+		const redacted = (input: string) =>
+			execFileSync("bash", ["-c", `${definition}\nprintf '%s' "$1" | redact`, "_", input], {
+				encoding: "utf8",
+			});
+		for (const sample of SECRET_SAMPLES) {
+			expect(redacted(sample)).not.toBe(sample);
+			expect(redacted(sample)).toContain("[REDACTED_");
+		}
+		// Ordinary prose is untouched, or the recovery would mangle findings.
+		expect(redacted("`gh api` failed with HTTP 422")).toBe("`gh api` failed with HTTP 422");
 	});
 
 	it("writes a patient retry policy into a throwaway agent directory", () => {

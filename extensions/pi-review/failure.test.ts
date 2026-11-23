@@ -53,6 +53,21 @@ describe("classifySettlement", () => {
 		expect(classifySettlement(message("aborted")).kind).toBe("aborted");
 		expect(classifySettlement(message("length")).kind).toBe("budget");
 	});
+
+	it("scrubs a credential out of the provider's own error text", () => {
+		// `detail` is published: conclusion.json, the step summary, and a public
+		// pull-request comment. A provider that echoes part of the request must
+		// not put a token there.
+		const token = `ghp_${"a".repeat(36)}`;
+		for (const classification of [
+			classifySettlement(message("error", [], `401 Unauthorized: bad token ${token}`)),
+			classifySettlement(message("aborted", [], `killed while sending ${token}`)),
+			classifySettlement(message("length", [], `cut off during ${token}`)),
+		]) {
+			expect(classification.detail).not.toContain(token);
+			expect(classification.detail).toContain("[REDACTED_GITHUB_TOKEN]");
+		}
+	});
 });
 
 describe("recovery helpers", () => {

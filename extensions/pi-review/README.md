@@ -543,6 +543,15 @@ stops are never recovered into a review.
   close the data region early.
 - Guidance reads `REVIEW.md`/`AGENTS.md` from the **base** commit, so a PR
   cannot rewrite the rules it is reviewed against.
+- Text pi-review publishes is scrubbed of credential shapes first: a provider
+  error, a `gh` failure, and the prose a recovery quotes all pass through
+  `redact.ts` (GitHub, Anthropic, AWS, Slack and JWT formats) before they reach
+  `conclusion.json`, the step summary, a comment body, or the uploaded
+  `recovery.json`. That includes the extension's own `agent_settled` recovery,
+  which posts the prose directly. A review the model chose to write is left
+  alone — silently editing an approved review would be worse than the leak it
+  hides — while a `recovered: true` artifact is scrubbed, because its summary is
+  quoted prose rather than a review.
 - The review key should be a dedicated, revocable key per repository — never a
   developer key.
 - `bash` is opt-in; the runner is the security boundary because pi does not

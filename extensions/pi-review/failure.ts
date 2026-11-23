@@ -9,6 +9,7 @@
  */
 
 import { type AssistantMessage, isRetryableAssistantError } from "@earendil-works/pi-ai";
+import { redactSecrets } from "./redact.ts";
 
 export type ReviewFailureKind =
 	| "provider"
@@ -28,6 +29,18 @@ export interface FailureClassification {
 
 /** At least this much prose is worth posting as a recovered review. */
 export const MIN_RECOVERY_CHARS = 400;
+
+/**
+ * The provider's own words, scrubbed before they become `detail`.
+ *
+ * `detail` is the one field of a failure we publish: the workflow writes it to
+ * `conclusion.json`, the step summary, and a public pull-request comment. A
+ * provider that echoes part of the request, or a model whose error message
+ * quotes a token it read, must not reach any of them.
+ */
+function cause(message: AssistantMessage, fallback: string): string {
+	return redactSecrets(message.errorMessage?.trim() || fallback);
+}
 
 export function assistantText(message: AssistantMessage | undefined): string {
 	if (!message) return "";
@@ -55,25 +68,26 @@ export function classifySettlement(message: AssistantMessage | undefined): Failu
 		return {
 			kind: "provider",
 			retryable,
-			detail:
-				message.errorMessage?.trim() ||
-				(retryable
+			detail: cause(
+				message,
+				retryable
 					? "the model provider returned a transient error"
-					: "the model provider rejected the request"),
+					: "the model provider rejected the request"
+			),
 		};
 	}
 	if (message.stopReason === "aborted") {
 		return {
 			kind: "aborted",
 			retryable: false,
-			detail: message.errorMessage?.trim() || "the review run was aborted",
+			detail: cause(message, "the review run was aborted"),
 		};
 	}
 	if (message.stopReason === "length") {
 		return {
 			kind: "budget",
 			retryable: false,
-			detail: message.errorMessage?.trim() || "the response reached the model's output limit",
+			detail: cause(message, "the response reached the model's output limit"),
 		};
 	}
 	return {

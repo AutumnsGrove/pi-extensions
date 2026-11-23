@@ -519,6 +519,30 @@ jobs:
           recovery="$PI_REVIEW_RECOVERY"
           mkdir -p "$work"
 
+          # The one place this workflow publishes text it did not compose: the
+          # recovered prose is quoted from the diff and from tool output, so a
+          # credential the model printed would go with it. Same vendor shapes as
+          # `redact.ts`, which the runner path uses (#74); `SECRET_SAMPLES` in
+          # that module is the fixture list both implementations are tested
+          # against, so a shape added without this one fails the tests.
+          #
+          # The JWT rule has no upper bound here: BSD sed rejects a repetition
+          # count above 255, and this must behave the same on a developer's Mac
+          # as on the runner. Longer than `redact.ts` is fine — over-redaction is
+          # the safe direction.
+          #
+          # A review the model chose to write is left alone: silently editing an
+          # approved review is worse than the leak it would hide.
+          redact() {
+            sed -E \
+              -e 's/gh[pousr]_[A-Za-z0-9]{36}/[REDACTED_GITHUB_TOKEN]/g' \
+              -e 's/github_pat_[A-Za-z0-9_]{11,221}/[REDACTED_GITHUB_TOKEN]/g' \
+              -e 's/sk-ant-[A-Za-z0-9_-]{20,}/[REDACTED_ANTHROPIC_KEY]/g' \
+              -e 's/(AKIA|ASIA)[A-Z0-9]{16}/[REDACTED_AWS_KEY_ID]/g' \
+              -e 's/xox[abpsr]-[A-Za-z0-9-]{10,}/[REDACTED_SLACK_TOKEN]/g' \
+              -e 's/eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/[REDACTED_JWT]/g'
+          }
+
           write_recovery() { # recovered url reason [detail]
             jq -n --argjson recovered "$1" --arg url "$2" --arg reason "$3" --arg detail "${4:-}" \
               '{recovered:$recovered, url:$url, reason:$reason, detail:$detail}' > "$recovery"
@@ -547,8 +571,19 @@ jobs:
 
           # A validated review that never reached GitHub (a rejected post, a
           # timeout after submit_review) is the best thing to retry.
+          #
+          # A review the model chose to write is re-posted as it stands. A
+          # `recovered: true` artifact is not that: its summary is prose quoted
+          # from the diff and from tool output, so it is scrubbed like the text
+          # below before it is published (#74).
           if [ -f "$artifact" ] && jq -e '.review != null' "$artifact" > /dev/null 2>&1; then
-            jq '{event: (.review.event // "COMMENT"), body: (((.review.summary // "") | if length > 0 then . + "\n\n" else "" end) + "<!-- pi-review:review -->"), comments: [(.review.comments // [])[] | {path, line, side: (.side // "RIGHT"), body} + (if .start_line then {start_line} else {} end)]}' \
+            recovered_artifact=$(jq -r '.recovered // false' "$artifact")
+            summary=$(jq -r '.review.summary // ""' "$artifact")
+            if [ "$recovered_artifact" = "true" ]; then
+              summary=$(printf '%s' "$summary" | redact)
+            fi
+            jq --arg summary "$summary" --arg recovered "$recovered_artifact" \
+              '{event: (.review.event // "COMMENT"), body: (($summary | if length > 0 then . + "\n\n" else "" end) + "<!-- pi-review:review -->"), comments: (if $recovered == "true" then [] else [(.review.comments // [])[] | {path, line, side: (.side // "RIGHT"), body} + (if .start_line then {start_line} else {} end)] end)}' \
               "$artifact" > "$work/recovery-full.json"
             if url=$(post_review "$work/recovery-full.json") && [ -n "$url" ]; then
               write_recovery true "$url" "posted the validated review" ""
@@ -556,10 +591,10 @@ jobs:
             fi
             # Inline anchors are the most likely reason GitHub rejects the whole
             # review; the summary is still useful on its own.
-            summary=$(jq -r '.review.summary // ""' "$artifact")
             if [ "${#summary}" -ge 40 ]; then
-              jq '{event: "COMMENT", body: ((.review.summary // "") + "\n\n<!-- pi-review:review -->"), comments: []}' \
-                "$artifact" > "$work/recovery-summary.json"
+              jq -n --arg summary "$summary" \
+                '{event: "COMMENT", body: ($summary + "\n\n<!-- pi-review:review -->"), comments: []}' \
+                > "$work/recovery-summary.json"
               if url=$(post_review "$work/recovery-summary.json") && [ -n "$url" ]; then
                 write_recovery true "$url" "posted the review summary" ""
                 exit 0
@@ -593,6 +628,7 @@ jobs:
               | map(select(length >= 400))
               | last // ""
             ' "$events" 2>/dev/null || true)
+            text=$(printf '%s' "$text" | redact)
           fi
           if [ "${#text}" -ge 400 ]; then
             jq -n --arg text "$text" '{event: "COMMENT", body: ("<!-- pi-review:review -->\n_Submitted by recovery: the run ended without calling `submit_review`, so pi-review posted its final answer as a COMMENT review._\n\n" + $text), comments: []}' \
@@ -605,7 +641,10 @@ jobs:
 
           detail=""
           if [ -f "$work/recovery-error.txt" ]; then
-            detail=$(tr '\n' ' ' < "$work/recovery-error.txt" | cut -c1-400)
+            # `gh`'s own stderr against a payload it refused, and it is uploaded
+            # with the run in `recovery.json`, the same surface the runner's
+            # post failure is scrubbed for (#74).
+            detail=$(tr '\n' ' ' < "$work/recovery-error.txt" | redact | cut -c1-400)
           fi
           write_recovery false "" "nothing to recover" "$detail"
           exit 0

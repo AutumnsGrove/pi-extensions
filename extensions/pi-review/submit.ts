@@ -17,6 +17,7 @@ import { stringEnum } from "../_shared/schema.ts";
 import type { Exec, RepoRef } from "./detect.ts";
 import type { ParsedDiff } from "./diff.ts";
 import { REVIEW_MARKER, STICKY_MARKER } from "./markers.ts";
+import { redactSecrets } from "./redact.ts";
 import {
 	type ReviewMeta,
 	type ValidatedReview,
@@ -339,7 +340,11 @@ export function createSubmitReviewTool(deps: SubmitReviewDeps) {
 			try {
 				result = await deps.post(review);
 			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
+				// `gh`'s own stderr, and whatever the API said back. It becomes the
+				// artifact's `error`, which the workflow publishes as the failure
+				// comment and the step summary, so it is scrubbed here rather than
+				// trusted.
+				const message = redactSecrets(error instanceof Error ? error.message : String(error));
 				// Keep the validated review: a failed post is exactly when the
 				// findings are most useful to the step summary and to the workflow's
 				// recovery step, which retries the post before giving up.
