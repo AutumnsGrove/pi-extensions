@@ -120,19 +120,25 @@ function rewriteTags(text: string, rewrite: (tag: string) => string): string {
 			continue;
 		}
 
-		const end = scanTagEnd(text, open);
-		if (end === undefined) {
-			// No `>` after this `<`, so nothing from here on can be a tag.
-			return out + text.slice(open);
+		const scan = scanTagEnd(text, open);
+		if (scan.end === undefined) {
+			// A quoted value that never closes swallows the rest of the body —
+			// in a browser as much as here, so the rest is dropped rather than
+			// handed over unrewritten. Without an open quote there is no `>`
+			// either, so the remainder cannot be a tag and stays as text.
+			return scan.quoteOpen ? out : out + text.slice(open);
 		}
-		out += rewrite(text.slice(open, end + 1));
-		index = end + 1;
+		out += rewrite(text.slice(open, scan.end + 1));
+		index = scan.end + 1;
 	}
 	return out;
 }
 
-/** The index of the `>` that closes the tag, honouring quoted values. */
-function scanTagEnd(text: string, open: number): number | undefined {
+/** Where the tag ends, and whether a quoted value was still open at the end. */
+function scanTagEnd(
+	text: string,
+	open: number
+): { end: number; quoteOpen: false } | { end?: undefined; quoteOpen: boolean } {
 	let quote: string | undefined;
 	for (let index = open + 1; index < text.length; index += 1) {
 		const character = text[index];
@@ -140,14 +146,14 @@ function scanTagEnd(text: string, open: number): number | undefined {
 			if (character === quote) quote = undefined;
 			continue;
 		}
-		if (character === ">") return index;
+		if (character === ">") return { end: index, quoteOpen: false };
 		if (character === '"' || character === "'") {
 			let previous = index - 1;
 			while (previous > open && /\s/.test(text[previous] ?? "")) previous -= 1;
 			if (text[previous] === "=") quote = character;
 		}
 	}
-	return undefined;
+	return { quoteOpen: quote !== undefined };
 }
 
 export function stripHiddenAttributes(text: string): string {
