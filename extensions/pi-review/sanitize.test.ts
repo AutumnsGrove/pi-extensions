@@ -204,3 +204,22 @@ describe("one character set, two treatments", () => {
 		}
 	});
 });
+
+describe("pathological input", () => {
+	it("does not backtrack on a run of quotes", () => {
+		// The regex this replaced had 2^n parse paths here: ~2 s at 40 quotes,
+		// ~106 s at 48. A pull request controls this text, so a hang is a denial
+		// of the review. The scan has one path.
+		const input = `<a ${'"'.repeat(5000)}`;
+		const started = Date.now();
+		expect(() => sanitizeUntrusted(input)).not.toThrow();
+		expect(Date.now() - started).toBeLessThan(500);
+	});
+
+	it("does not backtrack on many small tags either", () => {
+		const input = `${'<a b="c" '.repeat(5000)}>`;
+		const started = Date.now();
+		sanitizeUntrusted(input);
+		expect(Date.now() - started).toBeLessThan(500);
+	});
+});

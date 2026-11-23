@@ -83,6 +83,72 @@ export function stripMarkdownLinkTitles(text: string): string {
 }
 
 /**
+ * Rewrite every HTML tag in `text` without a regex.
+ *
+ * The regex that expressed this (`<[a-zA-Z](?:[^>"']|"[^"]*"?|'[^']*'?)*>`)
+ * backtracks exponentially: the optional closing quote makes every quoted span
+ * ambiguous between "end at the quote" and "end at the tag's `>`", and a run
+ * of quotes with no `>` in sight has 2^n parse paths — ~2 s at 40 quotes and
+ * ~106 s at 48, on text a pull request controls. A scan with a quote flag has
+ * one path.
+ *
+ * A quote only opens a span when the previous non-space character is `=`.
+ * That is what makes `<span title="` start a quoted value while `<span
+ * title=x"y>` does not, which is also how HTML5 tokenises a stray quote inside
+ * an unquoted value: it belongs to the value. When a quoted span never closes,
+ * the scan falls back to the first `>` so the tag is still rewritten instead of
+ * being skipped.
+ */
+const MAX_TAG_CHARS = 4096;
+
+function rewriteTags(text: string, rewrite: (tag: string) => string): string {
+	let out = "";
+	let index = 0;
+	while (index < text.length) {
+		const open = text.indexOf("<", index);
+		if (open < 0) return out + text.slice(index);
+		out += text.slice(index, open);
+		if (!/[a-zA-Z]/.test(text[open + 1] ?? "")) {
+			out += "<";
+			index = open + 1;
+			continue;
+		}
+
+		const limit = Math.min(text.length, open + MAX_TAG_CHARS);
+		const end = scanTagEnd(text, open, limit) ?? text.indexOf(">", open + 1);
+		if (end < 0 || end >= limit) {
+			// Not a tag, or longer than any tag worth rewriting: leave it alone
+			// rather than guessing, and never scan the same text twice.
+			out += text.slice(open, limit);
+			index = limit;
+			continue;
+		}
+		out += rewrite(text.slice(open, end + 1));
+		index = end + 1;
+	}
+	return out;
+}
+
+/** The index of the `>` that closes the tag, honouring quoted values. */
+function scanTagEnd(text: string, open: number, limit: number): number | undefined {
+	let quote: string | undefined;
+	for (let index = open + 1; index < limit; index += 1) {
+		const character = text[index];
+		if (quote) {
+			if (character === quote) quote = undefined;
+			continue;
+		}
+		if (character === ">") return index;
+		if (character === '"' || character === "'") {
+			let previous = index - 1;
+			while (previous > open && /\s/.test(text[previous] ?? "")) previous -= 1;
+			if (text[previous] === "=") quote = character;
+		}
+	}
+	return undefined;
+}
+
+/**
  * Attribute values on raw HTML in a body.
  *
  * Every attribute value is invisible to a reader, so stripping a list of
@@ -91,22 +157,12 @@ export function stripMarkdownLinkTitles(text: string): string {
  * *all* attributes go, except two whose value is the text a reader can follow
  * (`href`) or that names the image being shown (`src`). Attribute names stay,
  * because they carry no text of their own.
- *
- * A value containing `>` is handled by matching the value as a quoted string
- * first; a tag containing a bare `>` in an unquoted attribute value is not worth
- * following into, since the whole tag is rewritten rather than parsed.
  */
 export function stripHiddenAttributes(text: string): string {
 	const KEPT = new Set(["href", "src"]);
 	const attribute = /(\s+)([a-zA-Z_:][-a-zA-Z0-9_:.]*)(\s*=\s*)("[^"]*"|'[^']*'|[^\s>]+)?/g;
-	// A `>` inside a quoted value is part of the value, not the end of the tag,
-	// and a quote can be unbalanced: HTML5 tokenises a stray `"` or `'` inside an
-	// unquoted value as part of that value rather than rejecting the tag, so
-	// `<span title=x"y>` is a real tag with a real hidden value. Each quoted span
-	// therefore gets to end at the tag's `>` when it has no closing quote.
-	const tag = /<[a-zA-Z](?:[^>"']|"[^"]*"?|'[^']*'?)*>/g;
-	return text.replace(tag, (found) => {
-		const stripped = found.replace(
+	return rewriteTags(text, (tag) => {
+		const stripped = tag.replace(
 			attribute,
 			(match, _space: string, name: string, _equals: string, value?: string) => {
 				if (!value) return match;
