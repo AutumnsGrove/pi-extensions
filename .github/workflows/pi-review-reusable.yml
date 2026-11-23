@@ -106,6 +106,56 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # The prompt's guidance comes from the base commit, but the checkout holds
+      # the pull request's own copies of those files, and the reviewer can read
+      # them (`read`, `grep`, `cat`). "Follow REVIEW.md" then lands on rules the
+      # pull request wrote (#75). `-nc` stops pi loading context files by itself;
+      # this closes the manual-read path.
+      #
+      # The file's *content* is rewritten without touching the index, so the
+      # change under review stays what `gh pr diff` says it is. A file the base
+      # does not have is removed rather than left as the pull request wrote it.
+      - name: Restore guidance from the base commit
+        id: guidance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -uo pipefail
+          work="$RUNNER_TEMP/pi-review"
+          mkdir -p "$work"
+          # `issue_comment` has no `pull_request.base`; ask GitHub for it. A
+          # comment on a PR is the only way this job is reached without one.
+          base="${BASE_SHA:-}"
+          if [ -z "$base" ] && [ -n "${PR_NUMBER:-}" ]; then
+            base=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json baseRefOid --jq '.baseRefOid' 2>/dev/null || true)
+          fi
+          restored=""
+          removed=""
+          if [ -n "$base" ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
+            for path in REVIEW.md .github/REVIEW.md AGENTS.md CLAUDE.md; do
+              if git cat-file -e "$base:$path" 2>/dev/null; then
+                mkdir -p "$(dirname "$path")"
+                if git show "$base:$path" > "$path" 2>/dev/null; then
+                  restored="$restored $path"
+                else
+                  echo "::warning::Could not restore $path from $base"
+                fi
+              elif [ -e "$path" ]; then
+                rm -f "$path" && removed="$removed $path"
+              fi
+            done
+          else
+            echo "::warning::No base commit to restore guidance from; the checkout's own copies stay."
+          fi
+          jq -n --arg restored "$restored" --arg removed "$removed" \
+            '{restored: ($restored | split(" ") | map(select(length > 0))), removed: ($removed | split(" ") | map(select(length > 0)))}' \
+            > "$work/guidance.json"
+          if [ -n "$restored$removed" ]; then
+            echo "guidance: restored${restored}${removed:+ removed$removed}"
+          fi
+
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
@@ -371,6 +421,9 @@ jobs:
           # so indenting is not enough. Break both forms.
           quiet() { sed -e 's/##\[/## [/g' -e 's/^\([[:space:]]*\)::/\1\\::/'; }
           # Metadata is diagnostic; never let it stop the review.
+          # `guidance.json` is written by the restore step; a run that skipped it
+          # must not fail here, because `--slurpfile` on a missing file errors.
+          [ -f "$work/guidance.json" ] || echo '{}' > "$work/guidance.json"
           if ! jq -n \
             --arg repo "$GITHUB_REPOSITORY" \
             --arg pr "$PR_NUMBER" \
@@ -382,7 +435,8 @@ jobs:
             --arg event "$GITHUB_EVENT_NAME" \
             --arg startedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --slurpfile agent "$PI_CODING_AGENT_DIR/settings.json" \
-            '{repo:$repo, pullRequest:($pr|tonumber? // $pr), provider:$provider, model:$model, thinking:$thinking, tools:($tools|split(",")), retry:($agent[0].retry // {}), workflowSha:$workflowSha, event:$event, startedAt:$startedAt}' \
+            --slurpfile guidance "$work/guidance.json" \
+            '{repo:$repo, pullRequest:($pr|tonumber? // $pr), provider:$provider, model:$model, thinking:$thinking, tools:($tools|split(",")), retry:($agent[0].retry // {}), workflowSha:$workflowSha, event:$event, startedAt:$startedAt, guidance:($guidance[0] // {})}' \
             > "$work/run-meta.json"; then
             echo "::warning::Could not write the run metadata."
             echo '{"note":"run metadata unavailable"}' > "$work/run-meta.json"
