@@ -572,8 +572,12 @@ stops are never recovered into a review.
   checkout's `core.hooksPath`/`core.fsmonitor` before the agent starts and puts
   them back afterwards, warning when it had to: every later step is a fresh
   process that the runner hands those files to, and one appended `PATH` entry is
-  enough to run a check-out-authored `gh` in a step that holds the token. A
-  cancelled run cannot restore anything, which is a limit of the design.
+  enough to run a check-out-authored `gh` in a step that holds the token. The
+  saved copies live in the step's own shell variables, not in a file, because a
+  command the review runs can write anywhere the step can. The limit is real and
+  worth stating: a cancelled review restores nothing, and a process the review
+  leaves running in the background can append after the restore. This guard
+  contains the ordinary case, it is not a sandbox.
   The transcript artifact keeps the whole model stream for seven
   days, so a command that prints its environment can put the provider key there;
   keep the key dedicated and revocable, and leave `bash` off when a review does

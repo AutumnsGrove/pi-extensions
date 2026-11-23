@@ -515,6 +515,15 @@ describe("the reusable workflow", () => {
 		expect(code.indexOf("PI_PI_EXIT=$status")).toBeGreaterThan(
 			code.indexOf("# --- session guard: restore end ---")
 		);
+		// The checkpoint has to survive an agent that can write wherever this step
+		// can, so it lives in the shell, not in $RUNNER_TEMP.
+		expect(snapshot).toContain('env_before=$(cat "${GITHUB_ENV:-/dev/null}"');
+		expect(snapshot).not.toContain("guard-github-env");
+		// `git config --add` leaves a key with several values, which a
+		// single-value restore cannot overwrite.
+		expect(snapshot).toContain("--get-all core.hooksPath");
+		expect(restore).toContain('--unset-all "$key"');
+		expect(restore).toContain('--add "$key" "$value"');
 
 		const dir = mkdtempSync(join(tmpdir(), "pi-review-guard-"));
 		try {
@@ -542,8 +551,9 @@ describe("the reusable workflow", () => {
 				snapshot,
 				`printf 'PI_REVIEW_ON_PROVIDER_FAILURE=warn\\n' >> "$GITHUB_ENV"`,
 				`printf '/tmp/pull-request-checkout\\n' >> "$GITHUB_PATH"`,
-				"git config --local core.hooksPath /tmp/evil-hooks",
-				"git config --local core.fsmonitor /tmp/evil-monitor",
+				// `--add`, so the key ends up with two values.
+				"git config --local --add core.hooksPath /tmp/evil-hooks",
+				"git config --local --add core.fsmonitor /tmp/evil-monitor",
 				restore,
 			].join("\n");
 			const output = execFileSync("bash", ["-c", script], {
@@ -555,11 +565,11 @@ describe("the reusable workflow", () => {
 			// The appended values are gone, and the run says so.
 			expect(output).toContain("changed $GITHUB_ENV");
 			expect(output).toContain("changed $GITHUB_PATH");
-			expect(readFileSync(envFile, "utf8")).toBe("PI_REVIEW_ON_PROVIDER_FAILURE=fail\n");
-			expect(readFileSync(pathFile, "utf8")).toBe("/usr/bin\n");
-			// Git config a later `git`/`gh` would read is back as it was.
-			expect(git("config", "--local", "--get", "core.hooksPath")).toBe("/dev/null");
-			expect(() => git("config", "--local", "--get", "core.fsmonitor")).toThrow();
+			expect(readFileSync(envFile, "utf8").trim()).toBe("PI_REVIEW_ON_PROVIDER_FAILURE=fail");
+			expect(readFileSync(pathFile, "utf8").trim()).toBe("/usr/bin");
+			// Back to one value, ours — not two with the injected one last.
+			expect(git("config", "--local", "--get-all", "core.hooksPath")).toBe("/dev/null");
+			expect(() => git("config", "--local", "--get-all", "core.fsmonitor")).toThrow();
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

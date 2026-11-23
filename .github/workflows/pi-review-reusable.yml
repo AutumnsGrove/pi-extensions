@@ -483,46 +483,55 @@ jobs:
           # bash-enabled review runs commands from a checkout the pull request
           # controls, so one appended PATH entry pointing at the checkout is
           # enough for `Report or clear an incomplete review` to run a
-          # PR-authored `gh`. Take a copy before the agent starts (#76).
-          [ -n "${GITHUB_ENV:-}" ] && [ -f "${GITHUB_ENV}" ] && cp "${GITHUB_ENV}" "$work/guard-github-env"
-          [ -n "${GITHUB_PATH:-}" ] && [ -f "${GITHUB_PATH}" ] && cp "${GITHUB_PATH}" "$work/guard-github-path"
-          hooks_before=$(git config --local --get core.hooksPath 2>/dev/null || true)
-          fsmonitor_before=$(git config --local --get core.fsmonitor 2>/dev/null || true)
+          # PR-authored `gh` (#76).
+          #
+          # The copies live in shell variables, not in files: the agent's own
+          # commands run on this runner and can write anywhere the step can,
+          # $RUNNER_TEMP included, so a checkpoint it can edit or delete is worth
+          # only what the agent lets it be.
+          env_before=$(cat "${GITHUB_ENV:-/dev/null}" 2>/dev/null || true)
+          path_before=$(cat "${GITHUB_PATH:-/dev/null}" 2>/dev/null || true)
+          # `--get-all`, because `git config --add` leaves a key with several
+          # values and a single-value restore cannot overwrite that (exit 5),
+          # which would leave the injected value in force.
+          hooks_before=$(git config --local --get-all core.hooksPath 2>/dev/null || true)
+          fsmonitor_before=$(git config --local --get-all core.fsmonitor 2>/dev/null || true)
           # --- session guard: snapshot end ---
           set +e
           pi "${args[@]}" "Review pull request #$PR_NUMBER." > "$PI_REVIEW_EVENTS" 2> "$work/stderr.log"
           status=$?
 
           # --- session guard: restore ---
-          for pair in "github-env:${GITHUB_ENV:-}:GITHUB_ENV" "github-path:${GITHUB_PATH:-}:GITHUB_PATH"; do
-            checkpoint="$work/guard-${pair%%:*}"
-            rest=${pair#*:}
-            live=${rest%%:*}
-            label=${rest#*:}
-            [ -f "$checkpoint" ] || continue
-            [ -n "$live" ] || continue
-            if [ -f "$live" ] && cmp -s "$checkpoint" "$live"; then continue; fi
-            echo "::warning::The review agent changed \$$label; restoring it before the later steps read it."
-            cat "$checkpoint" > "$live"
+          if [ -n "${GITHUB_ENV:-}" ]; then
+            env_now=$(cat "$GITHUB_ENV" 2>/dev/null || true)
+            if [ "$env_now" != "${env_before:-}" ]; then
+              echo "::warning::The review agent changed \$GITHUB_ENV; restoring it before the later steps read it."
+              printf '%s\n' "${env_before:-}" > "$GITHUB_ENV"
+            fi
+          fi
+          if [ -n "${GITHUB_PATH:-}" ]; then
+            path_now=$(cat "$GITHUB_PATH" 2>/dev/null || true)
+            if [ "$path_now" != "${path_before:-}" ]; then
+              echo "::warning::The review agent changed \$GITHUB_PATH; restoring it before the later steps read it."
+              printf '%s\n' "${path_before:-}" > "$GITHUB_PATH"
+            fi
+          fi
+          for key in core.hooksPath core.fsmonitor; do
+            case "$key" in
+              core.hooksPath) before=${hooks_before:-} ;;
+              *) before=${fsmonitor_before:-} ;;
+            esac
+            now=$(git config --local --get-all "$key" 2>/dev/null || true)
+            [ "$now" = "$before" ] && continue
+            echo "::warning::The review agent changed $key; restoring it."
+            # `--unset-all` then one `--add` per saved value: the only shape
+            # that also undoes an added value instead of failing on it.
+            git config --local --unset-all "$key" 2>/dev/null || true
+            [ -n "$before" ] || continue
+            while IFS= read -r value; do
+              git config --local --add "$key" "$value"
+            done <<< "$before"
           done
-          hooks_after=$(git config --local --get core.hooksPath 2>/dev/null || true)
-          if [ "$hooks_after" != "${hooks_before:-}" ]; then
-            echo "::warning::The review agent changed core.hooksPath; restoring it."
-            if [ -n "${hooks_before:-}" ]; then
-              git config --local core.hooksPath "$hooks_before"
-            else
-              git config --local --unset core.hooksPath 2>/dev/null || true
-            fi
-          fi
-          fsmonitor_after=$(git config --local --get core.fsmonitor 2>/dev/null || true)
-          if [ "$fsmonitor_after" != "${fsmonitor_before:-}" ]; then
-            echo "::warning::The review agent changed core.fsmonitor; restoring it."
-            if [ -n "${fsmonitor_before:-}" ]; then
-              git config --local core.fsmonitor "$fsmonitor_before"
-            else
-              git config --local --unset core.fsmonitor 2>/dev/null || true
-            fi
-          fi
           # --- session guard: restore end ---
           echo "PI_PI_EXIT=$status" >> "$GITHUB_ENV"
 
