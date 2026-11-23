@@ -260,6 +260,18 @@ describe("hidden instructions", () => {
 		expect(prompt.context).toContain("&#39;");
 	});
 
+	it("marks a diff's invisible characters rather than shipping them raw", () => {
+		// They are invisible on GitHub too, so a comment ending in a run of them
+		// is empty to a reviewer and a payload to the model. Removing them would
+		// destroy the finding, so they are marked instead.
+		const prompt = buildReviewPrompt(
+			target({ diff: `${diff}+const x = 1; // \u200B${String.fromCodePoint(0xe0049)}\n` }),
+			guidance
+		);
+		expect(prompt.context).toContain("// [U+200B][U+E0049]");
+		expect(prompt.context).not.toContain("\u200B");
+	});
+
 	it("still escapes a fence tag that an HTML entity spelled out", () => {
 		// Entity decoding runs inside sanitisation, before fence escaping, so a
 		// body cannot decode its way past the boundary.

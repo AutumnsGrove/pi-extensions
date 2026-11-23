@@ -94,17 +94,22 @@ export function stripMarkdownLinkTitles(text: string): string {
 export function stripHiddenAttributes(text: string): string {
 	const KEPT = new Set(["href", "src"]);
 	const attribute = /(\s+)([a-zA-Z_:][-a-zA-Z0-9_:.]*)(\s*=\s*)("[^"]*"|'[^']*'|[^\s>]+)?/g;
-	return text.replace(/<[a-zA-Z][^>]*>/g, (tag) => {
-		const stripped = tag.replace(
+	// A `>` inside a quoted value is part of the value, not the end of the tag.
+	// Stopping at the first `>` left the rest of such a value as plain text,
+	// which is the same hiding place one step sideways.
+	const tag = /<[a-zA-Z](?:[^>"']|"[^"]*"|'[^']*')*>/g;
+	return text.replace(tag, (found) => {
+		const stripped = found.replace(
 			attribute,
 			(match, _space: string, name: string, _equals: string, value?: string) => {
 				if (!value) return match;
 				return KEPT.has(name.toLowerCase()) ? match : "";
 			}
 		);
-		// Dropping an attribute can leave the space before `>`; a rewritten tag
-		// should not grow trailing whitespace of its own.
-		return stripped.replace(/\s+>/g, ">");
+		// Dropping the last attribute can leave the space before the tag's own
+		// `>`. Anchored at the end, so a `>` inside a kept `href`/`src` value is
+		// untouched.
+		return stripped.replace(/\s>$/, ">");
 	});
 }
 
@@ -138,4 +143,25 @@ export function sanitizeUntrusted(text: string): string {
 	out = stripHiddenAttributes(out);
 	out = normalizeHtmlEntities(out);
 	return out;
+}
+
+/** The same code points `stripInvisibleCharacters` removes, for marking instead. */
+const INVISIBLE = /[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFE00-\uFE0F\uFEFF\u061C\u180E\u00AD]|[\u{E0000}-\u{E007F}]/gu;
+
+/**
+ * The diff is not stripped, because a zero-width character inside a diff may be
+ * the finding: rewriting it away destroys the evidence the review exists to
+ * find. Leaving it alone is not good enough either, though — it is as invisible
+ * on GitHub as it is anywhere else, so a diff line ending in `//` plus a run of
+ * them is an empty comment to a reader and a payload to the model.
+ *
+ * So it is marked instead: every invisible code point becomes `[U+200B]`, which
+ * a reviewer can see, quote, and count. `target.diff` is untouched, and inline
+ * anchors were always validated against it.
+ */
+export function markInvisibleCharacters(text: string): string {
+	return text.replace(INVISIBLE, (character) => {
+		const code = character.codePointAt(0) ?? 0;
+		return `[U+${code.toString(16).toUpperCase().padStart(4, "0")}]`;
+	});
 }

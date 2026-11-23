@@ -546,10 +546,10 @@ stops are never recovered into a review.
   tag block that maps onto ASCII), markdown image alt text and link titles,
   every HTML attribute value except `href`/`src`, and numeric HTML entities. A
   PR can hide an instruction in any of them without a reviewer seeing it in the
-  diff. The **diff itself is left byte-exact** — a comment in a diff is visible
-  source, and a zero-width character in a diff is the finding — with only
-  pi-review's fence tags escaped. Inline anchors were always validated against
-  the untouched diff, so nothing moves.
+  diff. The **diff is marked instead**: comments stay (a human sees them too),
+  and every invisible code point becomes `[U+200B]`, which keeps a Trojan-Source
+  finding reviewable without leaving a covert channel. Inline anchors were
+  always validated against the untouched diff, so nothing moves.
 - Guidance reads `REVIEW.md`/`AGENTS.md` from the **base** commit, so a PR
   cannot rewrite the rules it is reviewed against.
 - Text pi-review publishes is scrubbed of credential shapes first: a provider
