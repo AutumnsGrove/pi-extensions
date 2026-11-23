@@ -107,6 +107,57 @@ describe("registerReviewRunner", () => {
 		expect(result.message.content).toContain("+console.log(\"ready\");");
 	});
 
+	it("attaches a screenshot from the request to the context message", async () => {
+		// A `@pi` comment that pastes an image is the requester's evidence; the
+		// text alone cannot carry it.
+		const guid = "0123abcd-1234-4abc-8def-0123456789ab";
+		const url = `https://github.com/user-attachments/assets/${guid}`;
+		const { pi, events } = fakePi(fakeExec());
+		registerReviewRunner(pi, {
+			env: {
+				PI_REVIEW: "1",
+				PR_NUMBER: "5",
+				PI_REVIEW_REQUEST: `why is the header cut off? ![shot](${url})`,
+			},
+			fetchImpl: (async () =>
+				({
+					ok: true,
+					status: 200,
+					headers: new Headers({ "content-type": "image/png" }),
+					arrayBuffer: async () => new Uint8Array([1, 2, 3]),
+				}) as unknown as Response) as typeof fetch,
+		});
+		const result = (await events.get("before_agent_start")!(
+			{ messageType: "user", prompt: "x", systemPrompt: "BASE" },
+			{ cwd: "/repo" }
+		)) as { message: { content: { type: string; text?: string; data?: string; mimeType?: string }[] } };
+
+		const parts = result.message.content;
+		expect(parts[0]?.type).toBe("text");
+		expect(parts[0]?.text).toContain("screenshots");
+		expect(parts[0]?.text).toContain("1 image(s) from the request are attached");
+		expect(parts[1]).toEqual({ type: "image", mimeType: "image/png", data: "AQID" });
+	});
+
+	it("says so when a screenshot cannot be read", async () => {
+		const guid = "0123abcd-1234-4abc-8def-0123456789ab";
+		const { pi, events } = fakePi(fakeExec());
+		registerReviewRunner(pi, {
+			env: {
+				PI_REVIEW: "1",
+				PR_NUMBER: "5",
+				PI_REVIEW_REQUEST: `![shot](https://github.com/user-attachments/assets/${guid})`,
+			},
+			fetchImpl: (async () => ({ ok: false, status: 404, headers: new Headers() }) as unknown as Response) as typeof fetch,
+		});
+		const result = (await events.get("before_agent_start")!(
+			{ messageType: "user", prompt: "x", systemPrompt: "BASE" },
+			{ cwd: "/repo" }
+		)) as { message: { content: string } };
+		expect(result.message.content).toContain("could not be fetched (HTTP 404)");
+		expect(result.message.content).toContain("Do not guess at its contents");
+	});
+
 	it("keeps going with notes when gh and git both fail", async () => {
 		const failing: Exec = async () => {
 			throw new Error("network down");
