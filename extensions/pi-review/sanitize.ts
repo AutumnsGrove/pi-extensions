@@ -83,7 +83,9 @@ export function stripMarkdownLinkTitles(text: string): string {
 }
 
 /**
- * Rewrite every HTML tag in `text` without a regex.
+ * Rewrite every HTML tag in `text` without a regex: start tags, and end tags
+ * whose attributes are the same invisible channel (`</span IGNORE ...>` renders
+ * as nothing in a browser).
  *
  * The regex that expressed this (`<[a-zA-Z](?:[^>"']|"[^"]*"?|'[^']*'?)*>`)
  * backtracks exponentially: the optional closing quote makes every quoted span
@@ -93,14 +95,16 @@ export function stripMarkdownLinkTitles(text: string): string {
  * one path.
  *
  * A quote only opens a span when the previous non-space character is `=`.
- * That is what makes `<span title="` start a quoted value while `<span
- * title=x"y>` does not, which is also how HTML5 tokenises a stray quote inside
- * an unquoted value: it belongs to the value. When a quoted span never closes,
- * the scan falls back to the first `>` so the tag is still rewritten instead of
- * being skipped.
+ * That is what makes `<span title="` start a quoted value while
+ * `<span title=x"y>` does not, which is how HTML5 tokenises a stray quote
+ * inside an unquoted value: it belongs to the value.
+ *
+ * There is no length cap. A cap cannot bound this safely: stopping the
+ * quote-aware scan and finishing at the first `>` lands on a `>` *inside* the
+ * quoted value, which turns the hidden value into prose. The scan is linear in
+ * the tag, and the only unbounded case — no `>` anywhere after a `<` — ends the
+ * walk once, because nothing after it can be a tag either.
  */
-const MAX_TAG_CHARS = 4096;
-
 function rewriteTags(text: string, rewrite: (tag: string) => string): string {
 	let out = "";
 	let index = 0;
@@ -108,22 +112,17 @@ function rewriteTags(text: string, rewrite: (tag: string) => string): string {
 		const open = text.indexOf("<", index);
 		if (open < 0) return out + text.slice(index);
 		out += text.slice(index, open);
-		if (!/[a-zA-Z]/.test(text[open + 1] ?? "")) {
+		// `<name` and `</name`; `<!` and `<?` are not tags we rewrite.
+		const start = /^<\/?[a-zA-Z]/.test(text.slice(open, open + 3)) ? open : -1;
+		if (start < 0) {
 			out += "<";
 			index = open + 1;
 			continue;
 		}
 
-		const limit = Math.min(text.length, open + MAX_TAG_CHARS);
-		let end = scanTagEnd(text, open, limit);
+		const end = scanTagEnd(text, open);
 		if (end === undefined) {
-			// The quoted value did not close inside the cap. Fall back to the first
-			// `>` anyway, even past the cap: skipping the tag instead would make a
-			// long hidden value the one place sanitising does not reach.
-			end = text.indexOf(">", open + 1);
-		}
-		if (end < 0) {
-			// No `>` at all, so this is not a tag. Leave the rest alone.
+			// No `>` after this `<`, so nothing from here on can be a tag.
 			return out + text.slice(open);
 		}
 		out += rewrite(text.slice(open, end + 1));
@@ -133,9 +132,9 @@ function rewriteTags(text: string, rewrite: (tag: string) => string): string {
 }
 
 /** The index of the `>` that closes the tag, honouring quoted values. */
-function scanTagEnd(text: string, open: number, limit: number): number | undefined {
+function scanTagEnd(text: string, open: number): number | undefined {
 	let quote: string | undefined;
-	for (let index = open + 1; index < limit; index += 1) {
+	for (let index = open + 1; index < text.length; index += 1) {
 		const character = text[index];
 		if (quote) {
 			if (character === quote) quote = undefined;
@@ -151,25 +150,15 @@ function scanTagEnd(text: string, open: number, limit: number): number | undefin
 	return undefined;
 }
 
-/**
- * Attribute values on raw HTML in a body.
- *
- * Every attribute is invisible to a reader, and that includes its *name*: a
- * browser renders nothing for `<span IGNORE-ALL-PREVIOUS-INSTRUCTIONS>`, while
- * the model reads the name as text. `<div hidden>` is the same channel from the
- * other direction, where the presence of the attribute hides the content.
- *
- * So the tag is rebuilt rather than edited: the element name, the two
- * attributes whose value is text a reader can act on (`href` to follow, `src` to
- * name the image), and a self-closing slash. Everything else in the tag is
- * dropped, name and value together.
- */
 export function stripHiddenAttributes(text: string): string {
 	const KEPT = new Set(["href", "src"]);
 	const attribute = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/g;
 	return rewriteTags(text, (tag) => {
-		const name = /^<([a-zA-Z][a-zA-Z0-9:.-]*)/.exec(tag)?.[1];
+		const name = /^<\/?([a-zA-Z][a-zA-Z0-9:.-]*)/.exec(tag)?.[1];
 		if (!name) return tag;
+		// An end tag carries no attributes worth keeping, and any it does carry
+		// is text a reader cannot see: `</span IGNORE ...>` renders as nothing.
+		if (tag.startsWith("</")) return `</${name}>`;
 		const kept: string[] = [];
 		for (const match of tag.matchAll(attribute)) {
 			const attributeName = match[1] ?? "";
