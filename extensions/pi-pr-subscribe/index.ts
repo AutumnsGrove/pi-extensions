@@ -688,6 +688,12 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 	});
 
 	// A comment the session just posted must not wake it a few seconds later.
+	//
+	// Two ways of knowing that, because the first one is not reliable: the ids in
+	// the `gh` output (exact, but a wrapper script or a `--jq .id` pipe leaves
+	// none), and the post's timestamp, which the poller later matches against the
+	// session's own login. The timestamp is recorded for every post, captured
+	// ids or not, so the second path covers what the first one misses.
 	pi.on("tool_result", async (event, ctx) => {
 		if (!isBashToolResult(event) || event.isError === true) return;
 		const command = (event.input as { command?: unknown } | undefined)?.command;
@@ -695,14 +701,15 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 		const target = extractPostedTarget(command);
 		if (!target) return;
 		const ids = extractPostedIds(resultText(event.content));
-		if (ids.length === 0) return;
 		const subs = listSubscriptions(currentSessionId || ctx.sessionManager.getSessionId());
 		if (subs.length === 0) return;
 		const cwdRepo = await resolveRepo(exec, ctx.cwd);
+		const at = Date.now();
 		let changed = false;
 		for (const sub of subs) {
 			if (!targetMatches(target, sub.ref, cwdRepo ?? undefined)) continue;
-			sub.cursor = addOwnIds(sub.cursor, ids);
+			sub.ownPostAt = at;
+			if (ids.length > 0) sub.cursor = addOwnIds(sub.cursor, ids);
 			changed = true;
 		}
 		if (changed) persist();

@@ -557,6 +557,36 @@ describe("own comments", () => {
 		expect(sub?.cursor.commentIds).toContain("3550000001");
 	});
 
+	it("records when the session posted, even when the output carries no id", async () => {
+		const h = load();
+		await call(h, "subscribe_pr_activity");
+		await h.emit("tool_result", {
+			toolName: "bash",
+			toolCallId: "c1",
+			input: { command: "gh pr comment 32 --body-file /tmp/reply.md" },
+			content: [{ type: "text", text: "posted" }],
+			isError: false,
+		});
+		// No id to capture, so the timestamp is what lets the poller recognise the
+		// comment the command created.
+		const sub = getSubscription(ref);
+		expect(sub?.ownPostAt).toBeTypeOf("number");
+		expect(sub?.cursor.ownIds).toEqual([]);
+	});
+
+	it("does not record a post for a command that is not a gh write", async () => {
+		const h = load();
+		await call(h, "subscribe_pr_activity");
+		await h.emit("tool_result", {
+			toolName: "bash",
+			toolCallId: "c1",
+			input: { command: "gh pr view 32 --json state" },
+			content: [{ type: "text", text: "OPEN" }],
+			isError: false,
+		});
+		expect(getSubscription(ref)?.ownPostAt).toBeUndefined();
+	});
+
 	it("ignores a failed command and an unrelated PR", async () => {
 		const h = load();
 		await call(h, "subscribe_pr_activity");

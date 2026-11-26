@@ -324,6 +324,30 @@ export interface FetchSnapshotOptions {
 	since?: string;
 }
 
+/**
+ * The `gh` login this session's own writes will carry, or undefined.
+ *
+ * Asked for only once there is something to compare against: the poller calls
+ * this when the session has just posted to the PR (see `Subscription.ownPostAt`),
+ * so a session that never comments never spends a request on it. The answer
+ * cannot change under a session, so a success is kept for the life of the API
+ * client; a failure is not, because the window it serves is short and a blip
+ * should not disable the filter until the next reload.
+ */
+export async function viewerLogin(api: GhApi): Promise<string | undefined> {
+	const cached = api.getMeta<string>("viewer");
+	if (cached) return cached;
+	try {
+		const response = await api.get("user", { etagKey: "user" });
+		const login = (response.body as { login?: unknown } | undefined)?.login;
+		if (typeof login !== "string" || !login) return undefined;
+		api.setMeta("viewer", login);
+		return login;
+	} catch {
+		return undefined;
+	}
+}
+
 /** Read the PR first (the head SHA drives the check URLs), then the rest. */
 export async function fetchSnapshot(
 	api: GhApi,
