@@ -23,6 +23,7 @@ import { randomBytes } from "node:crypto";
 import {
 	appendFileSync,
 	existsSync,
+	linkSync,
 	mkdirSync,
 	readFileSync,
 	readdirSync,
@@ -84,6 +85,10 @@ export interface Waits {
 	topics: string[];
 	/** Keep waiting after the first match instead of clearing the topic. */
 	persistent: boolean;
+	/**
+	 * The newest already-delivered topic event, so a second wait does not replay
+	 * it. Milliseconds, and 0 for a lane that has been handed nothing yet.
+	 */
 	since: number;
 }
 
@@ -125,6 +130,25 @@ function writeAtomic(path: string, value: unknown): void {
 	const tmp = `${path}.${process.pid}.${randomBytes(3).toString("hex")}.tmp`;
 	writeFileSync(tmp, `${JSON.stringify(value)}\n`, { encoding: "utf8", mode: 0o600 });
 	renameSync(tmp, path);
+}
+
+/**
+ * Create `path` with `value` only if nothing is there. link(2) is the portable
+ * atomic test-and-set: it fails with EEXIST instead of overwriting, and the
+ * target appears whole or not at all, so a reader never sees half a lane.
+ */
+function createExclusive(path: string, value: unknown): boolean {
+	const tmp = `${path}.${process.pid}.${randomBytes(3).toString("hex")}.tmp`;
+	writeFileSync(tmp, `${JSON.stringify(value)}\n`, { encoding: "utf8", mode: 0o600 });
+	try {
+		linkSync(tmp, path);
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+		throw error;
+	} finally {
+		rmSync(tmp, { force: true });
+	}
 }
 
 function readJson<T>(path: string): T | undefined {
@@ -175,6 +199,12 @@ export type ClaimResult = { ok: true; lane: string; info: LaneInfo } | { ok: fal
 /**
  * Take a lane name. A name held by a live process other than us is refused with
  * a suffix suggestion by the caller; a stale or our own entry is overwritten.
+ *
+ * A read, a decision and a write are not one step across processes: two lanes
+ * starting in the same instant both read "free" and both wrote the same name,
+ * which left them sharing one inbox and one waits file until the next beat. The
+ * create is exclusive, so only one can win a free name and the loser takes the
+ * next one.
  */
 export function claimLane(
 	root: string,
@@ -185,13 +215,32 @@ export function claimLane(
 	const lane = safeName(desired);
 	if (!lane) return { ok: false, reason: "lane name is empty" };
 	ensure(join(root, "lanes"));
+	const path = laneFile(root, lane);
+	const record: LaneInfo = { ...info, lane, heartbeatAt: now };
+
 	const existing = readLane(root, lane);
-	if (existing && existing.pid !== info.pid && isLaneAlive(existing, now)) {
+	if (existing?.pid === info.pid) {
+		// Our own lane: a reload, or taking back a name we let go stale.
+		writeAtomic(path, record);
+		return { ok: true, lane, info: record };
+	}
+	if (existing && isLaneAlive(existing, now)) {
 		return { ok: false, reason: `lane "${lane}" is held by live pid ${existing.pid}` };
 	}
-	const record: LaneInfo = { ...info, lane, heartbeatAt: now };
-	writeAtomic(laneFile(root, lane), record);
-	return { ok: true, lane, info: record };
+	// Free, or held by a process that is gone. Drop the dead file so the exclusive
+	// create below starts from nothing.
+	if (existing) rmSync(path, { force: true });
+	if (createExclusive(path, record)) return { ok: true, lane, info: record };
+
+	// Something beat us to it. A file that is not a lane record at all (hand-edited,
+	// or written by an older version) cannot belong to a live lane, so recover it.
+	if (!readLane(root, lane)) {
+		rmSync(path, { force: true });
+		if (createExclusive(path, record)) return { ok: true, lane, info: record };
+	}
+	const winner = readLane(root, lane);
+	if (winner?.pid === info.pid) return { ok: true, lane, info: record };
+	return { ok: false, reason: `lane "${lane}" is held by live pid ${winner?.pid ?? "unknown"}` };
 }
 
 /** Pick the first free name: `base`, `base-2`, `base-3`, … */
@@ -225,6 +274,21 @@ export function releaseLane(root: string, lane: string, pid: number): void {
 	if (current && current.pid !== pid) return;
 	rmSync(laneFile(root, lane), { force: true });
 	rmSync(waitsFile(root, lane), { force: true });
+}
+
+/**
+ * Carry a lane's waiting topics to its new name. A rename and a re-claim are both
+ * the same session continuing, so its waits must follow it: left behind, they
+ * point at a lane nobody holds, every post fans out to a dead inbox, and the
+ * session that registered them never wakes again — silently.
+ */
+export function moveWaits(root: string, from: string, to: string): void {
+	if (safeName(from) === safeName(to)) return;
+	const waits = readWaits(root, from);
+	if (!waits) return;
+	ensure(join(root, "waits"));
+	writeAtomic(waitsFile(root, to), { ...waits, lane: safeName(to) });
+	rmSync(waitsFile(root, from), { force: true });
 }
 
 // -- sending -----------------------------------------------------------------
@@ -402,6 +466,11 @@ export interface WaitResult {
  * Register interest in topics. Events posted before this call (within the TTL,
  * from any lane but our own) satisfy the wait immediately, which closes the race
  * where the other lane finishes before this one subscribes.
+ *
+ * Replay stops at the lane's watermark so a topic is handed over once. Without
+ * it, a lane that asked again for the same topic — after a restart, or later in
+ * the same session — was told the same old event again and believed a task it
+ * had already finished had just finished again.
  */
 export function waitOn(
 	root: string,
@@ -414,13 +483,16 @@ export function waitOn(
 	const waitingOn: string[] = [];
 	const replay = input.replay !== false;
 	const wanted = readWaits(root, lane);
-	const since = wanted?.since ?? now;
+	const watermark = wanted?.since ?? 0;
+	const floor = now - TOPIC_TTL_MS;
+	// One millisecond past the watermark: an event at the watermark itself was already handed over.
+	const from = watermark > floor ? watermark + 1 : floor;
 
 	for (const pattern of patterns) {
 		let hit = false;
 		if (replay) {
 			for (const topic of topicsMatching(root, pattern)) {
-				for (const event of listTopicEvents(root, topic, now - TOPIC_TTL_MS)) {
+				for (const event of listTopicEvents(root, topic, from)) {
 					if (event.from === lane || replayed.some((seen) => seen.id === event.id)) continue;
 					replayed.push(event);
 					hit = true;
@@ -430,14 +502,17 @@ export function waitOn(
 		if (!hit || input.persistent) waitingOn.push(pattern);
 	}
 
-	if (waitingOn.length > 0) {
+	// A pattern satisfied by a replay was asked for and answered, so drop it from the
+	// registry instead of leaving it to fan out the next post as well.
+	const answered = new Set(patterns.filter((pattern) => !waitingOn.includes(pattern)));
+	const merged = [...new Set([...(wanted?.topics ?? []), ...waitingOn])].filter((pattern) => !answered.has(pattern));
+	if (waitingOn.length > 0 || replayed.length > 0) {
 		ensure(join(root, "waits"));
-		const merged = [...new Set([...(wanted?.topics ?? []), ...waitingOn])];
 		writeAtomic(waitsFile(root, lane), {
 			lane,
 			topics: merged,
 			persistent: input.persistent === true || wanted?.persistent === true,
-			since,
+			since: replayed.reduce((newest, event) => Math.max(newest, event.at), watermark),
 		} satisfies Waits);
 	}
 	return { replayed, waitingOn };

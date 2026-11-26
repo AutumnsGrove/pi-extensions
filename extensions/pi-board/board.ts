@@ -29,6 +29,7 @@ import {
 	clearWaits,
 	heartbeat,
 	listLanes,
+	moveWaits,
 	postTopic,
 	readInbox,
 	readLane,
@@ -162,6 +163,8 @@ export class Board {
 		const { lane: old, heartbeatAt: _beat, ...rest } = this.info;
 		const claim = claimLane(this.root, next, { ...rest, state: this.state }, this.now());
 		if (!claim.ok) return claim;
+		// The waits belong to this session, not to the name it used to answer to.
+		moveWaits(this.root, old, next);
 		releaseLane(this.root, old, process.pid);
 		this.info = claim.info;
 		this.paint();
@@ -194,12 +197,16 @@ export class Board {
 		if (!this.info) return;
 		const ok = heartbeat(this.root, this.info.lane, process.pid, { state: this.state }, this.now());
 		if (!ok) {
-			// Someone else took our lane file (we were suspended long enough to go stale).
-			// Take it back if it is free; otherwise pick a new name.
+			// Someone else took our lane file (we were suspended long enough to go stale,
+			// or two sessions started at once). Take it back if it is free; otherwise pick
+			// a new name and take the waits with us, or this session would never wake again.
 			const { lane, heartbeatAt: _beat, ...rest } = this.info;
 			const claim = claimFreeLane(this.root, lane, { ...rest, state: this.state }, this.now());
 			if (claim.ok) {
-				if (claim.lane !== lane) this.deps.notify(`board: lane "${lane}" was taken, now "${claim.lane}"`);
+				if (claim.lane !== lane) {
+					moveWaits(this.root, lane, claim.lane);
+					this.deps.notify(`board: lane "${lane}" was taken, now "${claim.lane}"`);
+				}
 				this.info = claim.info;
 				this.paint();
 			}
