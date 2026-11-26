@@ -58,14 +58,30 @@ export function extractPostedIds(output: string): string[] {
  * A `gh api` read is often followed by a pipeline (`| grep -F thanks`) or by a
  * second command (`; gh api ... -f body=hi`), and a flag in either belongs to
  * something else. Splitting first is what keeps `-F` from `grep` out of `gh`'s
- * argument list. Quotes are respected, so `--jq '.[] | .body'` stays one
- * segment.
+ * argument list. Quotes and backslash escapes are respected, so
+ * `--jq '.[] | .body'` stays one segment and `'\''` stays one string.
  */
 export function shellSegments(command: string): string[] {
 	const segments: string[] = [];
 	let current = "";
 	let quote: "'" | '"' | undefined;
-	for (const char of command) {
+	for (let index = 0; index < command.length; index += 1) {
+		const char = command[index] as string;
+		// A backslash escapes the next character, so `'\''` is close, escaped
+		// quote, reopen — the shell's way of putting an apostrophe in a string.
+		// Ignoring it leaves the scan inside a quote and swallows the rest of the
+		// line, which is how a `| grep -F` ends up looking like `gh`'s own flag.
+		// Inside single quotes a backslash is literal, so this only applies outside
+		// them (and inside double quotes, where it escapes `"`).
+		if (char === "\\" && quote !== "'") {
+			current += char;
+			const escaped = command[index + 1];
+			if (escaped !== undefined) {
+				current += escaped;
+				index += 1;
+			}
+			continue;
+		}
 		if (quote) {
 			current += char;
 			if (char === quote) quote = undefined;

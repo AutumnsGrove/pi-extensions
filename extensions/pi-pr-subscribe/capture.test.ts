@@ -107,6 +107,26 @@ describe("extractPostedTarget", () => {
 		expect(shellSegments("a; b && c")).toEqual(["a", " b ", "", " c"]);
 	});
 
+	it("follows a backslash escape, so a shell-escaped apostrophe does not trap the scan", () => {
+		// `'\''` is close-quote, escaped quote, reopen-quote: a valid way to put an
+		// apostrophe in a single-quoted string. Reading the backslash as a literal
+		// left the scan inside a quote, swallowed the `| grep -F`, and made a read
+		// look like a write.
+		const command = String.raw`gh api repos/o/r/pulls/32/comments --jq '.[] | select(.body | contains("don'\''t"))' | grep -F thanks`;
+		expect(shellSegments(command)).toHaveLength(2);
+		expect(extractPostedTarget(command)).toBeUndefined();
+
+		// The same quoting in a real write still counts.
+		expect(
+			extractPostedTarget(String.raw`gh api repos/o/r/pulls/32/comments -f body='don'\''t'`)
+		).toMatchObject({ kind: "review-comment" });
+	});
+
+	it("treats an escaped quote inside double quotes as part of the string", () => {
+		expect(shellSegments(`gh api x --jq "a\\"b" | jq .id`)).toHaveLength(2);
+		expect(extractPostedTarget(`gh api repos/o/r/pulls/32/comments --jq "a\\"b" | grep -F x`)).toBeUndefined();
+	});
+
 	it("ignores other commands", () => {
 		expect(extractPostedTarget("gh pr checks 32")).toBeUndefined();
 		expect(extractPostedTarget("git commit -m 'gh pr comment 32'")).toBeUndefined();
