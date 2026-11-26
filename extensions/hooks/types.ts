@@ -68,6 +68,7 @@ export const HOOK_EVENTS = [
 	"PrWake",
 	"PrReadyToMerge",
 	"AttentionChanged",
+	"BoardWake",
 ] as const;
 
 export type HookEventName = (typeof HOOK_EVENTS)[number];
@@ -105,6 +106,7 @@ export const SUPPORTED_EVENTS: readonly HookEventName[] = [
 	"PrWake",
 	"PrReadyToMerge",
 	"AttentionChanged",
+	"BoardWake",
 ];
 
 export type HookHandlerType = "command" | "http" | "prompt" | "agent";

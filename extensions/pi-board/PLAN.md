@@ -6,7 +6,8 @@ was waiting for arrives. Motivating case: lane B is blocked until lane A finishe
 issue X. Today a human has to walk over and say "X is done". With the board, A
 posts `task:X-done` and B wakes on its own.
 
-Status: **plan, phase 0 spike passed** (see [Spike results](#spike-results)). Decisions below were made with the user.
+Status: **built (phases 0–2), working v1.** See the [README](README.md) for how it behaves; this file is the
+plan and the record of what changed. Decisions below were made with the user.
 
 ## Decisions (settled)
 
@@ -39,7 +40,7 @@ only in-process subagents), so this is an extension, not a core change.
 
 ## Spike results
 
-Phase 0 ran on 2026-11-26 with `spike.ts` (kept beside this file, ~60 lines). pi 1.6.1 from
+Phase 0 ran on 2026-11-26 with a throwaway `spike.ts` (since deleted; superseded by `index.ts`). pi 1.6.1 from
 npm, run in a real tty under tmux, model `anthropic/claude-haiku-4.5` through OpenRouter.
 Each lane was a pi process with the extension loaded; "lane a" was a shell writing a file
 (atomic: write `.tmp`, then `mv`).
@@ -225,3 +226,31 @@ a lane starts with "wait for `task:123-done`" in its instructions and calls
 - devctrl: https://devctrl.dev/docs/session-messaging
 - reason-network: https://github.com/reason-machines/reason-network
 - asenq: https://asenq.com/claude-code-sessions-talk-to-each-other/
+
+## Implementation record
+
+Built on 2026-11-26. Where the build departed from the plan:
+
+- **Controller split.** The wake rules live in `board.ts` behind injected dependencies, so idle, busy,
+  blocked, draft, and flood cases are unit tested without a TUI. `index.ts` is thin wiring.
+- **`board_read` dropped.** Messages are pushed into the turn, so a read tool had no use. `/board` and
+  the shell `cli.ts inbox` cover inspection.
+- **Shell CLI added** (`cli.ts`): a human unblocks a lane with `post <topic>` from any terminal.
+- **Offline delivery is in v1**, not phase 3: a message to an exited lane is kept and delivered when a
+  session next claims the name. Spawning a session is still not done.
+- **Draft check uses `ctx.ui.getEditorText()`**, with a 60 s grace so a leftover line cannot stop a wake.
+- **Flood guard:** six wakes per sender per minute, then messages queue for the next turn.
+- **Watchdog (not in the plan).** One run during the build delivered a wake and no turn started; four
+  clean reruns and the replayed double-post did not reproduce it. A 10 s watchdog now notifies the user
+  and nudges once if a triggering delivery is not followed by `agent_start`. The root cause is unknown.
+- **`BoardWake`** is published on the hooks bus and registered in `hooks/types.ts`. `pi-attention` does
+  not consume it yet.
+
+Verified on 2026-11-26 with real pi 1.6.1 sessions in tmux on `upstage/solar-mini-4-5` (effectively
+free): a lane parks on `board_wait`, a `board_post` from another lane or from the shell CLI wakes only
+the matching lane, a second parked lane is left alone, and a wake after 100 s idle works. 77 tests in
+`extensions/pi-board`; the full suite (1,986) and `tsc` pass.
+
+Still open: two real lanes messaging each other repeatedly (ping-pong behaviour with a live model), macOS,
+a human typing while a wake arrives, running on `fs.watch` alone, `pi-attention` integration, a
+`blocked_by` task list, and a remote transport.
