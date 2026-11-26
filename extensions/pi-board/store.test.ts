@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,12 +8,14 @@ import {
 	TOPIC_TTL_MS,
 	ackMessages,
 	claimFreeLane,
+	clearWaits,
 	claimLane,
 	heartbeat,
 	isLaneAlive,
 	isValidName,
 	listLanes,
 	listWaits,
+	moveWaits,
 	nextId,
 	postTopic,
 	readInbox,
@@ -89,19 +92,74 @@ describe("lanes", () => {
 		expect(taken.ok).toBe(true);
 	});
 
+	it("gives simultaneous claimants different lanes", async () => {
+		// Two sessions starting at the same instant both read "free" and both wrote the
+		// same name before the create was exclusive, so they shared one inbox and one
+		// waits file until the next beat. Real processes, because the bug is a race.
+		const script = join(root, "claimer.mjs");
+		writeFileSync(
+			script,
+			`import { claimFreeLane } from ${JSON.stringify(new URL("./store.ts", import.meta.url).href)};
+import { hostname } from "node:os";
+const [, , startAt] = process.argv;
+const started = Date.now();
+while (Date.now() < Number(startAt)) {}
+const r = claimFreeLane(process.env.BOARD_ROOT, "shared", { pid: process.pid, host: hostname(), tty: true, cwd: "/", startedAt: started, state: "idle" });
+process.stdout.write((r.ok ? r.lane : "REFUSED") + "\\n");
+// Stay alive so our lane looks alive to the claimants that run after us.
+setTimeout(() => process.exit(0), 900);`,
+		);
+		const claimants = 6;
+		const startAt = Date.now() + 900;
+		const granted = await Promise.all(
+			Array.from({ length: claimants }, () => {
+				const child = spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", script, String(startAt)], {
+					env: { ...process.env, BOARD_ROOT: root },
+					stdio: ["ignore", "pipe", "ignore"],
+				});
+				let out = "";
+				child.stdout.setEncoding("utf8");
+				child.stdout.on("data", (chunk) => {
+					out += chunk;
+				});
+				return new Promise<string>((resolve) => child.on("close", () => resolve(out.trim())));
+			}),
+		);
+		expect(granted.filter((lane) => lane === "REFUSED")).toEqual([]);
+		expect(new Set(granted).size).toBe(claimants);
+	});
+
+	it("recovers a lane file that is not a lane record", () => {
+		mkdirSync(join(root, "lanes"), { recursive: true });
+		writeFileSync(join(root, "lanes", "auth.json"), "{ half a fi");
+		// It cannot belong to a live lane, so it must not lock the name out for good.
+		expect(claimLane(root, "auth", info())).toMatchObject({ ok: true, lane: "auth" });
+		expect(readLane(root, "auth")?.pid).toBe(process.pid);
+	});
+
 	it("falls back to a numbered name", () => {
 		claimLane(root, "auth", info({ pid: process.ppid }));
 		const next = claimFreeLane(root, "auth", info());
 		expect(next.ok && next.lane).toBe("auth-2");
 	});
 
-	it("only the owner may heartbeat or release", () => {
-		claimLane(root, "auth", info());
+	it("only the owner may heartbeat or release", () => {		claimLane(root, "auth", info());
 		expect(heartbeat(root, "auth", process.pid + 1)).toBe(false);
 		expect(heartbeat(root, "auth", process.pid, { state: "working" })).toBe(true);
 		expect(readLane(root, "auth")?.state).toBe("working");
 		releaseLane(root, "auth", process.pid + 1);
 		expect(readLane(root, "auth")).toBeDefined();
+	});
+
+	it("carries a lane's waits to a new name, and only its waits", () => {
+		waitOn(root, { lane: "b", topics: ["task:1-done"], persistent: true });
+		writeFileSync(join(root, "waits", "c.json"), JSON.stringify({ lane: "c", topics: ["other"], persistent: false, since: 0 }));
+		moveWaits(root, "b", "c");
+		expect(readWaits(root, "c")?.topics).toEqual(["task:1-done"]);
+		expect(readWaits(root, "b")).toBeUndefined();
+		// A lane that was not waiting on anything moves nothing, and overwrites nothing.
+		moveWaits(root, "auth", "c");
+		expect(readWaits(root, "c")?.topics).toEqual(["task:1-done"]);
 	});
 
 	it("treats a remote host by heartbeat alone", () => {
@@ -195,6 +253,33 @@ describe("topics and waits", () => {
 		expect(stale.replayed).toEqual([]);
 		const fresh = waitOn(root, { lane: "b", topics: ["task:*-done"] }, 2000);
 		expect(fresh.replayed.map((e) => e.body)).toEqual(["theirs"]);
+	});
+
+	it("hands a topic event over once, not again on every later wait", () => {
+		postTopic(root, { from: "a", topic: "task:42-done", body: "merged", wake: true });
+		const first = waitOn(root, { lane: "b", topics: ["task:42-done"] });
+		const second = waitOn(root, { lane: "b", topics: ["task:42-done"] });
+		const third = waitOn(root, { lane: "b", topics: ["task:42-done"] });
+		expect(first.replayed.map((e) => e.body)).toEqual(["merged"]);
+		// Otherwise a lane that asks again believes an old task just finished again.
+		expect(second.replayed).toEqual([]);
+		expect(third.replayed).toEqual([]);
+	});
+
+	it("keeps the replay watermark even when nothing is left waiting", () => {
+		postTopic(root, { from: "a", topic: "task:42-done", body: "merged" });
+		waitOn(root, { lane: "b", topics: ["task:42-done"] });
+		// A one-shot wait that was satisfied leaves no topics but must keep the mark.
+		expect(readWaits(root, "b")).toMatchObject({ topics: [] });
+		expect(readWaits(root, "b")?.since).toBeGreaterThan(0);
+	});
+
+	it("still replays an event posted after the watermark", () => {
+		waitOn(root, { lane: "b", topics: ["task:42-done"] }, 1000);
+		clearWaits(root, "b");
+		postTopic(root, { from: "a", topic: "task:42-done", body: "late" }, 2000);
+		const later = waitOn(root, { lane: "b", topics: ["task:42-done"] }, 3000);
+		expect(later.replayed.map((e) => e.body)).toEqual(["late"]);
 	});
 
 	it("lists waits and posts with no waiter without error", () => {

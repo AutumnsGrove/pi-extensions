@@ -75,7 +75,7 @@ describe("presence", () => {
 		expect(r.board.lane).toBe("b-2");
 	});
 
-	it("renames atomically and refuses a taken name", () => {
+		it("renames atomically and refuses a taken name", () => {
 		const r = rig("b");
 		// Another live process (our parent) holds "a".
 		claimLane(root, "a", { pid: process.ppid, host: hostname(), tty: true, cwd: "/", startedAt: 1, state: "idle" }, clock);
@@ -84,6 +84,22 @@ describe("presence", () => {
 		expect(r.board.rename("c")).toEqual({ ok: true, lane: "c" });
 		expect(listLanes(root).map((l) => l.lane).sort()).toEqual(["a", "c"]);
 		expect(readLane(root, "b")).toBeUndefined();
+	});
+
+	it("takes its waits with it when renamed", () => {
+		const r = rig("b");
+		r.board.wait(["task:1-done"]);
+		expect(r.board.rename("c")).toEqual({ ok: true, lane: "c" });
+		// A rename is the same session continuing; a wait left on the old name would
+		// fan out to a lane nobody holds and this session would never wake again.
+		expect(readWaits(root, "c")?.topics).toEqual(["task:1-done"]);
+		expect(readWaits(root, "b")).toBeUndefined();
+	});
+
+	it("renames without a wake if it was not waiting on anything", () => {
+		const r = rig("b");
+		expect(r.board.rename("c")).toEqual({ ok: true, lane: "c" });
+		expect(readWaits(root, "c")).toBeUndefined();
 	});
 
 	it("removes its lane on stop but not when keeping it for a reload", () => {
@@ -101,6 +117,22 @@ describe("presence", () => {
 		rmSync(file);
 		vi.advanceTimersByTime(21_000);
 		expect(readLane(root, "b")?.pid).toBe(process.pid);
+	});
+
+	it("keeps its waits when it has to move to a new lane", () => {
+		const r = rig("b");
+		r.board.wait(["task:1-done"]);
+		// A live foreign process holds "b", as the loser of a simultaneous start sees.
+		writeFileSync(
+			join(root, "lanes", "b.json"),
+			JSON.stringify({ lane: "b", pid: process.ppid, host: hostname(), tty: true, cwd: "/", startedAt: 1, heartbeatAt: clock, state: "idle" }),
+		);
+		vi.advanceTimersByTime(21_000);
+		expect(r.board.lane).toBe("b-2");
+		// Otherwise the session parks on a topic it is no longer registered for and
+		// nothing ever wakes it, which is the one failure the board exists to prevent.
+		expect(readWaits(root, "b-2")?.topics).toEqual(["task:1-done"]);
+		expect(readWaits(root, "b")).toBeUndefined();
 	});
 
 	it("paints unread count and waits in the status line", () => {
