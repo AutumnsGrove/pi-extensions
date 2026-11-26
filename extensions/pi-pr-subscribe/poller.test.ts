@@ -51,6 +51,8 @@ class FakeGh {
 	issueComments: unknown[] = [];
 	reviewComments: unknown[] = [];
 	reviews: unknown[] = [];
+	/** The `gh` login `/user` answers with. */
+	login = "AutumnsGrove";
 	/** Status code to fail the pull request with, or null. */
 	fail: number | null = null;
 	calls: string[] = [];
@@ -58,6 +60,7 @@ class FakeGh {
 	exec: Exec = async (_command, args) => {
 		const path = args.at(-1) ?? "";
 		this.calls.push(path);
+		if (path === "user") return { stdout: included(200, { login: this.login }), code: 0 };
 		if (this.fail !== null && path.includes("/pulls/32")) {
 			return { stdout: included(this.fail, { message: "boom" }), code: 1 };
 		}
@@ -457,46 +460,121 @@ describe("wake signals", () => {
 		expect(h.wakes[0]).toMatchObject({ informational: false, eventTypes: ["subscription.expired"] });
 	});
 
-	it("treats the session's own push as informational, and only that one", async () => {
+	it("never wakes for a head move on its own", async () => {
 		const h = setup();
-		h.deps.headOf = async () => "bbb";
 		h.server.pull = { ...h.server.pull, head: { sha: "bbb", ref: "feat" } };
 		await tick(h.sub, h.deps);
 		vi.advanceTimersByTime(COALESCE_MS);
-		expect(h.wakes[0]).toMatchObject({ informational: true, eventTypes: ["head.updated"] });
-		// The hint is per delivery: a later push from elsewhere is not covered.
-		expect(h.sub.ownHeads).toBeUndefined();
-
-		const foreign = setup();
-		foreign.deps.headOf = async () => "ccc";
-		foreign.server.pull = { ...foreign.server.pull, head: { sha: "bbb", ref: "feat" } };
-		await tick(foreign.sub, foreign.deps);
-		vi.advanceTimersByTime(COALESCE_MS);
-		expect(foreign.wakes[0]).toMatchObject({ informational: false, eventTypes: ["head.updated"] });
+		expect(h.delivered).toEqual([]);
+		expect(h.wakes).toEqual([]);
+		// The cursor moved, so the next poll does not re-report the same push.
+		expect(h.sub.cursor.headSha).toBe("bbb");
+		expect(h.persisted()).toBeGreaterThan(0);
 	});
 
-	it("stays loud on a head move when git cannot say what the tip is", async () => {
+	it("keeps the new head's checks loud, and drops the head move from that batch", async () => {
 		const h = setup();
-		h.deps.headOf = async () => {
-			throw new Error("not a repository");
-		};
 		h.server.pull = { ...h.server.pull, head: { sha: "bbb", ref: "feat" } };
+		h.server.checks = [
+			{ id: 3, name: "test", status: "completed", conclusion: "failure" },
+			{ id: 4, name: "slow", status: "in_progress", conclusion: null },
+		];
 		await tick(h.sub, h.deps);
 		vi.advanceTimersByTime(COALESCE_MS);
-		expect(h.wakes[0]?.informational).toBe(false);
+		expect(h.wakes[0]).toMatchObject({ informational: false, eventTypes: ["check.completed"] });
+		expect(h.delivered[0]).not.toContain("The head moved");
+		expect(h.delivered[0]).toContain('Check "test" finished: failure');
 	});
 
-	it("keeps a comment mixed with an own push loud", async () => {
+	it("keeps the echo of the session's own post quiet", async () => {
 		const h = setup();
-		h.deps.headOf = async () => "bbb";
+		h.sub.ownPostAts = [Date.now()];
+		h.server.issueComments = [
+			{
+				id: 21,
+				body: "on it",
+				user: { login: "AutumnsGrove" },
+				created_at: new Date().toISOString(),
+			},
+		];
+		await tick(h.sub, h.deps);
+		vi.advanceTimersByTime(COALESCE_MS);
+		expect(h.delivered).toEqual([]);
+		expect(h.wakes).toEqual([]);
+		expect(h.sub.cursor.commentIds).toContain("21");
+	});
+
+	it("still delivers a comment from someone else at the same moment", async () => {
+		const h = setup();
+		h.sub.ownPostAts = [Date.now()];
+		h.server.issueComments = [
+			{
+				id: 22,
+				body: "one more thing",
+				user: { login: "pi-review-autumnsgrove[bot]", type: "Bot" },
+				created_at: new Date().toISOString(),
+			},
+		];
+		await tick(h.sub, h.deps);
+		vi.advanceTimersByTime(COALESCE_MS);
+		expect(h.wakes[0]).toMatchObject({ informational: false, eventTypes: ["comment.created"] });
+	});
+
+	it("does not ask for the login unless the session posted", async () => {
+		const h = setup();
+		h.server.issueComments = [{ id: 23, body: "hello", created_at: "2026-11-15T21:00:00Z" }];
+		await tick(h.sub, h.deps);
+		expect(h.server.calls).not.toContain("user");
+
+		const posted = setup();
+		posted.sub.ownPostAts = [Date.now()];
+		await tick(posted.sub, posted.deps);
+		await tick(posted.sub, posted.deps);
+		// One request for the session: the answer cannot change under it.
+		expect(posted.server.calls.filter((call) => call === "user")).toHaveLength(1);
+	});
+
+	it("forgets a post hint that has aged out", async () => {
+		const h = setup();
+		h.sub.ownPostAts = [Date.now() - 7 * 60_000];
+		h.server.issueComments = [
+			{ id: 24, body: "on it", user: { login: "AutumnsGrove" }, created_at: new Date().toISOString() },
+		];
+		await tick(h.sub, h.deps);
+		vi.advanceTimersByTime(COALESCE_MS);
+		expect(h.wakes[0]).toMatchObject({ eventTypes: ["comment.created"] });
+		expect(h.sub.ownPostAts).toBeUndefined();
+		expect(h.server.calls).not.toContain("user");
+	});
+
+	it("covers both replies when two posts land between polls", async () => {
+		const h = setup();
+		const first = Date.now() - 120_000;
+		h.sub.ownPostAts = [first, Date.now()];
+		h.server.issueComments = [
+			{ id: 25, body: "first reply", user: { login: "AutumnsGrove" }, created_at: new Date(first + 5_000).toISOString() },
+			{ id: 26, body: "second reply", user: { login: "AutumnsGrove" }, created_at: new Date().toISOString() },
+		];
+		await tick(h.sub, h.deps);
+		vi.advanceTimersByTime(COALESCE_MS);
+		expect(h.wakes).toEqual([]);
+		expect(h.sub.cursor.commentIds).toEqual(expect.arrayContaining(["25", "26"]));
+	});
+
+	it("prunes a post time once it is older than the window", async () => {
+		const h = setup();
+		h.sub.ownPostAts = [Date.now() - 7 * 60_000, Date.now() - 60_000];
+		await tick(h.sub, h.deps);
+		expect(h.sub.ownPostAts).toHaveLength(1);
+	});
+
+	it("keeps a comment loud when it lands with a head move", async () => {
+		const h = setup();
 		h.server.pull = { ...h.server.pull, head: { sha: "bbb", ref: "feat" } };
 		h.server.issueComments = [{ id: 10, body: "one more thing", created_at: "2026-11-15T21:00:00Z" }];
 		await tick(h.sub, h.deps);
 		vi.advanceTimersByTime(COALESCE_MS);
-		expect(h.wakes[0]).toMatchObject({
-			informational: false,
-			eventTypes: ["head.updated", "comment.created"],
-		});
+		expect(h.wakes[0]).toMatchObject({ informational: false, eventTypes: ["comment.created"] });
 	});
 });
 

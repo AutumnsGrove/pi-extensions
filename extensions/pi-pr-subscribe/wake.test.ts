@@ -57,15 +57,6 @@ describe("isInformational", () => {
 	it("is false when green and not-green are mixed", () => {
 		expect(isInformational([check("success"), comment()])).toBe(false);
 	});
-
-	it("is true for a head move onto the session's own tip", () => {
-		const own = new Set(["bbb"]);
-		expect(isInformational([{ type: "head.updated", to: "bbb" }], own)).toBe(true);
-		expect(isInformational([{ type: "head.updated", to: "bbb" }, check("success")], own)).toBe(true);
-		// A head that is not the local tip, or a batch with anything else in it, still wakes.
-		expect(isInformational([{ type: "head.updated", to: "ccc" }], own)).toBe(false);
-		expect(isInformational([{ type: "head.updated", to: "bbb" }, comment()], own)).toBe(false);
-	});
 });
 
 describe("wake payloads", () => {
@@ -96,10 +87,8 @@ describe("wake payloads", () => {
 		expect(summary.endsWith("…")).toBe(true);
 	});
 
-	it("summarizes an own push as one, and a foreign one as a plain head move", () => {
-		const own = new Set(["bbb"]);
-		expect(wakeSummary([{ type: "head.updated", to: "bbb" }], own)).toContain("this session's own push");
-		expect(wakeSummary([{ type: "head.updated", to: "ccc" }], own)).toBe("new commits, head ccc");
+	it("summarizes a head move plainly, with no claim about who pushed", () => {
+		expect(wakeSummary([{ type: "head.updated", to: "ccc" }])).toBe("new commits, head ccc");
 	});
 
 	it("builds a ready-to-merge payload with and without a reason", () => {

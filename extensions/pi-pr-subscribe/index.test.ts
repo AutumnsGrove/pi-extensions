@@ -557,6 +557,75 @@ describe("own comments", () => {
 		expect(sub?.cursor.commentIds).toContain("3550000001");
 	});
 
+	it("records when the session posted, even when the output carries no id", async () => {
+		const h = load();
+		await call(h, "subscribe_pr_activity");
+		await h.emit("tool_result", {
+			toolName: "bash",
+			toolCallId: "c1",
+			input: { command: "gh pr comment 32 --body-file /tmp/reply.md" },
+			content: [{ type: "text", text: "posted" }],
+			isError: false,
+		});
+		// No id to capture, so the timestamp is what lets the poller recognise the
+		// comment the command created.
+		const sub = getSubscription(ref);
+		expect(sub?.ownPostAts).toHaveLength(1);
+		expect(sub?.ownPostAts?.[0]).toBeTypeOf("number");
+		expect(sub?.cursor.ownIds).toEqual([]);
+	});
+
+	it("keeps every post time, so two replies between polls are both covered", async () => {
+		const h = load();
+		await call(h, "subscribe_pr_activity");
+		for (const toolCallId of ["c1", "c2"]) {
+			await h.emit("tool_result", {
+				toolName: "bash",
+				toolCallId,
+				input: { command: "gh pr comment 32 --body-file /tmp/reply.md" },
+				content: [{ type: "text", text: "posted" }],
+				isError: false,
+			});
+		}
+		expect(getSubscription(ref)?.ownPostAts).toHaveLength(2);
+	});
+
+	it("does not open the echo window when the id was captured", async () => {
+		const h = load();
+		await call(h, "subscribe_pr_activity");
+		await h.emit("tool_result", {
+			toolName: "bash",
+			toolCallId: "c1",
+			input: { command: "gh pr comment 32 --body 'on it'" },
+			content: [{ type: "text", text: "https://github.com/o/r/pull/32#issuecomment-3550000002" }],
+			isError: false,
+		});
+		// The exact id already kills that echo; a window on top of it would only add
+		// a way to swallow a comment the user leaves on github.com.
+		expect(getSubscription(ref)?.ownPostAts).toBeUndefined();
+	});
+
+	it("does not record a post for a command that is not a gh write", async () => {
+		const h = load();
+		await call(h, "subscribe_pr_activity");
+		for (const [toolCallId, command] of [
+			["c1", "gh pr view 32 --json state"],
+			["c2", "gh api repos/AutumnsGrove/pi-extensions/issues/32/comments"],
+			["c3", "gh api repos/AutumnsGrove/pi-extensions/pulls/32/comments --jq '.[] | .body'"],
+		] as const) {
+			await h.emit("tool_result", {
+				toolName: "bash",
+				toolCallId,
+				input: { command },
+				content: [{ type: "text", text: "[]" }],
+				isError: false,
+			});
+		}
+		// A read of the thread posts nothing, and must not silence the next six
+		// minutes of the session's own comments.
+		expect(getSubscription(ref)?.ownPostAts).toBeUndefined();
+	});
+
 	it("ignores a failed command and an unrelated PR", async () => {
 		const h = load();
 		await call(h, "subscribe_pr_activity");

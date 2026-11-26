@@ -19,6 +19,11 @@
  *   counts is terminal. With no checks at all it waits a few polls first, so a
  *   head pushed a second ago is not declared "done" before CI has even created
  *   a run.
+ * - A comment the session posted itself is not news. The cursor learns the id
+ *   from the `gh` output when it can (`capture.ts`); when the output does not
+ *   carry one, the `ownPost` hint does the same job from the other direction:
+ *   the session says when it posted and which login it posts as, and a write by
+ *   that login inside the window afterwards is the echo of one of those posts.
  */
 
 import {
@@ -135,6 +140,53 @@ export interface DiffOptions {
 	now?: number;
 	/** Override for the empty-check settle threshold. */
 	emptySettlePolls?: number;
+	/** The `gh` posts this session just made, so their echoes do not wake it. */
+	ownPost?: OwnPost | undefined;
+}
+
+/** When a session posted to the PR itself, and the login the post carried. */
+export interface OwnPost {
+	/**
+	 * Local clock, one entry per posting `gh` call. A list, not the latest: two
+	 * replies a minute apart with no poll between them are two echoes, and the
+	 * earlier one must not fall out of the window when the later one lands.
+	 */
+	ats: readonly number[];
+	login: string;
+}
+
+/**
+ * Clock slack before the post: GitHub stamps `created_at` on its own clock, and
+ * the two are not guaranteed to agree.
+ */
+export const OWN_POST_BEFORE_MS = 60_000;
+/**
+ * Window after the post. It has to outlast a slow poll — a quiet PR is read once
+ * every five minutes — because the echo is only visible on the next successful
+ * read.
+ */
+export const OWN_POST_WINDOW_MS = 6 * 60_000;
+
+/**
+ * Is this newly seen write the echo of the session's own post?
+ *
+ * Only the login and the window are consulted: the id would be better, but it
+ * is exactly what a wrapper script or a `--jq .id` pipe does not give us. A
+ * write the payload does not date is not an echo — the safe direction is still
+ * to wake.
+ */
+function isOwnPostEcho(
+	author: string | undefined,
+	createdAt: string | undefined,
+	ownPost: OwnPost | undefined
+): boolean {
+	if (!ownPost || !author || !createdAt) return false;
+	if (author.toLowerCase() !== ownPost.login.toLowerCase()) return false;
+	const created = Date.parse(createdAt);
+	if (!Number.isFinite(created)) return false;
+	return ownPost.ats.some(
+		(at) => created >= at - OWN_POST_BEFORE_MS && created <= at + OWN_POST_WINDOW_MS
+	);
 }
 
 export interface DiffResult {
@@ -240,6 +292,8 @@ export function diffSnapshot(snapshot: Snapshot, cursor: Cursor, options: DiffOp
 		if (own.has(comment.id)) continue;
 		own.add(comment.id);
 		newCommentIds.push(comment.id);
+		// Seen and remembered, but not news: this is the session's own post.
+		if (isOwnPostEcho(comment.author, comment.createdAt, options.ownPost)) continue;
 		events.push({ type: "comment.created", comment });
 	}
 	if (newCommentIds.length > 0) {
@@ -256,6 +310,7 @@ export function diffSnapshot(snapshot: Snapshot, cursor: Cursor, options: DiffOp
 		// A bare "commented" placeholder with no body and no state of its own
 		// carries nothing; its inline comments arrive separately.
 		if (review.state === "COMMENTED" && review.body.trim() === "") continue;
+		if (isOwnPostEcho(review.author, review.submittedAt, options.ownPost)) continue;
 		events.push({ type: "review.submitted", review });
 	}
 	if (newReviewIds.length > 0) {

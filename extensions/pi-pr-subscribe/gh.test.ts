@@ -10,6 +10,7 @@ import {
 	requiredChecks,
 	retryDelayMs,
 	snapshotPaths,
+	viewerLogin,
 	type Exec,
 } from "./gh.ts";
 
@@ -567,5 +568,25 @@ describe("review page boundaries", () => {
 		const events = diffSnapshot(poll, cursor).events;
 		expect(events).toHaveLength(1);
 		expect(events[0]).toMatchObject({ type: "review.submitted", review: { id: "101" } });
+	});
+});
+
+describe("viewerLogin", () => {
+	it("reads /user once and keeps the answer for the client", async () => {
+		const { exec, calls } = fakeExec([{ match: "user", reply: { status: 200, body: { login: "AutumnsGrove" } } }]);
+		const api = new GhApi({ exec, cwd: "/tmp" });
+		expect(await viewerLogin(api)).toBe("AutumnsGrove");
+		expect(await viewerLogin(api)).toBe("AutumnsGrove");
+		expect(calls.filter((args) => args.at(-1) === "user")).toHaveLength(1);
+	});
+
+	it("returns nothing rather than throwing when the login is unreadable", async () => {
+		const { exec, calls } = fakeExec([{ match: "user", reply: { status: 403, body: { message: "nope" } } }]);
+		const api = new GhApi({ exec, cwd: "/tmp" });
+		expect(await viewerLogin(api)).toBeUndefined();
+		// A failure is not cached: the window it serves is short, and a blip should
+		// not turn the filter off for the session.
+		expect(await viewerLogin(api)).toBeUndefined();
+		expect(calls.filter((args) => args.at(-1) === "user")).toHaveLength(2);
 	});
 });

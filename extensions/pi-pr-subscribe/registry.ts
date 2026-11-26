@@ -59,6 +59,13 @@ export interface Subscription {
 	notifiedErrors: ErrorKind[];
 	/** First poll after a resume reports "while you were away". */
 	catchUp: boolean;
+	/**
+	 * When this session's recent `gh` posts to this PR returned, in local
+	 * milliseconds, newest last. The diff uses them, with the session's own
+	 * login, to read the comments those posts created as echoes rather than
+	 * news. Pruned to the window, so this stays a handful of numbers.
+	 */
+	ownPostAts?: number[];
 	/** Set when the subscription expired after a long silence. Kept so it can resume. */
 	expiredAt?: number;
 	lock?: LockInfo;
@@ -71,11 +78,6 @@ export interface Subscription {
 	flushTimer?: ReturnType<typeof setTimeout>;
 	pending: PrEvent[];
 	pendingLogs: Map<string, string>;
-	/**
-	 * Heads this batch proved are the session's own pushes, cleared when the
-	 * batch is delivered. Never persisted: it describes a wake, not a watch.
-	 */
-	ownHeads?: Set<string>;
 }
 
 export interface RegistryState {
@@ -220,6 +222,8 @@ export interface PersistedSubscription {
 	cwd: string;
 	sessionId: string;
 	createdAt: number;
+	/** Post times still inside the echo window when the session entry was written. */
+	ownPostAts?: number[];
 	/** An expired subscription keeps its cursor but does not poll until resumed. */
 	expiredAt?: number;
 }
@@ -235,6 +239,7 @@ export function persistedSubscriptions(sessionId?: string): PersistedSubscriptio
 		cwd: sub.cwd,
 		sessionId: sub.sessionId,
 		createdAt: sub.createdAt,
+		...(sub.ownPostAts?.length ? { ownPostAts: sub.ownPostAts } : {}),
 		...(sub.expiredAt ? { expiredAt: sub.expiredAt } : {}),
 	}));
 }
@@ -280,6 +285,9 @@ export function subscriptionFromPersisted(
 		state: value.cursor.state,
 		...(value.required ? { required: value.required } : {}),
 		createdAt: value.createdAt ?? Date.now(),
+		...(Array.isArray(value.ownPostAts) && value.ownPostAts.length > 0
+			? { ownPostAts: value.ownPostAts.filter((entry) => typeof entry === "number") }
+			: {}),
 		...(value.expiredAt ? { expiredAt: value.expiredAt } : {}),
 		consecutiveErrors: 0,
 		notifiedErrors: [],

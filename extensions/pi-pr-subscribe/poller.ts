@@ -21,8 +21,10 @@
 import {
 	diffSnapshot,
 	isTerminal,
+	OWN_POST_WINDOW_MS,
 	type Cursor,
 	type ErrorKind,
+	type OwnPost,
 	type PrEvent,
 } from "./diff.ts";
 import {
@@ -31,6 +33,7 @@ import {
 	fetchJobLog,
 	fetchSnapshot,
 	requiredChecks,
+	viewerLogin,
 	type Exec,
 } from "./gh.ts";
 import { formatBatch } from "./format.ts";
@@ -79,12 +82,6 @@ export interface PollerDeps {
 	now?: () => number;
 	/** Injected in tests; production uses `fetchJobLog`. */
 	logTail?: (jobId: string) => Promise<string | undefined>;
-	/**
-	 * Injected in tests; production reads `git rev-parse HEAD` in the
-	 * subscription's own checkout. Undefined means the tip is unknown, which
-	 * only makes a head move noisier, never silent.
-	 */
-	headOf?: (cwd: string) => Promise<string | undefined>;
 }
 
 const apis = new Map<string, GhApi>();
@@ -244,7 +241,11 @@ async function pollOnce(sub: Subscription, deps: PollerDeps): Promise<void> {
 			}
 		}
 
-		const result = diffSnapshot(snapshot, sub.cursor, { required: sub.required, now: at });
+		const result = diffSnapshot(snapshot, sub.cursor, {
+			required: sub.required,
+			now: at,
+			ownPost: await ownPostHint(api, sub, at),
+		});
 
 		// The ownership check comes before anything is committed. Diffing is pure,
 		// so a tick that lost the lock can walk away with the cursor exactly where
@@ -276,7 +277,6 @@ async function pollOnce(sub: Subscription, deps: PollerDeps): Promise<void> {
 
 		if (result.events.length > 0) {
 			await attachLogs(sub, result.events, deps);
-			await markOwnHeads(sub, result.events, deps);
 			queueEvents(sub, result.events, deps);
 			registry().persist?.();
 		} else if (result.dirty) {
@@ -297,6 +297,26 @@ async function pollOnce(sub: Subscription, deps: PollerDeps): Promise<void> {
 	}
 }
 
+/**
+ * The hint that reads a just-posted comment as the echo it is, or nothing.
+ *
+ * The session records when each of its `gh` posts returned (`ownPostAts`); this
+ * prunes the ones that have aged past the window and, while any is left, asks
+ * GitHub for the login the posts carry. An empty list is dropped here rather
+ * than trusted: a subscription resumed a day later must not silence anything.
+ */
+async function ownPostHint(api: GhApi, sub: Subscription, at: number): Promise<OwnPost | undefined> {
+	if (!sub.ownPostAts || sub.ownPostAts.length === 0) return undefined;
+	const live = sub.ownPostAts.filter((postAt) => at - postAt <= OWN_POST_WINDOW_MS);
+	if (live.length === 0) {
+		sub.ownPostAts = undefined;
+		return undefined;
+	}
+	if (live.length !== sub.ownPostAts.length) sub.ownPostAts = live;
+	const login = await viewerLogin(api);
+	return login ? { ats: live, login } : undefined;
+}
+
 /** Keep the issue-comment watermark on the newest comment seen, never behind. */
 function advanceSince(cursor: Cursor, snapshot: Snapshot): Cursor {
 	const newest = oldestFirst(snapshot.comments)
@@ -307,42 +327,6 @@ function advanceSince(cursor: Cursor, snapshot: Snapshot): Cursor {
 	if (!newest) return cursor;
 	if (cursor.commentSince && cursor.commentSince >= newest) return cursor;
 	return { ...cursor, commentSince: newest };
-}
-
-/** The checkout's branch tip, or undefined when git cannot be read. */
-async function localHead(cwd: string, deps: PollerDeps): Promise<string | undefined> {
-	try {
-		if (deps.headOf) return (await deps.headOf(cwd))?.trim() || undefined;
-		const runner = registry().exec;
-		if (!runner) return undefined;
-		const result = await runner("git", ["rev-parse", "HEAD"], { cwd, timeout: 5_000 });
-		if (result.code !== undefined && result.code !== 0) return undefined;
-		return result.stdout.trim() || undefined;
-	} catch {
-		// No repository, no git, no answer: the head move stays a wake.
-		return undefined;
-	}
-}
-
-/**
- * Mark the head moves this batch can prove are already on this checkout's tip.
- *
- * One `git rev-parse` per head move, and only ever on a push: the poll loop is
- * already talking to GitHub, so the extra process is noise next to it. The
- * claim is "these commits are here", not authorship: a head this session does
- * not have — another machine, another worktree — does not match, which is the
- * safe direction because it still wakes the agent.
- */
-async function markOwnHeads(sub: Subscription, events: PrEvent[], deps: PollerDeps): Promise<void> {
-	const moved = events.filter((event) => event.type === "head.updated");
-	if (moved.length === 0) return;
-	const head = (await localHead(sub.cwd, deps))?.toLowerCase();
-	if (!head) return;
-	for (const event of moved) {
-		if (event.type !== "head.updated") continue;
-		if (event.to.toLowerCase() !== head) continue;
-		(sub.ownHeads ??= new Set()).add(event.to);
-	}
 }
 
 async function attachLogs(sub: Subscription, events: PrEvent[], deps: PollerDeps): Promise<void> {
@@ -400,7 +384,11 @@ export function describeEvent(event: PrEvent | undefined): string | undefined {
 	}
 }
 
-/** Deliver what is queued. A settle in the batch swallows the per-run pings. */
+/**
+ * Deliver what is queued. A settle in the batch swallows the per-run pings,
+ * and a head move is dropped: it is bookkeeping (the cursor reset, the widget's
+ * "new commits") and never a reason to spend a turn.
+ */
 export function flush(sub: Subscription, deps: PollerDeps, options: { force?: boolean } = {}): void {
 	if (sub.flushTimer) {
 		clearTimeout(sub.flushTimer);
@@ -408,19 +396,17 @@ export function flush(sub: Subscription, deps: PollerDeps, options: { force?: bo
 	}
 	if (sub.pending.length === 0) return;
 	const settled = sub.pending.some((event) => event.type === "checks.settled");
-	const events = settled ? sub.pending.filter((event) => event.type !== "check.completed") : sub.pending;
-	const text = formatBatch({
-		ref: sub.ref,
-		events,
-		catchUp: sub.catchUp,
-		logTails: sub.pendingLogs,
-		now: now(deps),
-	});
+	const events = (settled ? sub.pending.filter((event) => event.type !== "check.completed") : sub.pending).filter(
+		(event) => event.type !== "head.updated"
+	);
+	const batch = { ref: sub.ref, events, catchUp: sub.catchUp, logTails: sub.pendingLogs, now: now(deps) };
 	sub.pending = [];
 	sub.pendingLogs = new Map();
 	sub.catchUp = false;
-	deliver({ text, wake: wakePayload(sub.ref, events, sub.ownHeads) });
-	sub.ownHeads = undefined;
+	// A push on its own leaves nothing to say. The cursor, the widget, and the
+	// check tracking already moved; the checks that follow are the next wake.
+	if (events.length === 0) return;
+	deliver({ text: formatBatch(batch), wake: wakePayload(sub.ref, events) });
 }
 
 /** Flush every subscription (after a `pi-q-n-a` form closes). */

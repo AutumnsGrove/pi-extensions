@@ -97,13 +97,16 @@ its URL (`#issuecomment-<id>`, `#discussion_r<id>`, `#pullrequestreview-<id>`) o
 JSON `id`, and records the id in the cursor. An event is skipped only if its id is
 recorded. Nothing is appended to the comment body.
 
-The capture is best effort. If the output has no id (a wrapper script, a `gh`
-alias, output piped through `jq`), nothing is recorded and the comment **will**
-wake the agent once. That is accepted: it is indistinguishable from a comment the
-user posted under the same login, and the failure is one extra turn, not a lost
-event. Event coalescing (below) folds it into the next delivery, and the rules tell
-the agent that an event whose author is the authenticated login and whose body it
-just wrote needs no reply.
+The capture is best effort, and alone it was not enough: a wrapper script or a
+`gh api ... | jq -r .id` leaves no URL and no JSON behind, so the reply woke the
+agent one turn later. The second half is a hint rather than an id, used only when
+the output gave no id at all: the posting `gh` call records *when* it returned —
+one entry per post, pruned as they age out — and the poller reads the session's
+own login (`GET /user`, once, and only while a hint is live) to drop a comment or
+review by that login landing in the window around any of those posts. A comment
+from anyone else in the same window still wakes. Only a write counts: `gh api`
+matches the same path for reading the thread, so a read opens no window. Rule 4
+remains as the last resort for writes the session did not make through `gh`.
 
 ### Transport: polling `gh api`, not webhooks
 

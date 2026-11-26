@@ -52,32 +52,128 @@ export function extractPostedIds(output: string): string[] {
 	return [...ids];
 }
 
+/**
+ * The command split into the shell's own segments.
+ *
+ * A `gh api` read is often followed by a pipeline (`| grep -F thanks`) or by a
+ * second command (`; gh api ... -f body=hi`), and a flag in either belongs to
+ * something else. Splitting first is what keeps `-F` from `grep` out of `gh`'s
+ * argument list. Quotes and backslash escapes are respected, so
+ * `--jq '.[] | .body'` stays one segment, `'\''` stays one string, and so does
+ * bash's `$'…\'…'`.
+ */
+export function shellSegments(command: string): string[] {
+	const segments: string[] = [];
+	let current = "";
+	let quote: "'" | '"' | undefined;
+	/** Inside `$'…'`, where a backslash does escape the closing quote. */
+	let ansiC = false;
+	for (let index = 0; index < command.length; index += 1) {
+		const char = command[index] as string;
+		// `$'…'` is bash ANSI-C quoting: the same delimiter as a plain single quote,
+		// but with C escapes, so `\'` there is an apostrophe rather than the end of
+		// the string. Only unquoted `$'` starts one.
+		if (char === "$" && command[index + 1] === "'" && !quote) {
+			current += "$'";
+			quote = "'";
+			ansiC = true;
+			index += 1;
+			continue;
+		}
+		// A backslash escapes the next character, so `'\''` is close, escaped
+		// quote, reopen — the shell's way of putting an apostrophe in a string.
+		// Ignoring it leaves the scan inside a quote and swallows the rest of the
+		// line, which is how a `| grep -F` ends up looking like `gh`'s own flag.
+		// Inside plain single quotes a backslash is literal, so this only applies
+		// outside them, inside double quotes, and inside `$'…'`.
+		if (char === "\\" && (quote !== "'" || ansiC)) {
+			current += char;
+			const escaped = command[index + 1];
+			if (escaped !== undefined) {
+				current += escaped;
+				index += 1;
+			}
+			continue;
+		}
+		if (quote) {
+			current += char;
+			if (char === quote) {
+				quote = undefined;
+				ansiC = false;
+			}
+			continue;
+		}
+		if (char === "'" || char === '"') {
+			quote = char;
+			current += char;
+			continue;
+		}
+		if (char === ";" || char === "&" || char === "|" || char === "\n") {
+			segments.push(current);
+			current = "";
+			continue;
+		}
+		current += char;
+	}
+	segments.push(current);
+	return segments;
+}
+
+/**
+ * Does this `gh api` invocation write, rather than read?
+ *
+ * `gh api` defaults to POST as soon as a field or a body is given, so those
+ * flags are the usual answer; `-X/--method POST` and `--input` say it outright.
+ * Anything else — `--paginate`, `--jq`, a bare path — is a GET, and a GET posts
+ * nothing to suppress.
+ *
+ * pflag accepts the joined forms too (`-XPOST`, `-fbody=hi`, `--method=POST`),
+ * and a session that writes them is writing.
+ */
+function makesAWrite(args: string): boolean {
+	const unquoted = args.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""');
+	if (/(?:^|\s)(?:-X|--method)\s*=?\s*POST(?:\s|$)/i.test(unquoted)) return true;
+	if (/(?:^|\s)-[fF]/.test(unquoted)) return true;
+	return /(?:^|\s)--(?:raw-field|field|input)(?:[\s=]|$)/.test(unquoted);
+}
+
 /** What the command was aimed at, when it says so. */
 export function extractPostedTarget(command: string): PostedTarget | undefined {
-	const args = command.replace(/\\\n/g, " ");
-	// `gh` must start the command or follow a shell separator; a `gh pr comment`
-	// inside a commit message or a heredoc is not a posted comment.
+	const segments = shellSegments(command.replace(/\\\n/g, " "));
+	for (const segment of segments) {
+		// gh api repos/{owner}/{repo}/issues/{n}/comments | .../pulls/{n}/comments | .../pulls/{n}/reviews
+		//
+		// Only a write counts. The same path is how a session *reads* the thread
+		// (`gh api .../pulls/32/comments --jq '.[] | .body'`), and treating a read
+		// as a post would silence the next six minutes of the session's own
+		// comments — including one the user leaves on github.com.
+		const api = /^\s*gh\s+api\b([\s\S]*)$/.exec(segment);
+		if (api) {
+			const args = api[1] ?? "";
+			const target =
+				/repos\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/(issues|pulls)\/(\d+)\/(comments|reviews)\b/.exec(
+					args
+				);
+			if (target?.[1] && target[2] && target[3] && target[4] && target[5] && makesAWrite(args)) {
+				const kind =
+					target[5] === "reviews" ? "review" : target[3] === "pulls" ? "review-comment" : "issue-comment";
+				return { owner: target[1], repo: target[2], number: Number(target[4]), kind };
+			}
+			continue;
+		}
 
-	// gh api repos/{owner}/{repo}/issues/{n}/comments | .../pulls/{n}/comments | .../pulls/{n}/reviews
-	const api = /(?:^|[;&|]|\n)\s*gh\s+api\b[^\n]*?repos\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/(issues|pulls)\/(\d+)\/(comments|reviews)\b/.exec(
-		args
-	);
-	if (api?.[1] && api[2] && api[3] && api[4] && api[5]) {
-		const kind =
-			api[5] === "reviews" ? "review" : api[3] === "pulls" ? "review-comment" : "issue-comment";
-		return { owner: api[1], repo: api[2], number: Number(api[4]), kind };
-	}
+		// `gh pr comment` and `gh pr review` only ever write.
+		const review = /^\s*gh\s+pr\s+review\b([\s\S]*)$/.exec(segment);
+		if (review) {
+			const number = /(?:^|\s)(\d+)(?:\s|$)/.exec(review[1] ?? "");
+			return { ...(number?.[1] ? { number: Number(number[1]) } : {}), kind: "review" };
+		}
 
-	const review = /(?:^|[;&|]|\n)\s*gh\s+pr\s+review\b([^\n]*)/.exec(args);
-	if (review) {
-		const number = /(?:^|\s)(\d+)(?:\s|$)/.exec(review[1] ?? "");
-		return { ...(number?.[1] ? { number: Number(number[1]) } : {}), kind: "review" };
-	}
-
-	const comment = /(?:^|[;&|]|\n)\s*gh\s+pr\s+comment\b([^\n]*)/.exec(args);
-	if (comment) {
-		const number = /(?:^|\s)(\d+)(?:\s|$)/.exec(comment[1] ?? "");
-		return { ...(number?.[1] ? { number: Number(number[1]) } : {}), kind: "issue-comment" };
+		const comment = /^\s*gh\s+pr\s+comment\b([\s\S]*)$/.exec(segment);
+		if (comment) {
+			const number = /(?:^|\s)(\d+)(?:\s|$)/.exec(comment[1] ?? "");
+			return { ...(number?.[1] ? { number: Number(number[1]) } : {}), kind: "issue-comment" };
+		}
 	}
 
 	return undefined;
