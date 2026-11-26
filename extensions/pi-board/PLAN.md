@@ -294,3 +294,35 @@ Still open: macOS, `pi-attention` integration, a `blocked_by` task list, and a r
   removed. The wake-count test is a regression guard against counting wakes per message; it does **not** guard
   the held-not-dropped change, because the code before that change already counted one wake per sender per
   batch (an earlier version of this note said otherwise, wrongly).
+
+### Fixes from the stress test before the first real day of use (PR #90)
+
+Two real pi sessions in RPC mode (where `hasUI` is true, so lanes are claimed), plus a
+harness driving the store and `Board` directly in an isolated `PI_BOARD_DIR`. The
+motivating case passed: lane A parked on `board_wait(["task:42-done"])`, lane B posted,
+A woke with one unprompted turn and the envelope in its transcript. Four defects came
+out of it, three of them silent.
+
+- **A lane lost its waits when it had to move.** `beat()` re-claims a suffix name when
+  another process took the lane file, and `/board name` re-claims on rename. Neither
+  moved `waits/<lane>.json`, so the session ended up parked on a topic it was no longer
+  registered for: every post fanned out to a dead inbox and the session never woke
+  again. `moveWaits()` now carries them, and both callers use it.
+- **A topic event was replayed on every later wait.** `Waits.since` was written and
+  never read, so a lane that asked for the same topic twice was handed the same old
+  event twice and believed a finished task had finished again. `since` is now a replay
+  watermark and the filter starts past it.
+- **The lane claim was read-then-write.** `claimLane` read the file, decided, then
+  `rename()`d over it, so eight processes starting at once all won the same name: one
+  inbox and one waits file shared, and `board_lanes` showing one lane where there were
+  eight, until the next 20 s beat. The create is now exclusive (`link(2)`, which fails
+  `EEXIST`), and the loser takes the next name. A lane file that is not a lane record
+  at all is recovered rather than locking the name out.
+- **A pattern satisfied by a replay stayed registered,** so the next post of that topic
+  fanned out a second time. Answered patterns are dropped.
+
+Each fix has a test that fails when it is reverted (checked by reverting all four and
+watching exactly those four tests fail). 9 new tests, 2006 pass, `tsc` clean.
+
+Still not tested: macOS (`readTty` reads `/proc`, so `ttyPath` is Linux-only), and two
+live lanes in a sustained real workload.

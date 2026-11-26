@@ -24,6 +24,9 @@ node extensions/pi-board/cli.ts send lane-auth "use the new token format"
 node extensions/pi-board/cli.ts inbox lane-auth
 ```
 
+How to word a lane's brief so it uses the board without being told how is in
+[USING.md](USING.md).
+
 ## The use case
 
 Lane B cannot start until lane A finishes issue 42. Give B its dependency in its
@@ -32,14 +35,21 @@ turn"). B parks, idle, costing nothing. When A finishes it calls `board_post`. B
 extension, still running in its terminal, sees the message and starts a turn.
 
 If A finishes **first**, nothing is lost: a post is kept for 24 hours, and
-`board_wait` returns an event that was already posted instead of parking.
+`board_wait` returns an event that was already posted instead of parking. It
+returns it **once**: a lane that asks for the same topic again later is not told
+again that the old task just finished.
 
 ## Lanes
 
 Every interactive session claims a **lane**: `PI_BOARD_LANE`, else the session
 name, else the directory name. A name held by a live session is refused and the
-next free one (`name-2`) is used. Starting a new session in the same terminal (`/new`, `/resume`, `/fork`) stops the old board and
+next free one (`name-2`) is used, and the claim is exclusive, so sessions started
+at the same instant cannot share a name. Starting a new session in the same
+terminal (`/new`, `/resume`, `/fork`) stops the old board and
 releases its lane; the new session claims its own. A `/reload` keeps the lane and its waits.
+
+A rename (`/board name`) or a forced move to a new name takes the lane's waits
+with it, because the session is the same one.
 
 A lane is *alive* when its process exists and
 its heartbeat is under 90 seconds old; `board_lanes` shows `working` or `idle`,
@@ -110,6 +120,7 @@ is enough, which is tested). A `BoardWake` event goes out on the hooks bus.
 | `format.ts` | The envelope, the rules, display |
 | `index.ts` | Tools, `/board`, lifecycle, watchdog |
 | `cli.ts` | The same board from a shell |
+| `USING.md` | How to brief a lane so it uses the board |
 
 ## Limits
 
