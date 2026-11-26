@@ -341,8 +341,9 @@ describe("gates", () => {
 		}
 		r.board.wait(["task:42-done"]);
 		a.post("task:42-done", "merged");
-		// The one-shot wait is spent by the post; the message must still be reachable.
-		expect(readWaits(root, "b")).toBeUndefined();
+		// The one-shot wait is spent by the post (the file stays to carry the mark); the
+		// message must still be reachable.
+		expect(readWaits(root, "b")?.topics).toEqual([]);
 		expect(r.board.drain()).toBe("deferred");
 		expect(readInbox(root, "b")).toHaveLength(1);
 		clock += 61_000;

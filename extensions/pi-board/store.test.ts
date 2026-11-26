@@ -153,7 +153,7 @@ setTimeout(() => process.exit(0), 900);`,
 
 	it("carries a lane's waits to a new name, and only its waits", () => {
 		waitOn(root, { lane: "b", topics: ["task:1-done"], persistent: true });
-		writeFileSync(join(root, "waits", "c.json"), JSON.stringify({ lane: "c", topics: ["other"], persistent: false, since: 0 }));
+		writeFileSync(join(root, "waits", "c.json"), JSON.stringify({ lane: "c", topics: ["other"], persistent: false, since: {} }));
 		moveWaits(root, "b", "c");
 		expect(readWaits(root, "c")?.topics).toEqual(["task:1-done"]);
 		expect(readWaits(root, "b")).toBeUndefined();
@@ -218,7 +218,8 @@ describe("topics and waits", () => {
 		const result = postTopic(root, { from: "a", topic: "task:42-done", body: "merged" });
 		expect("notified" in result && result.notified).toEqual(["b"]);
 		expect(readInbox(root, "b")[0]).toMatchObject({ topic: "task:42-done", from: "a", body: "merged" });
-		expect(readWaits(root, "b")).toBeUndefined();
+		// The file survives with no patterns so the lane is not handed it again.
+		expect(readWaits(root, "b")?.topics).toEqual([]);
 	});
 
 	it("keeps persistent waits and supports wildcards", () => {
@@ -266,12 +267,31 @@ describe("topics and waits", () => {
 		expect(third.replayed).toEqual([]);
 	});
 
-	it("keeps the replay watermark even when nothing is left waiting", () => {
-		postTopic(root, { from: "a", topic: "task:42-done", body: "merged" });
-		waitOn(root, { lane: "b", topics: ["task:42-done"] });
+	it("keeps a per-topic mark even when nothing is left waiting", () => {
+		postTopic(root, { from: "a", topic: "task:42-done", body: "merged" }, 5000);
+		waitOn(root, { lane: "b", topics: ["task:42-done"] }, 5000);
 		// A one-shot wait that was satisfied leaves no topics but must keep the mark.
-		expect(readWaits(root, "b")).toMatchObject({ topics: [] });
-		expect(readWaits(root, "b")?.since).toBeGreaterThan(0);
+		expect(readWaits(root, "b")).toMatchObject({ topics: [], since: { "task:42-done": 5000 } });
+	});
+
+	it("records the mark when a post is fanned out, not only when a wait replays", () => {
+		// The ordinary sequence: register, then somebody posts.
+		waitOn(root, { lane: "b", topics: ["task:42-done"] }, 5000);
+		postTopic(root, { from: "a", topic: "task:42-done", body: "merged" }, 5000);
+		expect(readWaits(root, "b")).toMatchObject({ topics: [], since: { "task:42-done": 5000 } });
+		ackMessages(root, "b", readInbox(root, "b").map((m) => m.id));
+		// Without the fanout mark this handed the same "task finished" event over twice.
+		expect(waitOn(root, { lane: "b", topics: ["task:42-done"] }, 5000).replayed).toEqual([]);
+	});
+
+	it("still replays an older event on a topic it was not handed", () => {
+		postTopic(root, { from: "a", topic: "build:green", body: "ci ok" }, 5100);
+		postTopic(root, { from: "a", topic: "task:42-done", body: "merged earlier" }, 5050);
+		// Consuming one topic must not blind the lane to another that is still in the TTL.
+		expect(waitOn(root, { lane: "x", topics: ["build:green"] }, 5100).replayed.map((e) => e.body)).toEqual(["ci ok"]);
+		const older = waitOn(root, { lane: "x", topics: ["task:42-done"] }, 5200);
+		expect(older.replayed.map((e) => e.body)).toEqual(["merged earlier"]);
+		expect(older.waitingOn).toEqual([]);
 	});
 
 	it("still replays an event posted after the watermark", () => {

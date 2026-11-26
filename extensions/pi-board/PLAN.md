@@ -310,8 +310,17 @@ out of it, three of them silent.
   again. `moveWaits()` now carries them, and both callers use it.
 - **A topic event was replayed on every later wait.** `Waits.since` was written and
   never read, so a lane that asked for the same topic twice was handed the same old
-  event twice and believed a finished task had finished again. `since` is now a replay
-  watermark and the filter starts past it.
+  event twice and believed a finished task had finished again. It is now a watermark
+  that stops replay past an event already handed over. `pi-review` caught that the
+  first shape of this was wrong in both directions, and it was:
+  - One number per lane filtered *every* topic, so a lane handed `build:green` at
+    t+100 was blind to a `task:42-done` posted at t+50 — still inside the TTL, never
+    to be posted again. That is the silent park this extension exists to prevent,
+    so the mark is now **per topic**.
+  - It only advanced on the replay path, while the ordinary path is register-then-post,
+    where `postTopic` deleted the waits file and took the mark with it. `postTopic`
+    now records the mark when it fans out, and keeps the file with no patterns left
+    instead of deleting it.
 - **The lane claim was read-then-write.** `claimLane` read the file, decided, then
   `rename()`d over it, so eight processes starting at once all won the same name: one
   inbox and one waits file shared, and `board_lanes` showing one lane where there were
@@ -322,7 +331,10 @@ out of it, three of them silent.
   fanned out a second time. Answered patterns are dropped.
 
 Each fix has a test that fails when it is reverted (checked by reverting all four and
-watching exactly those four tests fail). 9 new tests, 2006 pass, `tsc` clean.
+watching exactly those four tests fail, and the two watermark guards separately).
+11 new tests, 2008 pass, `tsc` clean. Re-probed after the second pass: register-then-post
+followed by another wait returns nothing, and an older event on a second topic is still
+replayed.
 
 Still not tested: macOS (`readTty` reads `/proc`, so `ttyPath` is Linux-only), and two
 live lanes in a sustained real workload.

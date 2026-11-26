@@ -86,10 +86,23 @@ export interface Waits {
 	/** Keep waiting after the first match instead of clearing the topic. */
 	persistent: boolean;
 	/**
-	 * The newest already-delivered topic event, so a second wait does not replay
-	 * it. Milliseconds, and 0 for a lane that has been handed nothing yet.
+	 * Per-topic watermark: the newest event time this lane has already been handed,
+	 * keyed by topic. One number per lane is not enough: a lane that consumed
+	 * `build:green` at t+100 would then be blind to a `task:42-done` posted at t+50,
+	 * which is still inside the TTL and will never be posted again.
 	 */
-	since: number;
+	since: Record<string, number>;
+}
+
+/** Read a watermark map defensively: an older file may hold a single number. */
+function marksFrom(since: unknown, now: number): Record<string, number> {
+	const out: Record<string, number> = {};
+	if (!since || typeof since !== "object") return out;
+	for (const [topic, at] of Object.entries(since as Record<string, unknown>)) {
+		// An event older than the TTL has been pruned, so its mark is dead weight.
+		if (typeof at === "number" && now - at <= TOPIC_TTL_MS) out[topic] = at;
+	}
+	return out;
 }
 
 export function boardRoot(env: NodeJS.ProcessEnv = process.env): string {
@@ -437,11 +450,14 @@ export function postTopic(
 			at: now,
 		});
 		notified.push(waits.lane);
-		if (!waits.persistent) {
-			const remaining = waits.topics.filter((pattern) => !matched.includes(pattern));
-			if (remaining.length === 0) rmSync(waitsFile(root, waits.lane), { force: true });
-			else writeAtomic(waitsFile(root, waits.lane), { ...waits, topics: remaining });
-		}
+		// The lane has been handed this event, so record it as handed over: this is the
+		// normal path (register, then someone posts), and a mark kept only on replay left
+		// the same `task finished` event ready to be delivered again on the next wait.
+		const since = marksFrom(waits.since, now);
+		since[topic] = Math.max(since[topic] ?? 0, event.at);
+		// Keep the file even when the last pattern is spent, so the mark survives it.
+		const remaining = waits.persistent ? waits.topics : waits.topics.filter((pattern) => !matched.includes(pattern));
+		writeAtomic(waitsFile(root, waits.lane), { ...waits, topics: remaining, since });
 	}
 	audit(root, { kind: "post", id: event.id, from, topic, notified, bytes: input.body.length });
 	return { id: event.id, notified };
@@ -467,10 +483,9 @@ export interface WaitResult {
  * from any lane but our own) satisfy the wait immediately, which closes the race
  * where the other lane finishes before this one subscribes.
  *
- * Replay stops at the lane's watermark so a topic is handed over once. Without
- * it, a lane that asked again for the same topic — after a restart, or later in
- * the same session — was told the same old event again and believed a task it
- * had already finished had just finished again.
+ * Replay stops at the per-topic watermark so a topic is handed over once, and only
+ * that topic is filtered: a lane that was already handed an event on one topic can
+ * still be handed an older one on another.
  */
 export function waitOn(
 	root: string,
@@ -483,16 +498,16 @@ export function waitOn(
 	const waitingOn: string[] = [];
 	const replay = input.replay !== false;
 	const wanted = readWaits(root, lane);
-	const watermark = wanted?.since ?? 0;
 	const floor = now - TOPIC_TTL_MS;
-	// One millisecond past the watermark: an event at the watermark itself was already handed over.
-	const from = watermark > floor ? watermark + 1 : floor;
+	const marks = marksFrom(wanted?.since, now);
 
 	for (const pattern of patterns) {
 		let hit = false;
 		if (replay) {
 			for (const topic of topicsMatching(root, pattern)) {
-				for (const event of listTopicEvents(root, topic, from)) {
+				// One millisecond past this topic's mark: an event at the mark itself was handed over already.
+				const mark = marks[topic] ?? 0;
+				for (const event of listTopicEvents(root, topic, mark > floor ? mark + 1 : floor)) {
 					if (event.from === lane || replayed.some((seen) => seen.id === event.id)) continue;
 					replayed.push(event);
 					hit = true;
@@ -502,17 +517,19 @@ export function waitOn(
 		if (!hit || input.persistent) waitingOn.push(pattern);
 	}
 
+	for (const event of replayed) marks[event.topic] = Math.max(marks[event.topic] ?? 0, event.at);
+
 	// A pattern satisfied by a replay was asked for and answered, so drop it from the
 	// registry instead of leaving it to fan out the next post as well.
 	const answered = new Set(patterns.filter((pattern) => !waitingOn.includes(pattern)));
 	const merged = [...new Set([...(wanted?.topics ?? []), ...waitingOn])].filter((pattern) => !answered.has(pattern));
-	if (waitingOn.length > 0 || replayed.length > 0) {
+	if (merged.length > 0 || Object.keys(marks).length > 0) {
 		ensure(join(root, "waits"));
 		writeAtomic(waitsFile(root, lane), {
 			lane,
 			topics: merged,
 			persistent: input.persistent === true || wanted?.persistent === true,
-			since: replayed.reduce((newest, event) => Math.max(newest, event.at), watermark),
+			since: marks,
 		} satisfies Waits);
 	}
 	return { replayed, waitingOn };
