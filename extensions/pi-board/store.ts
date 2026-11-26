@@ -105,6 +105,23 @@ function marksFrom(since: unknown, now: number): Record<string, number> {
 	return out;
 }
 
+/**
+ * Where the mark may move to after fanning `at` out to a lane, given a full event
+ * list for the topic. A mark means "every event at or below this has been handed
+ * over", so it may only cross an event that was actually delivered: fanout can
+ * skip one (the recipient is at `MAX_PENDING_PER_LANE`), and a later post on the
+ * same topic then arrives out of order. Crossing the gap would make the skipped
+ * event unreachable for good, because replay starts past the mark and the post
+ * that would have delivered it is never repeated. It is handed over on the next
+ * replay instead; the out-of-order neighbour comes with it, which at-least-once
+ * delivery allows and a silent park does not.
+ */
+function nextMark(events: TopicEvent[], mark: number, at: number): number {
+	if (at <= mark) return mark;
+	for (const event of events) if (event.at > mark && event.at < at) return mark;
+	return at;
+}
+
 export function boardRoot(env: NodeJS.ProcessEnv = process.env): string {
 	const override = env.PI_BOARD_DIR?.trim();
 	if (override) return override.replace(/^~(?=$|\/)/, homedir());
@@ -433,6 +450,8 @@ export function postTopic(
 	ensure(dir);
 	writeAtomic(join(dir, `${event.id}.json`), event);
 	pruneTopic(root, topic, now);
+	// One listing for the gap check below, shared by every waiter.
+	const events = listTopicEvents(root, topic, now - TOPIC_TTL_MS);
 
 	const notified: string[] = [];
 	for (const waits of listWaits(root)) {
@@ -454,7 +473,9 @@ export function postTopic(
 		// normal path (register, then someone posts), and a mark kept only on replay left
 		// the same `task finished` event ready to be delivered again on the next wait.
 		const since = marksFrom(waits.since, now);
-		since[topic] = Math.max(since[topic] ?? 0, event.at);
+		const advanced = nextMark(events, since[topic] ?? 0, event.at);
+		if (advanced > 0) since[topic] = advanced;
+		else delete since[topic];
 		// Keep the file even when the last pattern is spent, so the mark survives it.
 		const remaining = waits.persistent ? waits.topics : waits.topics.filter((pattern) => !matched.includes(pattern));
 		writeAtomic(waitsFile(root, waits.lane), { ...waits, topics: remaining, since });
@@ -508,6 +529,9 @@ export function waitOn(
 				// One millisecond past this topic's mark: an event at the mark itself was handed over already.
 				const mark = marks[topic] ?? 0;
 				for (const event of listTopicEvents(root, topic, mark > floor ? mark + 1 : floor)) {
+					// Everything from here up is handed over, ours included, so the mark moves
+					// to the top of the run. Our own post is not delivered to us, but it is behind us.
+					marks[topic] = Math.max(marks[topic] ?? 0, event.at);
 					if (event.from === lane || replayed.some((seen) => seen.id === event.id)) continue;
 					replayed.push(event);
 					hit = true;
@@ -516,8 +540,6 @@ export function waitOn(
 		}
 		if (!hit || input.persistent) waitingOn.push(pattern);
 	}
-
-	for (const event of replayed) marks[event.topic] = Math.max(marks[event.topic] ?? 0, event.at);
 
 	// A pattern satisfied by a replay was asked for and answered, so drop it from the
 	// registry instead of leaving it to fan out the next post as well.

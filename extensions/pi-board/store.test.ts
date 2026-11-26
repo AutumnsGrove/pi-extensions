@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	LANE_STALE_MS,
+	MAX_PENDING_PER_LANE,
 	TOPIC_TTL_MS,
 	ackMessages,
 	claimFreeLane,
@@ -282,6 +283,23 @@ describe("topics and waits", () => {
 		ackMessages(root, "b", readInbox(root, "b").map((m) => m.id));
 		// Without the fanout mark this handed the same "task finished" event over twice.
 		expect(waitOn(root, { lane: "b", topics: ["task:42-done"] }, 5000).replayed).toEqual([]);
+	});
+
+	it("does not mark past an event the inbox cap skipped", () => {
+		waitOn(root, { lane: "b", topics: ["task:42-done"] }, 1000);
+		// Fill b's inbox to the cap so the first post cannot be fanned out to it.
+		for (let i = 0; i < MAX_PENDING_PER_LANE; i++) sendDirect(root, { from: "a", to: "b", body: "noise", wake: false }, 1000);
+		const skipped = postTopic(root, { from: "a", topic: "task:42-done", body: "first finish" }, 2000);
+		expect("notified" in skipped && skipped.notified).toEqual([]);
+		ackMessages(root, "b", readInbox(root, "b").map((m) => m.id));
+		// A later post on the same topic now gets through, and must not step over the gap:
+		// replay starts past the mark, and the skipped post is never repeated.
+		const delivered = postTopic(root, { from: "a", topic: "task:42-done", body: "second finish" }, 3000);
+		expect("notified" in delivered && delivered.notified).toEqual(["b"]);
+		ackMessages(root, "b", readInbox(root, "b").map((m) => m.id));
+		const later = waitOn(root, { lane: "b", topics: ["task:42-done"] }, 4000);
+		expect(later.replayed.map((e) => e.body)).toEqual(["first finish", "second finish"]);
+		expect(later.waitingOn).toEqual([]);
 	});
 
 	it("still replays an older event on a topic it was not handed", () => {

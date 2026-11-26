@@ -321,6 +321,13 @@ out of it, three of them silent.
     where `postTopic` deleted the waits file and took the mark with it. `postTopic`
     now records the mark when it fans out, and keeps the file with no patterns left
     instead of deleting it.
+  - A mark could still cross an event the inbox cap skipped, because fanout can skip a
+    recipient and a later post on the same topic then arrives out of order. Replay
+    starts past the mark, so the skipped event became unreachable and the lane parked
+    on a post that had already happened. A mark now means "everything at or below this
+    was handed over", and it only advances over a contiguous run: an out-of-order
+    event is left for the next replay, which hands over the skipped one and its
+    neighbour again rather than losing one silently.
 - **The lane claim was read-then-write.** `claimLane` read the file, decided, then
   `rename()`d over it, so eight processes starting at once all won the same name: one
   inbox and one waits file shared, and `board_lanes` showing one lane where there were
@@ -331,10 +338,11 @@ out of it, three of them silent.
   fanned out a second time. Answered patterns are dropped.
 
 Each fix has a test that fails when it is reverted (checked by reverting all four and
-watching exactly those four tests fail, and the two watermark guards separately).
-11 new tests, 2008 pass, `tsc` clean. Re-probed after the second pass: register-then-post
-followed by another wait returns nothing, and an older event on a second topic is still
-replayed.
+watching exactly those four tests fail, and each watermark guard separately).
+12 new tests, 2009 pass, `tsc` clean. Re-probed after the third pass: register-then-post
+followed by another wait returns nothing; an older event on a second topic is still
+replayed; and a post skipped by the inbox cap is still handed over later along with the
+one that overtook it.
 
 Still not tested: macOS (`readTty` reads `/proc`, so `ttyPath` is Linux-only), and two
 live lanes in a sustained real workload.
