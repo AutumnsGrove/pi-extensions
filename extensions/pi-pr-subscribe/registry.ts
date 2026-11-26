@@ -59,6 +59,12 @@ export interface Subscription {
 	notifiedErrors: ErrorKind[];
 	/** First poll after a resume reports "while you were away". */
 	catchUp: boolean;
+	/**
+	 * When the last `gh` post to this PR from this session returned, in local
+	 * milliseconds. The diff uses it, with the session's own login, to read the
+	 * comment that post created as an echo rather than news.
+	 */
+	ownPostAt?: number;
 	/** Set when the subscription expired after a long silence. Kept so it can resume. */
 	expiredAt?: number;
 	lock?: LockInfo;
@@ -71,11 +77,6 @@ export interface Subscription {
 	flushTimer?: ReturnType<typeof setTimeout>;
 	pending: PrEvent[];
 	pendingLogs: Map<string, string>;
-	/**
-	 * Heads this batch proved are the session's own pushes, cleared when the
-	 * batch is delivered. Never persisted: it describes a wake, not a watch.
-	 */
-	ownHeads?: Set<string>;
 }
 
 export interface RegistryState {
