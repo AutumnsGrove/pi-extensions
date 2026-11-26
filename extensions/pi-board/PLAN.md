@@ -251,6 +251,11 @@ free): a lane parks on `board_wait`, a `board_post` from another lane or from th
 the matching lane, a second parked lane is left alone, and a wake after 100 s idle works. 77 tests in
 `extensions/pi-board`; the full suite (1,986) and `tsc` pass.
 
+Five-session test (same model): a relay where each lane wakes, runs a command, and posts the next step
+itself — lane 1 to lane 5 finished in order, the last hop 7 s after the first post, every lane $0.000.
+A fan-out with a wildcard topic (`broadcast:*`) from the shell CLI woke all four parked lanes from one
+post, and their waits were cleared afterwards.
+
 Still open: two real lanes messaging each other repeatedly (ping-pong behaviour with a live model), macOS,
 a human typing while a wake arrives, running on `fs.watch` alone, `pi-attention` integration, a
 `blocked_by` task list, and a remote transport.
