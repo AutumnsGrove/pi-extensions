@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractPostedIds, extractPostedTarget, targetMatches } from "./capture.ts";
+import { extractPostedIds, extractPostedTarget, shellSegments, targetMatches } from "./capture.ts";
 
 describe("extractPostedIds", () => {
 	it("reads the fragment URLs gh prints", () => {
@@ -75,6 +75,36 @@ describe("extractPostedTarget", () => {
 		expect(write("gh api repos/o/r/pulls/32/reviews --input /tmp/review.json")).toBe(true);
 		expect(write("gh api --method POST repos/o/r/pulls/32/comments")).toBe(true);
 		expect(write("gh api -X POST repos/o/r/pulls/32/comments")).toBe(true);
+		// pflag takes the joined forms, and a session that writes them is writing.
+		expect(write("gh api repos/o/r/pulls/32/comments -XPOST")).toBe(true);
+		expect(write("gh api repos/o/r/pulls/32/comments --method=POST")).toBe(true);
+		expect(write("gh api repos/o/r/pulls/32/comments -fbody=hi")).toBe(true);
+		expect(write("gh api repos/o/r/pulls/32/comments -Fbody=@/tmp/reply.md")).toBe(true);
+		expect(write("gh api repos/o/r/pulls/32/reviews --input=/tmp/review.json")).toBe(true);
+	});
+
+	it("keeps a later segment's flags out of gh's argument list", () => {
+		// Both are reads of the thread. `grep -F` and the second command's `-f`
+		// belong to something else; reading them as gh's own write would open the
+		// echo window on a read.
+		expect(
+			extractPostedTarget("gh api repos/o/r/pulls/32/comments --jq '.[].body' | grep -F thanks")
+		).toBeUndefined();
+		expect(
+			extractPostedTarget("gh api repos/o/r/pulls/32/comments > /tmp/c.json; ls -F")
+		).toBeUndefined();
+		// The write in a later segment is still found.
+		expect(
+			extractPostedTarget("gh api repos/o/r/pulls/32/comments > /tmp/c.json; gh api repos/o/r/issues/32/comments -f body=hi")
+		).toMatchObject({ kind: "issue-comment", number: 32 });
+	});
+
+	it("splits a command on the shell's separators, respecting quotes", () => {
+		expect(shellSegments("gh api x --jq '.[] | .body' | jq .id")).toEqual([
+			"gh api x --jq '.[] | .body' ",
+			" jq .id",
+		]);
+		expect(shellSegments("a; b && c")).toEqual(["a", " b ", "", " c"]);
 	});
 
 	it("ignores other commands", () => {

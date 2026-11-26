@@ -53,53 +53,95 @@ export function extractPostedIds(output: string): string[] {
 }
 
 /**
+ * The command split into the shell's own segments.
+ *
+ * A `gh api` read is often followed by a pipeline (`| grep -F thanks`) or by a
+ * second command (`; gh api ... -f body=hi`), and a flag in either belongs to
+ * something else. Splitting first is what keeps `-F` from `grep` out of `gh`'s
+ * argument list. Quotes are respected, so `--jq '.[] | .body'` stays one
+ * segment.
+ */
+export function shellSegments(command: string): string[] {
+	const segments: string[] = [];
+	let current = "";
+	let quote: "'" | '"' | undefined;
+	for (const char of command) {
+		if (quote) {
+			current += char;
+			if (char === quote) quote = undefined;
+			continue;
+		}
+		if (char === "'" || char === '"') {
+			quote = char;
+			current += char;
+			continue;
+		}
+		if (char === ";" || char === "&" || char === "|" || char === "\n") {
+			segments.push(current);
+			current = "";
+			continue;
+		}
+		current += char;
+	}
+	segments.push(current);
+	return segments;
+}
+
+/**
  * Does this `gh api` invocation write, rather than read?
  *
  * `gh api` defaults to POST as soon as a field or a body is given, so those
  * flags are the usual answer; `-X/--method POST` and `--input` say it outright.
  * Anything else — `--paginate`, `--jq`, a bare path — is a GET, and a GET posts
  * nothing to suppress.
+ *
+ * pflag accepts the joined forms too (`-XPOST`, `-fbody=hi`, `--method=POST`),
+ * and a session that writes them is writing.
  */
-function makesAWrite(tail: string): boolean {
-	if (/(?:^|\s)(?:-X|--method)[\s=]+POST\b/i.test(tail)) return true;
-	return /(?:^|\s)(?:-f|--raw-field|-F|--field|--input)(?:[\s=]|$)/.test(tail);
+function makesAWrite(args: string): boolean {
+	const unquoted = args.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""');
+	if (/(?:^|\s)(?:-X|--method)\s*=?\s*POST(?:\s|$)/i.test(unquoted)) return true;
+	if (/(?:^|\s)-[fF]/.test(unquoted)) return true;
+	return /(?:^|\s)--(?:raw-field|field|input)(?:[\s=]|$)/.test(unquoted);
 }
 
 /** What the command was aimed at, when it says so. */
 export function extractPostedTarget(command: string): PostedTarget | undefined {
-	const args = command.replace(/\\\n/g, " ");
-	// `gh` must start the command or follow a shell separator; a `gh pr comment`
-	// inside a commit message or a heredoc is not a posted comment.
-
-	// gh api repos/{owner}/{repo}/issues/{n}/comments | .../pulls/{n}/comments | .../pulls/{n}/reviews
-	//
-	// Only a write counts. The same path is how a session *reads* the thread
-	// (`gh api .../pulls/32/comments --jq '.[] | .body'`), and treating a read as
-	// a post would silence the next six minutes of the session's own comments —
-	// including one the user leaves on github.com.
-	const api = /(?:^|[;&|]|\n)\s*gh\s+api\b([^\n]*)/.exec(args);
-	if (api) {
-		const tail = api[1] ?? "";
-		const target = /repos\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/(issues|pulls)\/(\d+)\/(comments|reviews)\b/.exec(
-			tail
-		);
-		if (target?.[1] && target[2] && target[3] && target[4] && target[5] && makesAWrite(tail)) {
-			const kind =
-				target[5] === "reviews" ? "review" : target[3] === "pulls" ? "review-comment" : "issue-comment";
-			return { owner: target[1], repo: target[2], number: Number(target[4]), kind };
+	const segments = shellSegments(command.replace(/\\\n/g, " "));
+	for (const segment of segments) {
+		// gh api repos/{owner}/{repo}/issues/{n}/comments | .../pulls/{n}/comments | .../pulls/{n}/reviews
+		//
+		// Only a write counts. The same path is how a session *reads* the thread
+		// (`gh api .../pulls/32/comments --jq '.[] | .body'`), and treating a read
+		// as a post would silence the next six minutes of the session's own
+		// comments — including one the user leaves on github.com.
+		const api = /^\s*gh\s+api\b([\s\S]*)$/.exec(segment);
+		if (api) {
+			const args = api[1] ?? "";
+			const target =
+				/repos\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/(issues|pulls)\/(\d+)\/(comments|reviews)\b/.exec(
+					args
+				);
+			if (target?.[1] && target[2] && target[3] && target[4] && target[5] && makesAWrite(args)) {
+				const kind =
+					target[5] === "reviews" ? "review" : target[3] === "pulls" ? "review-comment" : "issue-comment";
+				return { owner: target[1], repo: target[2], number: Number(target[4]), kind };
+			}
+			continue;
 		}
-	}
 
-	const review = /(?:^|[;&|]|\n)\s*gh\s+pr\s+review\b([^\n]*)/.exec(args);
-	if (review) {
-		const number = /(?:^|\s)(\d+)(?:\s|$)/.exec(review[1] ?? "");
-		return { ...(number?.[1] ? { number: Number(number[1]) } : {}), kind: "review" };
-	}
+		// `gh pr comment` and `gh pr review` only ever write.
+		const review = /^\s*gh\s+pr\s+review\b([\s\S]*)$/.exec(segment);
+		if (review) {
+			const number = /(?:^|\s)(\d+)(?:\s|$)/.exec(review[1] ?? "");
+			return { ...(number?.[1] ? { number: Number(number[1]) } : {}), kind: "review" };
+		}
 
-	const comment = /(?:^|[;&|]|\n)\s*gh\s+pr\s+comment\b([^\n]*)/.exec(args);
-	if (comment) {
-		const number = /(?:^|\s)(\d+)(?:\s|$)/.exec(comment[1] ?? "");
-		return { ...(number?.[1] ? { number: Number(number[1]) } : {}), kind: "issue-comment" };
+		const comment = /^\s*gh\s+pr\s+comment\b([\s\S]*)$/.exec(segment);
+		if (comment) {
+			const number = /(?:^|\s)(\d+)(?:\s|$)/.exec(comment[1] ?? "");
+			return { ...(number?.[1] ? { number: Number(number[1]) } : {}), kind: "issue-comment" };
+		}
 	}
 
 	return undefined;
