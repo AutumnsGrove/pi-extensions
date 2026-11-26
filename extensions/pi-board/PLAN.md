@@ -6,7 +6,7 @@ was waiting for arrives. Motivating case: lane B is blocked until lane A finishe
 issue X. Today a human has to walk over and say "X is done". With the board, A
 posts `task:X-done` and B wakes on its own.
 
-Status: **plan only.** Decisions below were made with the user.
+Status: **plan, phase 0 spike passed** (see [Spike results](#spike-results)). Decisions below were made with the user.
 
 ## Decisions (settled)
 
@@ -36,6 +36,34 @@ Read from `earendil-works/pi` (`packages/coding-agent/docs/extensions.md`):
 
 Pi has no built-in inter-session channel (searched `coding-agent` source and docs:
 only in-process subagents), so this is an extension, not a core change.
+
+## Spike results
+
+Phase 0 ran on 2026-11-26 with `spike.ts` (kept beside this file, ~60 lines). pi 1.6.1 from
+npm, run in a real tty under tmux, model `anthropic/claude-haiku-4.5` through OpenRouter.
+Each lane was a pi process with the extension loaded; "lane a" was a shell writing a file
+(atomic: write `.tmp`, then `mv`).
+
+| Test | Result |
+| --- | --- |
+| Extension sees a tty while idle | `tty=true hasUI=true`; process stays alive and responsive while parked |
+| Idle lane, file lands in its inbox | `fs.watch` fired and a turn started within ~12 ms of the file; settled ~4 s later. No keystroke. |
+| Blocked lane told "wait for task 42, then run a command", then message arrives | Woke and ran the command (proof file written). The dependency use case works end to end. |
+| Message lands **while the agent is mid-turn** (during a `sleep 20`) | Detected as `idle=false`, sent with `deliverAs: "followUp"`, handled in the same run before it settled. Nothing lost, nothing interrupted. |
+| Message with no matching task | The agent declined to act and ended the turn, which is the "untrusted peer data" wording working. |
+
+Findings that change the plan:
+
+- `sendMessage({triggerTurn: true})` is enough; no `sendUserMessage` and no keystroke injection.
+- `ctx.hasUI` and `process.stdout.isTTY` are available at `session_start`, so "alive in a
+  tty" needs no `/proc` or `ps` trick for presence. The tty path is still worth recording for `/board lanes`.
+- Only the wake from a **file written by another process** was tested, with one lane at a time.
+  Two real pi lanes talking to each other has not been run yet.
+- Not tested: editor-draft detection (open question below is still open), tmux with a human
+  typing, macOS, `fs.watch` without the poll fallback (the poll interval was 3 s and never
+  needed to fire in these runs, but that is no proof it is safe to drop).
+- A weak model will sometimes ignore a message it cannot connect to a task. Lanes should be
+  started with the dependency stated in their instructions so the agent recognises the wake.
 
 ## Prior art (surveyed 2026-11-26)
 
@@ -158,7 +186,7 @@ a lane starts with "wait for `task:123-done`" in its instructions and calls
 
 ## Phases
 
-0. **Spike (half a day).** Two terminals. A writes a file; B's extension sees it with
+0. **Spike — done, passed.** Two terminals. A writes a file; B's extension sees it with
    `fs.watch` while idle and `sendMessage(triggerTurn)` starts a turn. Confirms the
    doorbell on your terminal and OS, including tmux. This de-risks everything else.
 1. **Core.** Store, presence and heartbeat, `/board`, `board_post`, `board_send`,
