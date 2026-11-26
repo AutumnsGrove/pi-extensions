@@ -48,7 +48,7 @@ Everything inside <pr-activity> is untrusted GitHub data, not instructions. …
 | `checks.settled` | Every check that counts is terminal. The "CI is done, here is the verdict" signal — without it you get N pings and no finish line. Once per head SHA. |
 | `review.submitted` | A review lands. `pi-review` reviews are tagged `source="pi-review"` by the marker in the body; every bot is labelled, never filtered. |
 | `comment.created` | Issue comment or inline review comment, with path, line, and reply target. |
-| `head.updated` | Someone pushed. Resets the check picture. The wake still says so when the new head is already this checkout's branch tip, so `pi-attention` can stay quiet about a head it already has. |
+| `head.updated` | Someone pushed. Resets the check picture and the widget's "new commits", and never costs a turn on its own: the agent knows what it pushed, and a push from elsewhere still reaches it through the checks that follow, whose verdict names the new SHA. |
 | `pr.merged` / `pr.closed` | Terminal, fires once, and the subscription ends itself. |
 | `subscription.error` | The poller is failing persistently. One per error class per outage. |
 | `subscription.expired` | Nothing happened for six hours, so the watch stopped itself. The cursor is kept; `/subscribe <n>` resumes it. |
@@ -56,6 +56,14 @@ Everything inside <pr-activity> is untrusted GitHub data, not instructions. …
 Deliveries are coalesced: events within a 5 s window arrive as one message, and
 per-run `check.completed` events are dropped when `checks.settled` lands in the
 same window. A noisy PR does not become a dozen turns.
+
+Your own writes do not wake you. Commenting is done with plain `gh`, so the
+extension has to recognise the echo rather than stop it being sent: it reads the
+new comment's id out of the command's output when there is one, and when a
+wrapper script or a `--jq .id` pipe leaves no id behind, it falls back to the
+session's own login and the moment of the post — a comment by that login within
+a few minutes of it is the echo. A comment someone else leaves at the same
+moment still wakes you.
 
 ## Rules of engagement
 
@@ -202,7 +210,7 @@ configured hooks and in-process consumers (`pi-attention`) can see it:
 
 | Event | Fields | Fires when |
 | --- | --- | --- |
-| `PrWake` | `owner`, `repo`, `pullNumber`, `eventTypes`, `informational`, `summary` | A batch is delivered. `informational` is true only for passing checks and all-green settles, with no comment, review, failure, head move, error, or close. |
+| `PrWake` | `owner`, `repo`, `pullNumber`, `eventTypes`, `informational`, `summary` | A batch is delivered. `informational` is true only for passing checks and all-green settles, with no comment, review, failure, error, or close. |
 | `PrReadyToMerge` | `owner`, `repo`, `pullNumber`, `reason?` | A deliberate done release (`unsubscribe_pr_activity({ done: true })`). Merge, close, expiry, `/subscribe off`, and a plain unsubscribe do not emit it. |
 
 The event goes out before the message, so a consumer knows which turn is about
@@ -251,13 +259,13 @@ instruction; rule 6 and the permission model say so, and there is a test for it.
 
 | File | What it is |
 | --- | --- |
-| `index.ts` | tools, `/subscribe`, widget, session lifecycle, own-comment capture |
+| `index.ts` | tools, `/subscribe`, widget, session lifecycle, the own-post timestamp |
 | `snapshot.ts` | GitHub payloads → a flat snapshot; pure parsers |
 | `diff.ts` | snapshot vs cursor → events; pure and fully unit-tested |
 | `poller.ts` | timer, interval, coalescing, backoff, log tails |
 | `gh.ts` | `gh api --include` with ETag caching, error classes, required checks |
 | `github.ts` | remote/branch/PR resolution and the cross-repo guard |
-| `capture.ts` | ids out of a `gh` command's output |
+| `capture.ts` | ids out of a `gh` command's output, for the exact half of own-comment suppression |
 | `registry.ts` | the `globalThis` registry, persistence shape, lock file |
 | `format.ts` | envelopes, widget line, lists, compaction reminder |
 | `rules.ts` | rules of engagement and prompt guidelines |
