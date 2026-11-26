@@ -237,15 +237,18 @@ describe("session replacement", () => {
 		expect(readLane(root, "b")).toBeDefined();
 	});
 
-	it("stops listening for blocker changes when the session is replaced", async () => {
+	it("unsubscribes from blocker changes when the session is replaced", async () => {
+		// The registry lives on globalThis and survives session replacement, so a missed
+		// unsubscribe would keep the old board (and its stale pi/ctx closures) alive for the
+		// life of the process, one more per /new, /resume or /fork.
+		const registry = () =>
+			(globalThis as unknown as Record<symbol, { listeners: Set<() => void> } | undefined>)[Symbol.for("pi-extensions.blockers")];
+		const before = registry()?.listeners.size ?? 0;
 		const old = load();
 		await start(old);
+		expect(registry()!.listeners.size).toBe(before + 1);
 		await old.handlers.get("session_shutdown")?.({ reason: "new" }, old.ctx);
-		sendDirect(root, { from: "a", to: "b", body: "x" });
-		const release = beginBlocker("pi-q-n-a");
-		release();
-		await vi.advanceTimersByTimeAsync(5000);
-		expect(old.sent).toEqual([]);
+		expect(registry()!.listeners.size).toBe(before);
 	});
 });
 

@@ -289,3 +289,6 @@ Still open: macOS, `pi-attention` integration, a `blocked_by` task list, and a r
 - **The dedupe test did not test dedupe.** The ack removed the file, so `seen` was never consulted. The test
   now restores the file after the ack, and a repeated id is cleaned up instead of rescanned forever.
 - Each fix has tests that fail when it is reverted (checked by reverting each).
+- Second pass: two of those tests still passed against the old code. The wake-count test now asserts the
+  next wake still triggers (the old per-message count would hold it), and the blocker test now asserts the
+  global registry's listener count rather than `old.sent`, which `Board.stop()` empties either way.

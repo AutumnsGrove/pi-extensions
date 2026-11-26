@@ -342,9 +342,16 @@ describe("gates", () => {
 		for (let i = 0; i < 20; i++) a.send("b", `n${i}`);
 		r.board.drain();
 		expect(r.delivered).toHaveLength(1);
+		expect(r.delivered[0]!.ids).toHaveLength(20);
+		// Twenty messages in one batch spent one wake of the budget, so the next one still wakes.
+		// Counting per message would have exhausted it and held this message instead.
 		a.send("b", "next");
 		expect(r.board.drain()).toBe("delivered");
+		expect(r.delivered).toHaveLength(2);
+		expect(r.delivered[1]!.trigger).toBe(true);
+		expect(readInbox(root, "b")).toEqual([]);
 	});
+
 });
 
 describe("topics end to end", () => {
