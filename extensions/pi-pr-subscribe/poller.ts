@@ -300,19 +300,21 @@ async function pollOnce(sub: Subscription, deps: PollerDeps): Promise<void> {
 /**
  * The hint that reads a just-posted comment as the echo it is, or nothing.
  *
- * The session records when its `gh` post returned (`ownPostAt`); this turns that
- * into the pair the diff needs, asking GitHub for the login only while a window
- * is actually open. An expired hint is dropped here rather than trusted: a
- * subscription resumed a day later must not silence anything.
+ * The session records when each of its `gh` posts returned (`ownPostAts`); this
+ * prunes the ones that have aged past the window and, while any is left, asks
+ * GitHub for the login the posts carry. An empty list is dropped here rather
+ * than trusted: a subscription resumed a day later must not silence anything.
  */
 async function ownPostHint(api: GhApi, sub: Subscription, at: number): Promise<OwnPost | undefined> {
-	if (sub.ownPostAt === undefined) return undefined;
-	if (at - sub.ownPostAt > OWN_POST_WINDOW_MS) {
-		sub.ownPostAt = undefined;
+	if (!sub.ownPostAts || sub.ownPostAts.length === 0) return undefined;
+	const live = sub.ownPostAts.filter((postAt) => at - postAt <= OWN_POST_WINDOW_MS);
+	if (live.length === 0) {
+		sub.ownPostAts = undefined;
 		return undefined;
 	}
+	if (live.length !== sub.ownPostAts.length) sub.ownPostAts = live;
 	const login = await viewerLogin(api);
-	return login ? { at: sub.ownPostAt, login } : undefined;
+	return login ? { ats: live, login } : undefined;
 }
 
 /** Keep the issue-comment watermark on the newest comment seen, never behind. */

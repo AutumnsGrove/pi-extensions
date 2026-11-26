@@ -23,7 +23,7 @@
  *   from the `gh` output when it can (`capture.ts`); when the output does not
  *   carry one, the `ownPost` hint does the same job from the other direction:
  *   the session says when it posted and which login it posts as, and a write by
- *   that login inside the window afterwards is the echo of that post.
+ *   that login inside the window afterwards is the echo of one of those posts.
  */
 
 import {
@@ -140,14 +140,18 @@ export interface DiffOptions {
 	now?: number;
 	/** Override for the empty-check settle threshold. */
 	emptySettlePolls?: number;
-	/** A `gh` post this session just made, so its echo does not wake it. */
+	/** The `gh` posts this session just made, so their echoes do not wake it. */
 	ownPost?: OwnPost | undefined;
 }
 
 /** When a session posted to the PR itself, and the login the post carried. */
 export interface OwnPost {
-	/** Local clock, taken when the posting `gh` call returned. */
-	at: number;
+	/**
+	 * Local clock, one entry per posting `gh` call. A list, not the latest: two
+	 * replies a minute apart with no poll between them are two echoes, and the
+	 * earlier one must not fall out of the window when the later one lands.
+	 */
+	ats: readonly number[];
 	login: string;
 }
 
@@ -180,7 +184,9 @@ function isOwnPostEcho(
 	if (author.toLowerCase() !== ownPost.login.toLowerCase()) return false;
 	const created = Date.parse(createdAt);
 	if (!Number.isFinite(created)) return false;
-	return created >= ownPost.at - OWN_POST_BEFORE_MS && created <= ownPost.at + OWN_POST_WINDOW_MS;
+	return ownPost.ats.some(
+		(at) => created >= at - OWN_POST_BEFORE_MS && created <= at + OWN_POST_WINDOW_MS
+	);
 }
 
 export interface DiffResult {

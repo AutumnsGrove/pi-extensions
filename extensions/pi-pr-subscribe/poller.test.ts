@@ -488,7 +488,7 @@ describe("wake signals", () => {
 
 	it("keeps the echo of the session's own post quiet", async () => {
 		const h = setup();
-		h.sub.ownPostAt = Date.now();
+		h.sub.ownPostAts = [Date.now()];
 		h.server.issueComments = [
 			{
 				id: 21,
@@ -506,7 +506,7 @@ describe("wake signals", () => {
 
 	it("still delivers a comment from someone else at the same moment", async () => {
 		const h = setup();
-		h.sub.ownPostAt = Date.now();
+		h.sub.ownPostAts = [Date.now()];
 		h.server.issueComments = [
 			{
 				id: 22,
@@ -527,7 +527,7 @@ describe("wake signals", () => {
 		expect(h.server.calls).not.toContain("user");
 
 		const posted = setup();
-		posted.sub.ownPostAt = Date.now();
+		posted.sub.ownPostAts = [Date.now()];
 		await tick(posted.sub, posted.deps);
 		await tick(posted.sub, posted.deps);
 		// One request for the session: the answer cannot change under it.
@@ -536,15 +536,36 @@ describe("wake signals", () => {
 
 	it("forgets a post hint that has aged out", async () => {
 		const h = setup();
-		h.sub.ownPostAt = Date.now() - 7 * 60_000;
+		h.sub.ownPostAts = [Date.now() - 7 * 60_000];
 		h.server.issueComments = [
 			{ id: 24, body: "on it", user: { login: "AutumnsGrove" }, created_at: new Date().toISOString() },
 		];
 		await tick(h.sub, h.deps);
 		vi.advanceTimersByTime(COALESCE_MS);
 		expect(h.wakes[0]).toMatchObject({ eventTypes: ["comment.created"] });
-		expect(h.sub.ownPostAt).toBeUndefined();
+		expect(h.sub.ownPostAts).toBeUndefined();
 		expect(h.server.calls).not.toContain("user");
+	});
+
+	it("covers both replies when two posts land between polls", async () => {
+		const h = setup();
+		const first = Date.now() - 120_000;
+		h.sub.ownPostAts = [first, Date.now()];
+		h.server.issueComments = [
+			{ id: 25, body: "first reply", user: { login: "AutumnsGrove" }, created_at: new Date(first + 5_000).toISOString() },
+			{ id: 26, body: "second reply", user: { login: "AutumnsGrove" }, created_at: new Date().toISOString() },
+		];
+		await tick(h.sub, h.deps);
+		vi.advanceTimersByTime(COALESCE_MS);
+		expect(h.wakes).toEqual([]);
+		expect(h.sub.cursor.commentIds).toEqual(expect.arrayContaining(["25", "26"]));
+	});
+
+	it("prunes a post time once it is older than the window", async () => {
+		const h = setup();
+		h.sub.ownPostAts = [Date.now() - 7 * 60_000, Date.now() - 60_000];
+		await tick(h.sub, h.deps);
+		expect(h.sub.ownPostAts).toHaveLength(1);
 	});
 
 	it("keeps a comment loud when it lands with a head move", async () => {

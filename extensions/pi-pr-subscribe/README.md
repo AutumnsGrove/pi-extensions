@@ -58,12 +58,20 @@ per-run `check.completed` events are dropped when `checks.settled` lands in the
 same window. A noisy PR does not become a dozen turns.
 
 Your own writes do not wake you. Commenting is done with plain `gh`, so the
-extension has to recognise the echo rather than stop it being sent: it reads the
-new comment's id out of the command's output when there is one, and when a
-wrapper script or a `--jq .id` pipe leaves no id behind, it falls back to the
-session's own login and the moment of the post — a comment by that login within
-a few minutes of it is the echo. A comment someone else leaves at the same
-moment still wakes you.
+extension has to recognise the echo rather than stop it being sent. One of two
+things happens at each post, never both:
+
+- the output carries the new comment's id, which is exact, and the poller skips
+  that id;
+- the output carries nothing usable — a wrapper script, a `--jq .id` pipe — in
+  which case the post's time is recorded. The poller reads the session's own
+  login and drops a comment or review by that login landing within the window
+  around any recent post (a minute before, six minutes after). Every post time
+  is kept until it ages out, because two replies between polls are two echoes.
+
+A comment someone else leaves at the same moment still wakes you, and only a
+`gh api` that actually writes opens the window: reading the thread with the same
+path (`gh api …/pulls/32/comments --jq '.[] | .body'`) posts nothing.
 
 ## Rules of engagement
 

@@ -28,7 +28,7 @@ import { Type, type Static } from "typebox";
 import { isBlocked, onBlockersChange } from "../_shared/blockers.ts";
 import { emitHookEvent } from "../_shared/hook-events.ts";
 import { extractPostedIds, extractPostedTarget, targetMatches } from "./capture.ts";
-import { initCursor, type Cursor } from "./diff.ts";
+import { initCursor, OWN_POST_WINDOW_MS, type Cursor } from "./diff.ts";
 import {
 	SECOND_SESSION_TEXT,
 	formatCompactionReminder,
@@ -86,6 +86,8 @@ const COMMAND = "subscribe";
 const WIDGET_KEY = "pi-pr-subscribe";
 const UI_TICK_MS = 5_000;
 const BLOCKED_RETRY_TICKS = 12;
+/** Far more posts than any one poll interval holds, and still a handful of numbers. */
+const OWN_POST_AT_CAP = 16;
 
 const SubscribeParams = Type.Object({
 	owner: Type.Optional(Type.String({ description: "Repository owner; defaults to the origin remote" })),
@@ -282,6 +284,15 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 			return next.length > 500 ? next.slice(next.length - 500) : next;
 		};
 		return { ...cursor, commentIds: merge(cursor.commentIds), ownIds: merge(cursor.ownIds) };
+	}
+
+	/**
+	 * Add one post time, newest last, keeping only the ones still inside the diff's
+	 * window: a session that replies often must not grow this without bound.
+	 */
+	function addOwnPostAt(value: number[] | undefined, at: number): number[] {
+		const recent = (value ?? []).filter((entry) => at - entry <= OWN_POST_WINDOW_MS);
+		return [...recent, at].slice(-OWN_POST_AT_CAP);
 	}
 
 	function deliverDeferred(): void {
@@ -690,10 +701,12 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 	// A comment the session just posted must not wake it a few seconds later.
 	//
 	// Two ways of knowing that, because the first one is not reliable: the ids in
-	// the `gh` output (exact, but a wrapper script or a `--jq .id` pipe leaves
-	// none), and the post's timestamp, which the poller later matches against the
-	// session's own login. The timestamp is recorded for every post, captured
-	// ids or not, so the second path covers what the first one misses.
+	// the `gh` output are exact but a wrapper script or a `--jq .id` pipe leaves
+	// none, and the post's timestamp is the fallback the poller matches against
+	// the session's own login. Only one of the two is recorded per post: when the
+	// id is known the echo is already dead, and opening the window on top of it
+	// would only add a way to swallow a comment the user wrote. A read is not a
+	// post: `extractPostedTarget` requires a write for `gh api`.
 	pi.on("tool_result", async (event, ctx) => {
 		if (!isBashToolResult(event) || event.isError === true) return;
 		const command = (event.input as { command?: unknown } | undefined)?.command;
@@ -708,8 +721,8 @@ export default function piPrSubscribe(pi: ExtensionAPI): void {
 		let changed = false;
 		for (const sub of subs) {
 			if (!targetMatches(target, sub.ref, cwdRepo ?? undefined)) continue;
-			sub.ownPostAt = at;
 			if (ids.length > 0) sub.cursor = addOwnIds(sub.cursor, ids);
+			else sub.ownPostAts = addOwnPostAt(sub.ownPostAts, at);
 			changed = true;
 		}
 		if (changed) persist();

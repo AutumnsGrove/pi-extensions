@@ -52,6 +52,19 @@ export function extractPostedIds(output: string): string[] {
 	return [...ids];
 }
 
+/**
+ * Does this `gh api` invocation write, rather than read?
+ *
+ * `gh api` defaults to POST as soon as a field or a body is given, so those
+ * flags are the usual answer; `-X/--method POST` and `--input` say it outright.
+ * Anything else — `--paginate`, `--jq`, a bare path — is a GET, and a GET posts
+ * nothing to suppress.
+ */
+function makesAWrite(tail: string): boolean {
+	if (/(?:^|\s)(?:-X|--method)[\s=]+POST\b/i.test(tail)) return true;
+	return /(?:^|\s)(?:-f|--raw-field|-F|--field|--input)(?:[\s=]|$)/.test(tail);
+}
+
 /** What the command was aimed at, when it says so. */
 export function extractPostedTarget(command: string): PostedTarget | undefined {
 	const args = command.replace(/\\\n/g, " ");
@@ -59,13 +72,22 @@ export function extractPostedTarget(command: string): PostedTarget | undefined {
 	// inside a commit message or a heredoc is not a posted comment.
 
 	// gh api repos/{owner}/{repo}/issues/{n}/comments | .../pulls/{n}/comments | .../pulls/{n}/reviews
-	const api = /(?:^|[;&|]|\n)\s*gh\s+api\b[^\n]*?repos\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/(issues|pulls)\/(\d+)\/(comments|reviews)\b/.exec(
-		args
-	);
-	if (api?.[1] && api[2] && api[3] && api[4] && api[5]) {
-		const kind =
-			api[5] === "reviews" ? "review" : api[3] === "pulls" ? "review-comment" : "issue-comment";
-		return { owner: api[1], repo: api[2], number: Number(api[4]), kind };
+	//
+	// Only a write counts. The same path is how a session *reads* the thread
+	// (`gh api .../pulls/32/comments --jq '.[] | .body'`), and treating a read as
+	// a post would silence the next six minutes of the session's own comments —
+	// including one the user leaves on github.com.
+	const api = /(?:^|[;&|]|\n)\s*gh\s+api\b([^\n]*)/.exec(args);
+	if (api) {
+		const tail = api[1] ?? "";
+		const target = /repos\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/(issues|pulls)\/(\d+)\/(comments|reviews)\b/.exec(
+			tail
+		);
+		if (target?.[1] && target[2] && target[3] && target[4] && target[5] && makesAWrite(tail)) {
+			const kind =
+				target[5] === "reviews" ? "review" : target[3] === "pulls" ? "review-comment" : "issue-comment";
+			return { owner: target[1], repo: target[2], number: Number(target[4]), kind };
+		}
 	}
 
 	const review = /(?:^|[;&|]|\n)\s*gh\s+pr\s+review\b([^\n]*)/.exec(args);

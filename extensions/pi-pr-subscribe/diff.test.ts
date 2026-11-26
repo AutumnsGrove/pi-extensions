@@ -83,7 +83,7 @@ describe("comments and reviews", () => {
 
 	it("treats a comment by the session's own login as the echo of its post", () => {
 		const base = initCursor(snapshot());
-		const ownPost = { at: Date.parse("2026-11-15T21:00:30Z"), login: "AutumnsGrove" };
+		const ownPost = { ats: [Date.parse("2026-11-15T21:00:30Z")], login: "AutumnsGrove" };
 		const result = diffSnapshot(snapshot({ comments: [comment("10")] }), base, { ownPost });
 		expect(result.events).toEqual([]);
 		// Remembered, so the next poll does not reconsider it.
@@ -93,21 +93,36 @@ describe("comments and reviews", () => {
 
 	it("still wakes for that login when the comment is too old or from someone else", () => {
 		const base = initCursor(snapshot());
-		const ownPost = { at: Date.parse("2026-11-15T21:00:30Z"), login: "AutumnsGrove" };
+		const ownPost = { ats: [Date.parse("2026-11-15T21:00:30Z")], login: "AutumnsGrove" };
 		// Posted long before this session's own write: not an echo, and possibly
 		// the user asking for something from the web.
-		const stale = { at: Date.parse("2026-11-15T22:00:00Z"), login: "AutumnsGrove" };
+		const stale = { ats: [Date.parse("2026-11-15T22:00:00Z")], login: "AutumnsGrove" };
 		expect(diffSnapshot(snapshot({ comments: [comment("10")] }), base, { ownPost: stale }).events).toHaveLength(1);
-		const other = { at: Date.parse("2026-11-15T21:00:30Z"), login: "someone-else" };
+		const other = { ats: [Date.parse("2026-11-15T21:00:30Z")], login: "someone-else" };
 		expect(diffSnapshot(snapshot({ comments: [comment("10")] }), base, { ownPost: other }).events).toHaveLength(1);
 		// No login known, or an undated write: wake, because guessing the other way
 		// would swallow a real comment.
 		expect(diffSnapshot(snapshot({ comments: [comment("10", { createdAt: undefined })] }), base, { ownPost }).events).toHaveLength(1);
 	});
 
+	it("covers two replies posted between polls, not only the last one", () => {
+		const base = initCursor(snapshot());
+		const items = [
+			{ ...comment("10"), createdAt: "2026-11-15T21:00:05Z" },
+			{ ...comment("11"), createdAt: "2026-11-15T21:02:05Z" },
+		];
+		const ownPost = {
+			ats: [Date.parse("2026-11-15T21:00:00Z"), Date.parse("2026-11-15T21:02:00Z")],
+			login: "AutumnsGrove",
+		};
+		const result = diffSnapshot(snapshot({ comments: items }), base, { ownPost });
+		expect(result.events).toEqual([]);
+		expect(result.cursor.commentIds).toEqual(["10", "11"]);
+	});
+
 	it("drops the session's own review in the same window", () => {
 		const base = initCursor(snapshot());
-		const ownPost = { at: Date.parse("2026-11-15T21:00:30Z"), login: "AutumnsGrove" };
+		const ownPost = { ats: [Date.parse("2026-11-15T21:00:30Z")], login: "AutumnsGrove" };
 		const review = {
 			id: "55",
 			author: "AutumnsGrove",

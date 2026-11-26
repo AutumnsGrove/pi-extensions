@@ -56,6 +56,27 @@ describe("extractPostedTarget", () => {
 		});
 	});
 
+	it("does not treat a read of the same path as a post", () => {
+		// The thread is read through the very path a reply is written to, and a read
+		// must not open the echo window: it posts nothing, and the window would
+		// silence a comment the user writes on github.com.
+		expect(extractPostedTarget("gh api repos/o/r/issues/32/comments")).toBeUndefined();
+		expect(extractPostedTarget("gh api repos/o/r/pulls/32/comments --jq '.[] | .body'")).toBeUndefined();
+		expect(extractPostedTarget("gh api repos/o/r/pulls/32/reviews -X GET")).toBeUndefined();
+		expect(extractPostedTarget("gh api --paginate repos/o/r/pulls/32/comments")).toBeUndefined();
+	});
+
+	it("reads the write flags gh api accepts", () => {
+		const write = (command: string): boolean => extractPostedTarget(command) !== undefined;
+		expect(write("gh api repos/o/r/issues/32/comments -f body=hi")).toBe(true);
+		expect(write("gh api repos/o/r/issues/32/comments --raw-field body=hi")).toBe(true);
+		expect(write("gh api repos/o/r/pulls/32/comments -F body=@/tmp/reply.md")).toBe(true);
+		expect(write("gh api repos/o/r/pulls/32/reviews --field event=APPROVE")).toBe(true);
+		expect(write("gh api repos/o/r/pulls/32/reviews --input /tmp/review.json")).toBe(true);
+		expect(write("gh api --method POST repos/o/r/pulls/32/comments")).toBe(true);
+		expect(write("gh api -X POST repos/o/r/pulls/32/comments")).toBe(true);
+	});
+
 	it("ignores other commands", () => {
 		expect(extractPostedTarget("gh pr checks 32")).toBeUndefined();
 		expect(extractPostedTarget("git commit -m 'gh pr comment 32'")).toBeUndefined();
