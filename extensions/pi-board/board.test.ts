@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Board, DRAFT_GRACE_MS, DRAFT_RETRY_MS, MAX_WAKES_PER_MINUTE, POLL_MS, pollInterval, type BoardDeps } from "./board.ts";
-import { claimLane, readInbox, readLane, listLanes } from "./store.ts";
+import { claimLane, listLanes, readInbox, readLane, readWaits } from "./store.ts";
 
 let root: string;
 let clock: number;
@@ -172,12 +172,20 @@ describe("delivery", () => {
 		expect(rig("b").board.drain()).toBe("empty");
 	});
 
-	it("does not deliver the same message twice if the ack was slow", () => {
+	it("never hands over the same message twice when its file comes back after the ack", () => {
 		const r = rig("b");
 		sender().send("b", "once");
-		r.board.drain();
+		const [original] = readInbox(root, "b");
 		r.board.drain();
 		expect(r.delivered).toHaveLength(1);
+		// The ack did not stick (or a copy was restored): the same id is on disk again.
+		mkdirSync(join(root, "inbox", "b"), { recursive: true });
+		writeFileSync(join(root, "inbox", "b", `${original!.id}.json`), JSON.stringify(original));
+		expect(readInbox(root, "b")).toHaveLength(1);
+		expect(r.board.drain()).toBe("empty");
+		expect(r.delivered).toHaveLength(1);
+		// And the repeat is cleaned up rather than left to be rescanned forever.
+		expect(readInbox(root, "b")).toEqual([]);
 	});
 
 	it("keeps the message when delivery throws, and retries", () => {
@@ -192,6 +200,25 @@ describe("delivery", () => {
 		expect(readInbox(root, "b")).toHaveLength(1);
 		fail = false;
 		expect(r.board.drain()).toBe("delivered");
+		expect(readInbox(root, "b")).toEqual([]);
+	});
+});
+
+describe("a failing delivery inside the timer", () => {
+	it("is reported and kept, never an uncaught exception", () => {
+		let fail = true;
+		const r = rig("b", {
+			deliver: () => {
+				if (fail) throw new Error("This extension ctx is stale");
+			},
+		});
+		sender().send("b", "x");
+		// Any exception escaping the timer would fail the run here.
+		vi.advanceTimersByTime(5000);
+		expect(r.notes.some((n) => n.includes("could not deliver") && n.includes("stale"))).toBe(true);
+		expect(readInbox(root, "b")).toHaveLength(1);
+		fail = false;
+		vi.advanceTimersByTime(5000);
 		expect(readInbox(root, "b")).toEqual([]);
 	});
 });
@@ -246,24 +273,77 @@ describe("gates", () => {
 		expect(r.board.drain()).toBe("delivered");
 	});
 
-	it("stops waking a lane when one sender floods it, but still delivers", () => {
+	it("rate limits a flooding sender by holding its messages, then delivers them when the minute frees up", () => {
 		const r = rig("b");
 		const a = sender();
 		for (let i = 0; i < MAX_WAKES_PER_MINUTE; i++) {
 			a.send("b", `n${i}`);
 			r.board.drain();
 		}
+		expect(r.delivered).toHaveLength(MAX_WAKES_PER_MINUTE);
+
 		a.send("b", "one too many");
+		expect(r.board.drain()).toBe("deferred");
+		// Held in the inbox, not acked, and the user is told once.
+		expect(r.delivered).toHaveLength(MAX_WAKES_PER_MINUTE);
+		expect(readInbox(root, "b").map((m) => m.body)).toEqual(["one too many"]);
+		expect(r.notes.filter((n) => n.includes("sending a lot"))).toHaveLength(1);
+		r.board.drain();
+		expect(r.notes.filter((n) => n.includes("sending a lot"))).toHaveLength(1);
+
+		// The window frees up on its own, with no new message and no poll.
+		clock += 61_000;
+		vi.advanceTimersByTime(61_000);
+		expect(r.delivered).toHaveLength(MAX_WAKES_PER_MINUTE + 1);
+		expect(r.delivered.at(-1)!.trigger).toBe(true);
+		expect(r.delivered.at(-1)!.text).toContain("one too many");
+		expect(readInbox(root, "b")).toEqual([]);
+	});
+
+	it("never loses the post a parked lane was waiting for to the flood guard", () => {
+		const r = rig("b");
+		const a = sender();
+		for (let i = 0; i < MAX_WAKES_PER_MINUTE; i++) {
+			a.send("b", `n${i}`);
+			r.board.drain();
+		}
+		r.board.wait(["task:42-done"]);
+		a.post("task:42-done", "merged");
+		// The one-shot wait is spent by the post; the message must still be reachable.
+		expect(readWaits(root, "b")).toBeUndefined();
+		expect(r.board.drain()).toBe("deferred");
+		expect(readInbox(root, "b")).toHaveLength(1);
+		clock += 61_000;
+		vi.advanceTimersByTime(61_000);
+		expect(r.delivered.at(-1)!.text).toContain('topic="task:42-done"');
+		expect(r.delivered.at(-1)!.trigger).toBe(true);
+	});
+
+	it("still delivers other senders, and no-wake messages, while one sender is held", () => {
+		const r = rig("b");
+		const a = sender();
+		for (let i = 0; i < MAX_WAKES_PER_MINUTE; i++) {
+			a.send("b", `n${i}`);
+			r.board.drain();
+		}
+		const c = rig("c").board;
+		a.send("b", "held");
+		c.send("b", "from c");
 		r.board.drain();
 		const last = r.delivered.at(-1)!;
-		expect(last.trigger).toBe(false);
-		expect(r.notes.some((n) => n.includes("sending a lot"))).toBe(true);
-		expect(readInbox(root, "b")).toEqual([]);
-		// A minute later the budget is back.
-		clock += 61_000;
-		a.send("b", "fresh");
+		expect(last.text).toContain("from c");
+		expect(last.text).not.toContain("held");
+		expect(readInbox(root, "b").map((m) => m.body)).toEqual(["held"]);
+	});
+
+	it("counts one wake per delivery, not per message", () => {
+		const r = rig("b");
+		const a = sender();
+		for (let i = 0; i < 20; i++) a.send("b", `n${i}`);
 		r.board.drain();
-		expect(r.delivered.at(-1)!.trigger).toBe(true);
+		expect(r.delivered).toHaveLength(1);
+		a.send("b", "next");
+		expect(r.board.drain()).toBe("delivered");
 	});
 });
 

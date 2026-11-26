@@ -239,7 +239,9 @@ Built on 2026-11-26. Where the build departed from the plan:
 - **Offline delivery is in v1**, not phase 3: a message to an exited lane is kept and delivered when a
   session next claims the name. Spawning a session is still not done.
 - **Draft check uses `ctx.ui.getEditorText()`**, with a 60 s grace so a leftover line cannot stop a wake.
-- **Flood guard:** six wakes per sender per minute, then messages queue for the next turn.
+- **Flood guard:** six wakes per sender per minute, then that sender's waking messages are held in the
+  inbox and delivered when the window frees (first built as "queue for the next turn", which lost the
+  message for a parked lane; see the review fixes below).
 - **Watchdog (not in the plan).** One run during the build delivered a wake and no turn started; four
   clean reruns and the replayed double-post did not reproduce it. A 10 s watchdog now notifies the user
   and nudges once if a triggering delivery is not followed by `agent_start`. The root cause is unknown.
@@ -271,3 +273,19 @@ Further live tests (same model):
   `<board-message>` envelope on screen fixed it.
 
 Still open: macOS, `pi-attention` integration, a `blocked_by` task list, and a remote transport.
+
+### Fixes from the first `pi-review` pass (PR #90, head `ea40fb8`)
+
+- **Session replacement leaked the old board.** `session_shutdown` stopped the board only for `reload` and
+  `quit`, but pi re-runs the factory for `/new`, `/resume` and `/fork` without stopping what the old
+  instance started, so the old board kept polling, acking, and calling a stale API. It now stops for every
+  reason and keeps the lane only on `reload`. The drain timer also catches a throwing delivery, so a stale
+  context can never escape as an uncaught exception, and the undelivered message stays in the inbox.
+  Verified live: `/new` in a real session, then a message; the process stayed up and the new session got it.
+- **A throttled wake was acked and lost.** Delivering it with no turn (`nextTurn`) is invisible to a lane
+  parked in `board_wait`, whose one-shot wait the post had already spent. A flooding sender's waking
+  messages are now held in the inbox and retried when the minute frees up; other senders and no-wake
+  messages still deliver. A wake now counts once per delivery, not per message.
+- **The dedupe test did not test dedupe.** The ack removed the file, so `seen` was never consulted. The test
+  now restores the file after the ack, and a repeated id is cleaned up instead of rescanned forever.
+- Each fix has tests that fail when it is reverted (checked by reverting each).

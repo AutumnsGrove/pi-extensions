@@ -198,6 +198,57 @@ describe("tools", () => {
 	});
 });
 
+describe("session replacement", () => {
+	// Pi re-runs the extension factory for /new, /resume and /fork and invalidates the old
+	// instance's API, but never stops what the old instance started.
+	for (const reason of ["new", "resume", "fork"]) {
+		it(`stops the old board on ${reason}, so only the new session receives the message`, async () => {
+			const old = load();
+			await start(old);
+			await old.handlers.get("session_shutdown")?.({ reason }, old.ctx);
+			// From here the old instance's pi.sendMessage throws, as a stale API does in pi.
+			let staleCalls = 0;
+			old.sent.push = (() => {
+				staleCalls++;
+				throw new Error("This extension ctx is stale after session replacement or reload.");
+			}) as never;
+
+			const next = load();
+			await next.handlers.get("session_start")?.({ reason }, next.ctx);
+			sendDirect(root, { from: "a", to: "b", body: "after the swap" });
+			// An old board still polling would read, ack and throw here.
+			await vi.advanceTimersByTimeAsync(5000);
+
+			expect(staleCalls).toBe(0);
+			expect(next.sent).toHaveLength(1);
+			expect(next.sent[0]!.message.content).toContain("after the swap");
+			await quit(next);
+		});
+	}
+
+	it("releases the lane on a session swap but keeps it across a reload", async () => {
+		const first = load();
+		await start(first);
+		await first.handlers.get("session_shutdown")?.({ reason: "new" }, first.ctx);
+		expect(readLane(root, "b")).toBeUndefined();
+		const second = load();
+		await start(second);
+		await second.handlers.get("session_shutdown")?.({ reason: "reload" }, second.ctx);
+		expect(readLane(root, "b")).toBeDefined();
+	});
+
+	it("stops listening for blocker changes when the session is replaced", async () => {
+		const old = load();
+		await start(old);
+		await old.handlers.get("session_shutdown")?.({ reason: "new" }, old.ctx);
+		sendDirect(root, { from: "a", to: "b", body: "x" });
+		const release = beginBlocker("pi-q-n-a");
+		release();
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(old.sent).toEqual([]);
+	});
+});
+
 describe("wake rules in the extension", () => {
 	it("follows up instead of steering when the agent is busy", async () => {
 		const rig = load();

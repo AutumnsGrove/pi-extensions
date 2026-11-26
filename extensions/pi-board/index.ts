@@ -158,10 +158,6 @@ export default function piBoard(pi: ExtensionAPI): void {
 	pi.on("session_start", async (event, ctx) => {
 		ctxRef = ctx;
 		if (!enabled || !ctx.hasUI) return;
-		if (board.active) {
-			// Session replacement (new/resume/fork) keeps the process; keep the lane, refresh the context.
-			return;
-		}
 		const sessionName = ctx.sessionManager.getSessionName?.();
 		const desired = process.env.PI_BOARD_LANE?.trim() || sessionName || basename(ctx.cwd) || "lane";
 		const branch = await branchOf(ctx.cwd);
@@ -189,16 +185,15 @@ export default function piBoard(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", async (event) => {
 		if (watchdog) clearTimeout(watchdog);
 		watchdog = undefined;
-		if (event.reason === "reload") {
-			board.stop({ keepLane: true });
-			unsubscribeBlockers?.();
-			return;
-		}
-		if (event.reason === "quit") {
-			board.stop();
-			unsubscribeBlockers?.();
-			ctxRef = undefined;
-		}
+		// Pi re-runs this factory for /reload, /new, /resume and /fork and invalidates the
+		// old instance's context, but it does not stop what the old instance started. Stop
+		// for every reason, or the old board keeps polling, acking, and calling a stale API.
+		// Only a reload is the same conversation continuing, so only a reload keeps the lane
+		// (and its waits); a new session claims its own.
+		board.stop({ keepLane: event.reason === "reload" });
+		unsubscribeBlockers?.();
+		unsubscribeBlockers = undefined;
+		ctxRef = undefined;
 	});
 
 	pi.on("agent_start", async () => {

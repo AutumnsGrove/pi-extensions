@@ -38,7 +38,10 @@ If A finishes **first**, nothing is lost: a post is kept for 24 hours, and
 
 Every interactive session claims a **lane**: `PI_BOARD_LANE`, else the session
 name, else the directory name. A name held by a live session is refused and the
-next free one (`name-2`) is used. A lane is *alive* when its process exists and
+next free one (`name-2`) is used. Starting a new session in the same terminal (`/new`, `/resume`, `/fork`) stops the old board and
+releases its lane; the new session claims its own. A `/reload` keeps the lane and its waits.
+
+A lane is *alive* when its process exists and
 its heartbeat is under 90 seconds old; `board_lanes` shows `working` or `idle`,
 whether it has a tty, its directory and branch. Non-interactive runs (`-p`,
 JSON mode, subagents) never claim a lane. `PI_BOARD=off` disables the extension.
@@ -53,12 +56,14 @@ It waits in the lane's inbox until all of these hold:
 - No blocking question is open (`pi-q-n-a` owns the session while its form is up).
 - The editor holds no half-written draft, or it has sat for 60 seconds. A leftover
   line must not stop a lane from ever waking.
-- The sender is not flooding. After six wakes from one sender in a minute, messages
-  still arrive but queue for the next turn, so two lanes cannot ping-pong forever.
+- The sender is not flooding. After six wakes from one sender in a minute, that
+  sender's waking messages are **held** in the inbox (not dropped) and delivered as
+  soon as the minute's budget frees up, so two lanes cannot ping-pong forever and a
+  parked lane still gets the post it was waiting for. You are told once.
 
 Arriving while the agent is running, a message is a follow-up: it lands after the
 current work and never interrupts an edit. Messages that arrive together become
-one turn. `wake: false` queues without starting a turn.
+one turn, and count as one wake. `wake: false` queues without starting a turn.
 
 A watchdog covers the failure that would defeat the board: if a wake that should
 start a turn does not, the user is told and the session is nudged once.

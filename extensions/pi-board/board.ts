@@ -9,9 +9,10 @@
  * - no blocking question is open (`pi-q-n-a` owns the session while its form is up);
  * - the editor holds no half-written draft, or the draft has sat for `DRAFT_GRACE_MS`
  *   (a leftover line must not stop a lane from ever waking);
- * - the sender is not flooding. Past `MAX_WAKES_PER_MINUTE` from one sender the
- *   message is still delivered, but queued for the next turn instead of starting
- *   one, so two lanes cannot ping-pong forever on someone's bill.
+ * - the sender is not flooding. Past `MAX_WAKES_PER_MINUTE` from one sender its
+ *   waking messages are held in the inbox, not dropped, and delivered when the
+ *   minute's budget frees up, so two lanes cannot ping-pong forever on someone's
+ *   bill and a parked lane still gets what it was waiting for.
  *
  * Delivery while the agent is running is a follow-up: it lands after the
  * current work and never interrupts an edit.
@@ -57,6 +58,7 @@ export function pollInterval(env: NodeJS.ProcessEnv = process.env): number {
 export const HEARTBEAT_MS = 20_000;
 export const DRAFT_GRACE_MS = 60_000;
 export const MAX_WAKES_PER_MINUTE = 6;
+const WAKE_WINDOW_MS = 60_000;
 
 export interface BoardDeps {
 	root?: string;
@@ -90,6 +92,8 @@ export class Board {
 	private seen = new Set<string>();
 	private firstSeen = new Map<string, number>();
 	private wakes = new Map<string, number[]>();
+	/** Senders the user has already been told about, so a flood is announced once. */
+	private announced = new Set<string>();
 	private rulesSent = false;
 	private timers: { poll?: ReturnType<typeof setInterval>; beat?: ReturnType<typeof setInterval>; drain?: ReturnType<typeof setTimeout> } = {};
 	private watcher: { close(): void } | undefined;
@@ -217,7 +221,17 @@ export class Board {
 		if (this.timers.drain) clearTimeout(this.timers.drain);
 		this.timers.drain = setTimeout(() => {
 			this.timers.drain = undefined;
-			this.drain();
+			// A delivery that throws (a stale context after a session swap, say) must stay
+			// in the inbox for the next attempt, never escape a timer as an uncaught error.
+			try {
+				this.drain();
+			} catch (error) {
+				try {
+					this.deps.notify(`board: could not deliver a message (${error instanceof Error ? error.message : String(error)})`);
+				} catch {
+					// The UI may be gone too.
+				}
+			}
 		}, delayMs);
 		this.timers.drain.unref?.();
 	}
@@ -259,27 +273,53 @@ export class Board {
 	drain(): "delivered" | "empty" | "deferred" {
 		if (!this.info) return "empty";
 		const now = this.now();
-		const inbox = readInbox(this.root, this.info.lane).filter((message) => !this.seen.has(message.id));
-		if (inbox.length === 0) {
+		const all = readInbox(this.root, this.info.lane);
+		// A file we already handed over but could not remove (the ack failed, or a copy came
+		// back) is cleaned up, never delivered twice.
+		const repeats = all.filter((message) => this.seen.has(message.id));
+		if (repeats.length > 0) {
+			ackMessages(
+				this.root,
+				this.info.lane,
+				repeats.map((message) => message.id),
+			);
+		}
+		const pending = all.filter((message) => !this.seen.has(message.id));
+		if (pending.length === 0) {
 			this.paint();
 			return "empty";
 		}
-		for (const message of inbox) if (!this.firstSeen.has(message.id)) this.firstSeen.set(message.id, now);
+		for (const message of pending) if (!this.firstSeen.has(message.id)) this.firstSeen.set(message.id, now);
 
-		const wantsWake = inbox.some((message) => message.wake);
 		if (this.deps.isBlocked()) return "deferred";
 
-		if (wantsWake) {
+		if (pending.some((message) => message.wake)) {
 			const draft = this.deps.draft().trim();
-			const oldest = Math.min(...inbox.map((message) => this.firstSeen.get(message.id) ?? now));
+			const oldest = Math.min(...pending.map((message) => this.firstSeen.get(message.id) ?? now));
 			if (draft && this.deps.isIdle() && now - oldest < DRAFT_GRACE_MS) {
 				this.scheduleDrain(DRAFT_RETRY_MS);
 				return "deferred";
 			}
 		}
 
-		const throttled = this.throttle(inbox, now);
-		const trigger = wantsWake && !throttled;
+		// A flooding sender is rate limited, not silenced: its waking messages stay in the
+		// inbox until the minute's budget frees up. Delivering them without a turn would
+		// lose them for a parked lane, which has no next turn, and a topic's one-shot wait
+		// is already spent.
+		const held = this.heldSenders(pending, now);
+		const inbox = pending.filter((message) => !(message.wake && held.has(message.from)));
+		if (held.size > 0) {
+			this.scheduleDrain(this.retryDelay(held, now));
+			for (const sender of held) {
+				if (this.announced.has(sender)) continue;
+				this.announced.add(sender);
+				this.deps.notify(`board: ${sender} is sending a lot of messages; holding them for up to a minute instead of waking you`);
+			}
+		}
+		if (inbox.length === 0) return "deferred";
+		for (const sender of [...this.announced]) if (!held.has(sender)) this.announced.delete(sender);
+
+		const trigger = inbox.some((message) => message.wake);
 		const busy = !this.deps.isIdle() || this.deps.hasPending();
 		const text = formatWake(inbox, !this.rulesSent);
 
@@ -293,15 +333,13 @@ export class Board {
 			throw error;
 		}
 		this.rulesSent = true;
+		this.recordWakes(inbox, now);
 		ackMessages(
 			this.root,
 			this.info.lane,
 			inbox.map((message) => message.id),
 		);
 		for (const message of inbox) this.firstSeen.delete(message.id);
-		if (throttled) {
-			this.deps.notify(`board: ${throttled} is sending a lot of messages; queued for your next turn instead of waking you`);
-		}
 		this.deps.onWake?.({
 			count: inbox.length,
 			from: [...new Set(inbox.map((message) => message.from))],
@@ -309,19 +347,38 @@ export class Board {
 			summary: summarizeBatch(inbox),
 		});
 		this.paint();
-		return "delivered";
+		return held.size > 0 ? "deferred" : "delivered";
 	}
 
-	/** The sender over the wake budget, if any. Records this batch's wakes. */
-	private throttle(batch: BoardMessage[], now: number): string | undefined {
-		let over: string | undefined;
+	/** Senders already at the wake budget for the last minute. */
+	private heldSenders(batch: BoardMessage[], now: number): Set<string> {
+		const held = new Set<string>();
 		for (const sender of new Set(batch.filter((message) => message.wake).map((message) => message.from))) {
-			const recent = (this.wakes.get(sender) ?? []).filter((at) => now - at < 60_000);
-			if (recent.length >= MAX_WAKES_PER_MINUTE) over ??= sender;
-			recent.push(now);
-			this.wakes.set(sender, recent);
+			if (this.recentWakes(sender, now).length >= MAX_WAKES_PER_MINUTE) held.add(sender);
 		}
-		return over;
+		return held;
+	}
+
+	private recentWakes(sender: string, now: number): number[] {
+		return (this.wakes.get(sender) ?? []).filter((at) => now - at < WAKE_WINDOW_MS);
+	}
+
+	/** One wake per sender per delivery, however many messages it carried. */
+	private recordWakes(delivered: BoardMessage[], now: number): void {
+		for (const sender of new Set(delivered.filter((message) => message.wake).map((message) => message.from))) {
+			this.wakes.set(sender, [...this.recentWakes(sender, now), now]);
+		}
+	}
+
+	/** Milliseconds until the first held sender has budget again, plus a little slack. */
+	private retryDelay(held: Set<string>, now: number): number {
+		let soonest = WAKE_WINDOW_MS;
+		for (const sender of held) {
+			const recent = this.recentWakes(sender, now);
+			const oldest = recent[0];
+			if (oldest !== undefined) soonest = Math.min(soonest, oldest + WAKE_WINDOW_MS - now);
+		}
+		return Math.max(50, soonest + 50);
 	}
 }
 
