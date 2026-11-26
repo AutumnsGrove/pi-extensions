@@ -122,6 +122,20 @@ describe("extractPostedTarget", () => {
 		).toMatchObject({ kind: "review-comment" });
 	});
 
+	it("treats $'…' as ANSI-C quoting, where \\' escapes the apostrophe", () => {
+		// bash's ANSI-C quoting uses the single-quote delimiter with C escapes, so a
+		// backslash apostrophe there does not end the string. Reading it as a plain
+		// single quote closed and reopened the string and swallowed the pipeline.
+		const command = String.raw`gh api repos/o/r/pulls/32/comments --jq $'.[] | select(.body | contains("don\'t"))' | grep -F thanks`;
+		expect(shellSegments(command)).toHaveLength(2);
+		expect(extractPostedTarget(command)).toBeUndefined();
+
+		// A real write in the same quoting is still a write.
+		expect(
+			extractPostedTarget(String.raw`gh api repos/o/r/issues/32/comments -f body=$'don\'t'`)
+		).toMatchObject({ kind: "issue-comment" });
+	});
+
 	it("treats an escaped quote inside double quotes as part of the string", () => {
 		expect(shellSegments(`gh api x --jq "a\\"b" | jq .id`)).toHaveLength(2);
 		expect(extractPostedTarget(`gh api repos/o/r/pulls/32/comments --jq "a\\"b" | grep -F x`)).toBeUndefined();

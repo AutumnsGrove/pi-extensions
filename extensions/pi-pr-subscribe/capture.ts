@@ -59,21 +59,34 @@ export function extractPostedIds(output: string): string[] {
  * second command (`; gh api ... -f body=hi`), and a flag in either belongs to
  * something else. Splitting first is what keeps `-F` from `grep` out of `gh`'s
  * argument list. Quotes and backslash escapes are respected, so
- * `--jq '.[] | .body'` stays one segment and `'\''` stays one string.
+ * `--jq '.[] | .body'` stays one segment, `'\''` stays one string, and so does
+ * bash's `$'…\'…'`.
  */
 export function shellSegments(command: string): string[] {
 	const segments: string[] = [];
 	let current = "";
 	let quote: "'" | '"' | undefined;
+	/** Inside `$'…'`, where a backslash does escape the closing quote. */
+	let ansiC = false;
 	for (let index = 0; index < command.length; index += 1) {
 		const char = command[index] as string;
+		// `$'…'` is bash ANSI-C quoting: the same delimiter as a plain single quote,
+		// but with C escapes, so `\'` there is an apostrophe rather than the end of
+		// the string. Only unquoted `$'` starts one.
+		if (char === "$" && command[index + 1] === "'" && !quote) {
+			current += "$'";
+			quote = "'";
+			ansiC = true;
+			index += 1;
+			continue;
+		}
 		// A backslash escapes the next character, so `'\''` is close, escaped
 		// quote, reopen — the shell's way of putting an apostrophe in a string.
 		// Ignoring it leaves the scan inside a quote and swallows the rest of the
 		// line, which is how a `| grep -F` ends up looking like `gh`'s own flag.
-		// Inside single quotes a backslash is literal, so this only applies outside
-		// them (and inside double quotes, where it escapes `"`).
-		if (char === "\\" && quote !== "'") {
+		// Inside plain single quotes a backslash is literal, so this only applies
+		// outside them, inside double quotes, and inside `$'…'`.
+		if (char === "\\" && (quote !== "'" || ansiC)) {
 			current += char;
 			const escaped = command[index + 1];
 			if (escaped !== undefined) {
@@ -84,7 +97,10 @@ export function shellSegments(command: string): string[] {
 		}
 		if (quote) {
 			current += char;
-			if (char === quote) quote = undefined;
+			if (char === quote) {
+				quote = undefined;
+				ansiC = false;
+			}
 			continue;
 		}
 		if (char === "'" || char === '"') {
