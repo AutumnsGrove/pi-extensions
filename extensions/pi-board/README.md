@@ -95,7 +95,8 @@ A message is written to a temp name and renamed into place, so a reader only eve
 sees whole files and writers never need a lock. A receiver removes a message only
 after handing it to the agent, so delivery is at-least-once, and every message
 carries an id. The receiver watches its inbox with `fs.watch` and polls every
-three seconds as a fallback. A `BoardWake` event goes out on the hooks bus.
+three seconds as a fallback (`PI_BOARD_POLL_MS` changes the interval; the watcher alone
+is enough, which is tested). A `BoardWake` event goes out on the hooks bus.
 
 | File | Role |
 | --- | --- |

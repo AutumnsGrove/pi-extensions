@@ -46,6 +46,14 @@ import {
 
 export const COALESCE_MS = 800;
 export const POLL_MS = 3_000;
+/** How soon to look again after holding a wake for a draft; independent of the poll so a watcher-only setup still retries. */
+export const DRAFT_RETRY_MS = 2_000;
+
+/** `PI_BOARD_POLL_MS` overrides the poll interval (tests use a huge value to prove the watcher alone works). */
+export function pollInterval(env: NodeJS.ProcessEnv = process.env): number {
+	const value = Number(env.PI_BOARD_POLL_MS);
+	return Number.isFinite(value) && value >= 250 ? value : POLL_MS;
+}
 export const HEARTBEAT_MS = 20_000;
 export const DRAFT_GRACE_MS = 60_000;
 export const MAX_WAKES_PER_MINUTE = 6;
@@ -125,7 +133,7 @@ export class Board {
 		if (!claim.ok) throw new Error(claim.reason);
 		this.info = claim.info;
 		this.timers.beat = setInterval(() => this.beat(), HEARTBEAT_MS);
-		this.timers.poll = setInterval(() => this.scheduleDrain(0), POLL_MS);
+		this.timers.poll = setInterval(() => this.scheduleDrain(0), pollInterval());
 		this.timers.beat.unref?.();
 		this.timers.poll.unref?.();
 		if (startWatcher) {
@@ -264,7 +272,10 @@ export class Board {
 		if (wantsWake) {
 			const draft = this.deps.draft().trim();
 			const oldest = Math.min(...inbox.map((message) => this.firstSeen.get(message.id) ?? now));
-			if (draft && this.deps.isIdle() && now - oldest < DRAFT_GRACE_MS) return "deferred";
+			if (draft && this.deps.isIdle() && now - oldest < DRAFT_GRACE_MS) {
+				this.scheduleDrain(DRAFT_RETRY_MS);
+				return "deferred";
+			}
 		}
 
 		const throttled = this.throttle(inbox, now);

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Board, DRAFT_GRACE_MS, MAX_WAKES_PER_MINUTE, type BoardDeps } from "./board.ts";
+import { Board, DRAFT_GRACE_MS, DRAFT_RETRY_MS, MAX_WAKES_PER_MINUTE, POLL_MS, pollInterval, type BoardDeps } from "./board.ts";
 import { claimLane, readInbox, readLane, listLanes } from "./store.ts";
 
 let root: string;
@@ -216,6 +216,24 @@ describe("gates", () => {
 		expect(r.board.drain()).toBe("deferred");
 		clock += DRAFT_GRACE_MS + 1;
 		expect(r.board.drain()).toBe("delivered");
+	});
+
+	it("retries a draft-held wake on its own, with no poll and no watcher event", () => {
+		const r = rig("b");
+		r.flags.draft = "half a sentence";
+		sender().send("b", "x");
+		expect(r.board.drain()).toBe("deferred");
+		// The draft is cleared (user pressed enter / deleted it); only the self-scheduled retry can notice.
+		r.flags.draft = "";
+		vi.advanceTimersByTime(DRAFT_RETRY_MS + 10);
+		expect(r.delivered).toHaveLength(1);
+	});
+
+	it("reads the poll interval from the environment, ignoring nonsense", () => {
+		expect(pollInterval({})).toBe(POLL_MS);
+		expect(pollInterval({ PI_BOARD_POLL_MS: "60000" })).toBe(60000);
+		expect(pollInterval({ PI_BOARD_POLL_MS: "5" })).toBe(POLL_MS);
+		expect(pollInterval({ PI_BOARD_POLL_MS: "abc" })).toBe(POLL_MS);
 	});
 
 	it("ignores a draft for a no-wake message and while busy", () => {

@@ -256,6 +256,18 @@ itself — lane 1 to lane 5 finished in order, the last hop 7 s after the first 
 A fan-out with a wildcard topic (`broadcast:*`) from the shell CLI woke all four parked lanes from one
 post, and their waits were cleared afterwards.
 
-Still open: two real lanes messaging each other repeatedly (ping-pong behaviour with a live model), macOS,
-a human typing while a wake arrives, running on `fs.watch` alone, `pi-attention` integration, a
-`blocked_by` task list, and a remote transport.
+Further live tests (same model):
+
+- **Ping-pong.** Two lanes told to answer each other forever. They greeted each other unprompted and about
+  16 sends flew in ~18 s; then the flood guard fired ("lane-a is sending a lot of messages; queued for your
+  next turn instead of waking you") and the loop stopped. Cost $0.000.
+- **Draft in the editor.** `getEditorText()` returns the real draft in pi. With half-typed text present, the
+  wake was held for the 60 s grace and then delivered; the draft was still in the editor afterwards.
+- **Watcher only.** With `PI_BOARD_POLL_MS=3600000` (poll effectively off) delivery still worked. Reasoning
+  about this exposed a bug: a wake held for a draft was only retried by the poll, so it would never have been
+  retried. It now schedules its own retry (`DRAFT_RETRY_MS`, 2 s), with a unit test.
+- One live test was invalid and is not counted: the lane had been told about its proof file up front and the
+  model ran the command in its first turn, which looked like an early wake. Detecting the wake by the
+  `<board-message>` envelope on screen fixed it.
+
+Still open: macOS, `pi-attention` integration, a `blocked_by` task list, and a remote transport.
