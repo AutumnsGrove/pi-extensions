@@ -336,6 +336,8 @@ describe("gates", () => {
 		expect(readInbox(root, "b").map((m) => m.body)).toEqual(["held"]);
 	});
 
+	// A regression guard, not a test of the held-not-dropped change: the code before that change already
+	// counted one wake per sender per batch. It fails only if someone starts counting per message.
 	it("counts one wake per delivery, not per message", () => {
 		const r = rig("b");
 		const a = sender();
@@ -344,7 +346,7 @@ describe("gates", () => {
 		expect(r.delivered).toHaveLength(1);
 		expect(r.delivered[0]!.ids).toHaveLength(20);
 		// Twenty messages in one batch spent one wake of the budget, so the next one still wakes.
-		// Counting per message would have exhausted it and held this message instead.
+		// Counting per message would exhaust it and hold this message instead.
 		a.send("b", "next");
 		expect(r.board.drain()).toBe("delivered");
 		expect(r.delivered).toHaveLength(2);
