@@ -29,6 +29,7 @@ generated from it: edit the settings file rather than the YAML.
 | [`permissions`](extensions/permissions/) | Rules + classifier permission model: Claude-style allow/ask/deny rules, five modes (`alt+m`), a JEV/LLM auto reviewer that fails closed, session grants, and a redacted decision log for benchmarking (`/permissions`). | working (v1) |
 | [`sounds`](extensions/sounds/) | Audio feedback on the hooks bus: session, prompt, agent, tool, compaction, permission, and attention-state events mapped to WAV files, with player autodetection, debounce, and non-blocking detached playback (`/sounds`). | working (v1) |
 | [`git-status`](extensions/git-status/) | A live git widget above the footer: branch, changed files (untracked included), uncommitted `+insertions/-deletions`, and ahead/behind (`/git-status`). | working |
+| [`handoff-flag`](extensions/handoff-flag/) | One line above the footer for as long as the handoff skill's `HANDOFF.md` exists at the repository root — a green tick and how long it has been sitting there — gone the moment the file is deleted (`/handoff`). | working |
 | [`thinking-box`](extensions/thinking-box/) | Collapsible, timed thinking traces: stream into a short box showing duration + reasoning tokens, expand the full trace with `Ctrl+O` (`/thinking-box`). | working |
 | [`pi-q-n-a`](extensions/pi-q-n-a/) | Model-facing `pi-q-n-a` tool: a multi-question form with single/multi-select, an always-present "Type something", per-question notes, optional side-by-side previews, and partial submit. A hard blocker: nothing runs until you answer. | working |
 | [`pi-tasks`](extensions/pi-tasks/) | Model-facing `todo` tool (create/update/delete/list) with a live task panel above the editor and a full `/todos` view. State replays from the session branch, so it survives `/reload` and compaction. | working |
@@ -150,6 +151,12 @@ pi-extensions/
 │   │   ├── index.ts
 │   │   ├── git.ts
 │   │   ├── git.test.ts
+│   │   ├── index.test.ts
+│   │   └── README.md
+│   ├── handoff-flag/
+│   │   ├── index.ts
+│   │   ├── handoff.ts
+│   │   ├── handoff.test.ts
 │   │   ├── index.test.ts
 │   │   └── README.md
 │   ├── cost-tracker/
