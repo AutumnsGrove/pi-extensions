@@ -30,7 +30,7 @@ interface Harness {
 	setCwd(cwd: string): void;
 }
 
-const harness = (cwd: string): Harness => {
+const harness = (cwd: string, mode = "tui"): Harness => {
 	const handlers = new Map();
 	const commands = new Map();
 	const widgets: WidgetCall[] = [];
@@ -38,7 +38,7 @@ const harness = (cwd: string): Harness => {
 	const state = { cwd };
 	const ctx = {
 		hasUI: true,
-		mode: "tui",
+		mode,
 		get cwd() {
 			return state.cwd;
 		},
@@ -201,6 +201,20 @@ describe("handoff-flag extension", () => {
 		await h.emit("session_start");
 		await h.commands.get("handoff")?.handler("", h.ctx);
 		expect(h.notifications.at(-1)?.message).toContain("No HANDOFF.md in");
+		await h.emit("session_shutdown");
+	});
+
+	it("reports the truth outside a TUI, where no widget is registered", async () => {
+		const cwd = await repo();
+		await writeFile(join(cwd, "HANDOFF.md"), "# HANDOFF\n");
+		const h = harness(cwd, "rpc");
+		await h.emit("session_start");
+		expect(h.widgets).toHaveLength(0);
+
+		await h.commands.get("handoff")?.handler("", h.ctx);
+		const message = h.notifications.at(-1)?.message ?? "";
+		expect(message).toContain("HANDOFF.md — written");
+		expect(message).toContain(cwd);
 		await h.emit("session_shutdown");
 	});
 });

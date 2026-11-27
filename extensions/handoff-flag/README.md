@@ -41,4 +41,6 @@ so an idle session costs a stat and no rendering.
 | `/handoff` | Report the file's age, size, and path, with the `rm HANDOFF.md` reminder — or say there is none. |
 | `/handoff on` \| `off` | Show or hide the line for the session. |
 
-Outside a TUI (`pi -p`, JSON, RPC) the widget is not registered.
+Outside a TUI (`pi -p`, JSON, RPC) no widget is registered and nothing is
+polled, but `/handoff` still reports the file's state when a slash command is
+reachable, such as RPC mode.

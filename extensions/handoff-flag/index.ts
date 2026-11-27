@@ -80,7 +80,8 @@ export default function handoffFlag(pi: ExtensionAPI): void {
 
 	const refresh = async (ctx: ExtensionContext): Promise<void> => {
 		widgetCtx = ctx;
-		if (!ctx.hasUI || ctx.mode !== "tui") return;
+		// Detection is not TUI-only: `/handoff` reports the same answer in RPC,
+		// print, and JSON mode. Only painting and polling are gated on the TUI.
 		if (inFlight) {
 			pending = true;
 			return;
@@ -107,6 +108,7 @@ export default function handoffFlag(pi: ExtensionAPI): void {
 	};
 
 	const startPolling = (ctx: ExtensionContext): void => {
+		// A poll only exists to repaint a widget, so it is TUI-only.
 		if (poller || !ctx.hasUI || ctx.mode !== "tui") return;
 		poller = setInterval(() => {
 			if (!widgetCtx) return;
